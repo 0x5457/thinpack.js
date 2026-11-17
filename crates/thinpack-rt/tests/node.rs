@@ -74,11 +74,18 @@ fn main() -> ExitCode {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ignored {
+    Skip,
+    Only,
+    Include,
+}
+
 struct Cli {
     filter: Option<String>,
+    exact: bool,
     list: bool,
-    ignored: bool,
-    include_ignored: bool,
+    ignored: Ignored,
     threads: usize,
 }
 
@@ -88,6 +95,7 @@ Usage: cargo test -p thinpack-rt --test node -- [FILTER] [OPTIONS]
 
 Options:
   --list, --list-tests   list matching tests instead of running them
+  --exact                require the filter to match the full test name
   --ignored              run only tests marked ignored in the manifest
   --include-ignored      run ignored tests as well
   --test-threads N       number of tests to run in parallel (default: CPU count)
@@ -97,17 +105,18 @@ Options:
     fn parse(mut args: impl Iterator<Item = String>) -> Result<Self, String> {
         let mut cli = Self {
             filter: None,
+            exact: false,
             list: false,
-            ignored: false,
-            include_ignored: false,
+            ignored: Ignored::Skip,
             threads: thread::available_parallelism().map_or(1, std::num::NonZero::get),
         };
 
         while let Some(argument) = args.next() {
             match argument.as_str() {
                 "--list" | "--list-tests" => cli.list = true,
-                "--ignored" => cli.ignored = true,
-                "--include-ignored" => cli.include_ignored = true,
+                "--exact" => cli.exact = true,
+                "--ignored" => cli.ignored = Ignored::Only,
+                "--include-ignored" => cli.ignored = Ignored::Include,
                 "--nocapture" => {}
                 "-h" | "--help" => {
                     println!("{}", Self::USAGE);
@@ -142,9 +151,13 @@ Options:
     }
 
     fn matches(&self, name: &str) -> bool {
-        self.filter
-            .as_ref()
-            .is_none_or(|filter| name.contains(filter))
+        self.filter.as_ref().is_none_or(|filter| {
+            if self.exact {
+                name == filter
+            } else {
+                name.contains(filter)
+            }
+        })
     }
 }
 
@@ -189,6 +202,9 @@ impl Suite {
                 && reason.trim().is_empty()
             {
                 return Err(format!("ignored entry has no reason: {relative}"));
+            }
+            if test.timeout_ms == Some(0) {
+                return Err(format!("timeout_ms must be positive: {relative}"));
             }
 
             let stem = Path::new(&relative)
@@ -264,9 +280,9 @@ impl Suite {
             .tests
             .iter()
             .filter(|test| cli.matches(&test.name))
-            .partition(|test| cli.ignored || cli.include_ignored || test.ignore.is_none());
+            .partition(|test| cli.ignored != Ignored::Skip || test.ignore.is_none());
 
-        if cli.ignored {
+        if cli.ignored == Ignored::Only {
             selected.retain(|test| test.ignore.is_some());
         }
 
@@ -333,12 +349,14 @@ impl Suite {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Config {
     #[serde(default)]
     tests: BTreeMap<String, TestConfig>,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TestConfig {
     module: String,
     #[serde(default)]
@@ -419,12 +437,14 @@ fn run_test(root: &Path, test: &Test, serial: usize) -> Outcome {
         command.env(key, value);
     }
 
+    configure_process_group(&mut command);
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
             return Outcome::Failed(format!("cannot spawn thinpack-rt: {error}"));
         }
     };
+    let pid = child.id();
     let Some(stdout) = child.stdout.take() else {
         return Outcome::Failed("stdout is not piped".to_owned());
     };
@@ -434,7 +454,12 @@ fn run_test(root: &Path, test: &Test, serial: usize) -> Outcome {
     let stdout = thread::spawn(move || read_all(stdout));
     let stderr = thread::spawn(move || read_all(stderr));
 
-    let deadline = Instant::now() + test.timeout;
+    let Some(deadline) = Instant::now().checked_add(test.timeout) else {
+        return Outcome::Failed(format!(
+            "timeout of {} ms is too large",
+            test.timeout.as_millis()
+        ));
+    };
     let mut timed_out = false;
     let status = loop {
         match child.try_wait() {
@@ -446,6 +471,7 @@ fn run_test(root: &Path, test: &Test, serial: usize) -> Outcome {
         }
         if Instant::now() >= deadline {
             timed_out = true;
+            kill_process_group(pid);
             if let Err(error) = child.kill() {
                 return Outcome::Failed(format!("cannot kill timed-out test: {error}"));
             }
@@ -458,6 +484,10 @@ fn run_test(root: &Path, test: &Test, serial: usize) -> Outcome {
         }
         thread::sleep(Duration::from_millis(25));
     };
+
+    // A successful primary can leave workers behind. They inherit the pipes,
+    // so the reader threads would block forever without this cleanup.
+    kill_process_group(pid);
 
     let stdout = read(stdout);
     let stderr = read(stderr);
@@ -485,6 +515,30 @@ fn run_test(root: &Path, test: &Test, serial: usize) -> Outcome {
     }
     Outcome::Failed(report)
 }
+
+#[cfg(unix)]
+fn configure_process_group(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_process_group(_command: &mut Command) {}
+
+#[cfg(unix)]
+fn kill_process_group(pid: u32) {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return;
+    };
+    // SAFETY: `pid` is the group created by `configure_process_group`, so the
+    // negative argument targets only that test's processes.
+    unsafe {
+        libc::kill(-pid, libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_process_group(_pid: u32) {}
 
 fn read(handle: thread::JoinHandle<io::Result<String>>) -> String {
     match handle.join() {

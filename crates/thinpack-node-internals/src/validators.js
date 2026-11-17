@@ -127,14 +127,28 @@
   });
 
   const validateStringArray = hideStackFrames((value, name) => {
-    if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
-      throw new codes.ERR_INVALID_ARG_TYPE(name, "Array of strings", value);
+    validateArray(value, name);
+    for (let index = 0; index < value.length; index += 1) {
+      if (typeof value[index] !== "string") {
+        throw new codes.ERR_INVALID_ARG_TYPE(
+          `${name}[${index}]`,
+          "string",
+          value[index],
+        );
+      }
     }
   });
 
   const validateBooleanArray = hideStackFrames((value, name) => {
-    if (!Array.isArray(value) || value.some((entry) => typeof entry !== "boolean")) {
-      throw new codes.ERR_INVALID_ARG_TYPE(name, "Array of booleans", value);
+    validateArray(value, name);
+    for (let index = 0; index < value.length; index += 1) {
+      if (value[index] !== true && value[index] !== false) {
+        throw new codes.ERR_INVALID_ARG_TYPE(
+          `${name}[${index}]`,
+          "boolean",
+          value[index],
+        );
+      }
     }
   });
 
@@ -142,21 +156,40 @@
     if (!allowed.includes(value)) {
       throw new codes.ERR_INVALID_ARG_TYPE(
         name,
-        allowed.map((entry) => `'${entry}'`).join(" or "),
+        `('${allowed.join("|")}')`,
         value,
       );
     }
   });
 
-  const validateIgnoreOption = hideStackFrames((ignore, name) => {
-    if (ignore === undefined) return;
-    const entries = Array.isArray(ignore) ? ignore : [ignore];
-    for (const entry of entries) {
-      if (typeof entry === "string" || typeof entry === "function" || entry instanceof RegExp) {
-        continue;
+  const validateIgnoreOptionElement = hideStackFrames((value, name) => {
+    if (typeof value === "string") {
+      if (value.length === 0) {
+        throw new codes.ERR_INVALID_ARG_VALUE(
+          name,
+          value,
+          "must be a non-empty string",
+        );
       }
-      throw new codes.ERR_INVALID_ARG_TYPE(name, "string, RegExp, or function", entry);
+      return;
     }
+    if (value instanceof RegExp || typeof value === "function") return;
+    throw new codes.ERR_INVALID_ARG_TYPE(
+      name,
+      ["string", "RegExp", "Function"],
+      value,
+    );
+  });
+
+  const validateIgnoreOption = hideStackFrames((value, name) => {
+    if (value == null) return;
+    if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index += 1) {
+        validateIgnoreOptionElement(value[index], `${name}[${index}]`);
+      }
+      return;
+    }
+    validateIgnoreOptionElement(value, name);
   });
 
   const validateObject = hideStackFrames((value, name, options) => {

@@ -103,6 +103,9 @@
     return inspected;
   };
 
+  const inspectRaw = (value) =>
+    require("node:thinpack/internal/util/inspect").inspect(value);
+
   class ERR_BUFFER_OUT_OF_BOUNDS extends RangeError {
     constructor(name) {
       super(
@@ -209,7 +212,7 @@
         }
         received += "n";
       } else {
-        received = inspectValue(value);
+        received = inspectRaw(value);
       }
       super(message + " It must be " + range + ". Received " + received);
       this.code = "ERR_OUT_OF_RANGE";

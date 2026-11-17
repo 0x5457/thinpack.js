@@ -3332,6 +3332,7 @@ name = "thinpack-rt"
 version = "0.1.0"
 dependencies = [
  "deno_core",
+ "libc",
  "serde",
  "thinpack-caps",
  "thinpack-core",

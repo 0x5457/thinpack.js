@@ -11,9 +11,9 @@ manifest, runs each file in its own process, and reports a normal test summary.
 ```sh
 cargo test -p thinpack-rt --test node                     # everything
 cargo test -p thinpack-rt --test node -- path             # substring filter
-cargo test -p thinpack-rt --test node -- path::test-path  # one file
+cargo test -p thinpack-rt --test node -- --exact path::test-path  # one file
 cargo test -p thinpack-rt --test node -- --list           # list, with skip reasons
-cargo test -p thinpack-rt --test node -- --ignored        # run skipped tests too
+cargo test -p thinpack-rt --test node -- --ignored        # run only skipped tests
 cargo test -p thinpack-rt --test node -- --test-threads 1 # serial
 ```
 
@@ -75,7 +75,8 @@ timeout_ms = 120000
 ## Runner behaviour
 
 Each manifest entry becomes one test named `<module>::<file-stem>`, so
-`cargo test -- path` runs a module and `--list` shows the inventory.
+`cargo test -- path` runs a module, `-- --exact <name>` runs one file, and
+`--list` shows the inventory (including skip reasons).
 
 A test runs as a child process of the `thinpack-rt` binary cargo built for this
 invocation (`CARGO_BIN_EXE_thinpack-rt`), with:
@@ -83,7 +84,8 @@ invocation (`CARGO_BIN_EXE_thinpack-rt`), with:
 - working directory `tests/node/compat`,
 - `TEST_SERIAL_ID` set to a per-run, per-test id, so `common/tmpdir` is isolated,
 - `NO_COLOR=1`, and `NODE_OPTIONS`/`NODE_PATH` removed,
-- a per-test timeout (30 s default); a timed-out child is killed,
+- a per-test timeout (30 s default); a timed-out child and its process group are
+  killed, and the group is cleaned up after a successful exit as well,
 - captured stdout/stderr, shown only on failure and truncated to 32 KiB.
 
 A non-zero exit or a timeout fails the test. `common.skip()` exits 0, as in Node.
