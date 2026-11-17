@@ -14,7 +14,7 @@ thinpack-pack = { workspace = true }
 thinpack-analyze = { workspace = true }
 thinpack-resolve = { workspace = true }
 thinpack-caps = { workspace = true }
-brotli = "8"
+brotli = "9"
 
 [lints]
 workspace = true
