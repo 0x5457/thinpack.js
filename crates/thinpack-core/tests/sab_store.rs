@@ -9,6 +9,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use deno_core::{Extension, JsRuntime, OpDecl, RuntimeOptions, op2};
 
+// Both tests below drive the same process-global mailbox and counters, so they
+// must not overlap; cargo runs tests in one binary on parallel threads.
+static SERIAL: Mutex<()> = Mutex::new(());
+
 static MAILBOX: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 static RECORDED: AtomicU32 = AtomicU32::new(u32::MAX);
 static DELIVERED: AtomicU32 = AtomicU32::new(0);
@@ -59,6 +63,7 @@ fn runtime() -> JsRuntime {
 
 #[test]
 fn shared_array_buffer_travels_through_serialize() {
+    let _serial = SERIAL.lock().unwrap();
     let mut main = runtime();
     let mut worker = runtime();
 
@@ -102,6 +107,7 @@ fn shared_array_buffer_travels_through_serialize() {
 
 #[test]
 fn atomics_wait_is_woken_across_isolates() {
+    let _serial = SERIAL.lock().unwrap();
     let worker = std::thread::spawn(|| {
         let mut runtime = runtime();
         loop {
