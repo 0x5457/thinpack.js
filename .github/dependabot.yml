@@ -1,0 +1,35 @@
+# Dependabot opens PRs against main and they run the normal CI gate.
+#
+# Deliberately out of scope:
+#   - tests/*/package.json: pinned acceptance fixtures, not build inputs.
+#   - vendor/: patched upstream snapshots, updated only with their patches.
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    # Roll patch bumps into one PR to keep the queue small. Minor and major
+    # bumps stay separate: 0.x crates may break within a minor version.
+    groups:
+      cargo-patch:
+        patterns: ["*"]
+        update-types: ["patch"]
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "ci"
+      include: "scope"
