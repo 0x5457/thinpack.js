@@ -108,6 +108,7 @@ thinpack-node-zlib = { path = "crates/node/zlib" }
 thinpack-node-perf-hooks = { path = "crates/node/perf-hooks" }
 thinpack-node-worker-threads = { path = "crates/node/worker-threads" }
 thinpack-node-child-process = { path = "crates/node/child-process" }
+thinpack-node-cluster = { path = "crates/node/cluster" }
 thinpack-node-vm = { path = "crates/node/vm" }
 thinpack-node-os = { path = "crates/node/os" }
 thinpack-node-module = { path = "crates/node/module" }

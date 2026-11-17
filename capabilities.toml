@@ -25,6 +25,10 @@
 builtins = ["assert", "assert/strict"]
 deps = ["util"]
 
+[modules.cluster]
+builtins = ["cluster"]
+deps = ["events", "net", "path", "process"]
+
 [modules.constants]
 builtins = ["constants"]
 deps = []

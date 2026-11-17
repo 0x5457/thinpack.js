@@ -11,10 +11,9 @@ use std::os::unix::fs::{
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::thread;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use crate::virtual_mount::{self, VirtualMount};
 
@@ -738,8 +737,13 @@ fn op_fs_statfs(#[string] path: &str) -> Result<String, JsErrorBox> {
     if unsafe { libc::statvfs(path.as_ptr(), &raw mut stats) } == -1 {
         return Err(fs_error(io::Error::last_os_error()));
     }
+    // Linux reports a filesystem magic here; the BSDs, including macOS, have no equivalent.
+    #[cfg(target_os = "linux")]
+    let type_number = stats.f_type;
+    #[cfg(not(target_os = "linux"))]
+    let type_number = 0;
     Ok([
-        stats.f_type.to_string(),
+        type_number.to_string(),
         stats.f_bsize.to_string(),
         stats.f_frsize.to_string(),
         stats.f_blocks.to_string(),
@@ -788,13 +792,13 @@ fn op_fs_lutimes(#[string] path: &str, atime: f64, mtime: f64) -> Result<(), JsE
     utimens(path, atime, mtime, libc::AT_SYMLINK_NOFOLLOW)
 }
 
-struct InotifyWatch {
+struct Watch {
     events: Arc<Mutex<Vec<String>>>,
-    stop: Arc<AtomicBool>,
+    _watcher: notify::RecommendedWatcher,
 }
 
-fn watch_registry() -> &'static Mutex<HashMap<u32, InotifyWatch>> {
-    static REGISTRY: OnceLock<Mutex<HashMap<u32, InotifyWatch>>> = OnceLock::new();
+fn watch_registry() -> &'static Mutex<HashMap<u32, Watch>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<u32, Watch>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -802,88 +806,80 @@ static WATCHES: thinpack_core::IdCounter = thinpack_core::IdCounter::new();
 
 #[op2(fast)]
 fn op_fs_watch_start(#[string] path: &str) -> Result<u32, JsErrorBox> {
-    use inotify::{EventMask, Inotify, WatchMask};
+    let watch = start_watch(path)?;
+    let id = WATCHES.next();
+    watch_registry().lock().unwrap().insert(id, watch);
+    Ok(id)
+}
 
-    let mut inotify = Inotify::init().map_err(fs_error)?;
-    let mask = WatchMask::CREATE
-        | WatchMask::DELETE
-        | WatchMask::MODIFY
-        | WatchMask::ATTRIB
-        | WatchMask::MOVED_FROM
-        | WatchMask::MOVED_TO
-        | WatchMask::DELETE_SELF
-        | WatchMask::MOVE_SELF;
-    inotify.watches().add(path, mask).map_err(fs_error)?;
-    // SAFETY: F_GETFL only reads the file status flags of a descriptor inotify owns here.
-    let flags = unsafe { libc::fcntl(inotify.as_raw_fd(), libc::F_GETFL) };
-    if flags == -1 {
-        return Err(fs_error(io::Error::last_os_error()));
-    }
-    // SAFETY: F_SETFL only writes the file status flags of that same descriptor.
-    if unsafe { libc::fcntl(inotify.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
-        return Err(fs_error(io::Error::last_os_error()));
-    }
+fn start_watch(path: &str) -> Result<Watch, JsErrorBox> {
+    use notify::Watcher as _;
 
     let events = Arc::new(Mutex::new(Vec::new()));
-    let stop = Arc::new(AtomicBool::new(false));
-    let thread_events = Arc::clone(&events);
-    let thread_stop = Arc::clone(&stop);
-    let basename = Path::new(path)
+    let handler_events = Arc::clone(&events);
+    let watched_name = Path::new(path)
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
 
-    thread::Builder::new()
-        .name("thinpack-fs-watch".into())
-        .spawn(move || {
-            let mut buffer = [0u8; 4096];
-            while !thread_stop.load(Ordering::Relaxed) {
-                match inotify.read_events(&mut buffer) {
-                    Ok(iterator) => {
-                        let mut batch = Vec::new();
-                        for event in iterator {
-                            let kind =
-                                if event.mask.intersects(EventMask::MODIFY | EventMask::ATTRIB) {
-                                    "change"
-                                } else if event.mask.intersects(
-                                    EventMask::CREATE
-                                        | EventMask::DELETE
-                                        | EventMask::MOVED_FROM
-                                        | EventMask::MOVED_TO
-                                        | EventMask::DELETE_SELF
-                                        | EventMask::MOVE_SELF,
-                                ) {
-                                    "rename"
-                                } else {
-                                    continue;
-                                };
-                            let name = event.name.map_or_else(
-                                || basename.clone(),
-                                |name| name.to_string_lossy().into_owned(),
-                            );
-                            if !name.is_empty() {
-                                batch.push(format!("{kind}\0{name}"));
-                            }
-                        }
-                        if !batch.is_empty() {
-                            thread_events.lock().unwrap().extend(batch);
-                        }
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(20));
-                    }
-                    Err(_) => break,
-                }
-            }
-        })
-        .map_err(|error| fs_error(io::Error::other(error)))?;
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        let Ok(event) = event else {
+            return;
+        };
+        let Some(kind) = event_kind(event.kind) else {
+            return;
+        };
+        let mut batch: Vec<String> = event
+            .paths
+            .iter()
+            .filter_map(|changed| changed.file_name())
+            .map(|name| format!("{kind}\0{}", name.to_string_lossy()))
+            .collect();
+        if batch.is_empty() && !watched_name.is_empty() {
+            batch.push(format!("{kind}\0{watched_name}"));
+        }
+        if !batch.is_empty() {
+            handler_events.lock().unwrap().extend(batch);
+        }
+    })
+    .map_err(watcher_error)?;
 
-    let id = WATCHES.next();
-    watch_registry()
-        .lock()
-        .unwrap()
-        .insert(id, InotifyWatch { events, stop });
-    Ok(id)
+    watcher
+        .watch(Path::new(path), notify::RecursiveMode::NonRecursive)
+        .map_err(watcher_error)?;
+
+    Ok(Watch {
+        events,
+        _watcher: watcher,
+    })
+}
+
+const fn event_kind(kind: notify::EventKind) -> Option<&'static str> {
+    use notify::EventKind;
+    use notify::event::{ModifyKind, RenameMode};
+
+    match kind {
+        // Access events (opens and closes) are not changes. Inotify reports a rename as
+        // separate `From` and `To` events and then repeats both together as `Both`; the
+        // first two already carry every changed name.
+        EventKind::Access(_) | EventKind::Modify(ModifyKind::Name(RenameMode::Both)) => None,
+        EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_)) => {
+            Some("rename")
+        }
+        EventKind::Modify(_) | EventKind::Any | EventKind::Other => Some("change"),
+    }
+}
+
+fn watcher_error(error: notify::Error) -> JsErrorBox {
+    let detail = error.to_string();
+    let errno = match error.kind {
+        notify::ErrorKind::PathNotFound => libc::ENOENT,
+        notify::ErrorKind::MaxFilesWatch => libc::ENOSPC,
+        notify::ErrorKind::InvalidConfig(_) | notify::ErrorKind::WatchNotFound => libc::EINVAL,
+        notify::ErrorKind::Io(error) => return fs_error(error),
+        notify::ErrorKind::Generic(_) => return fs_error(io::Error::other(detail)),
+    };
+    fs_error(io::Error::from_raw_os_error(errno))
 }
 
 #[op2]
@@ -899,8 +895,5 @@ fn op_fs_watch_take(#[smi] id: u32) -> String {
 
 #[op2(fast)]
 fn op_fs_watch_close(#[smi] id: u32) {
-    let closed = watch_registry().lock().unwrap().remove(&id);
-    if let Some(watch) = closed {
-        watch.stop.store(true, Ordering::Relaxed);
-    }
+    watch_registry().lock().unwrap().remove(&id);
 }

@@ -48,6 +48,15 @@ pub const MODULES: &[Module] = &[
         optional: false,
     },
     Module {
+        name: "cluster",
+        feature: "node-cluster",
+        builtins: &["cluster"],
+        deps: &["events", "net", "path", "process"],
+        optional_deps: &[],
+        ambient: false,
+        optional: false,
+    },
+    Module {
         name: "console",
         feature: "node-console",
         builtins: &["console"],

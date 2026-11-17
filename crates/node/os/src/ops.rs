@@ -104,6 +104,7 @@ unsafe fn prefix_of(netmask: *const libc::sockaddr, family: i32) -> u32 {
     }
 }
 
+#[cfg(target_os = "linux")]
 unsafe fn mac_of(address: *const libc::sockaddr) -> Option<String> {
     if address.is_null() {
         return None;
@@ -118,6 +119,39 @@ unsafe fn mac_of(address: *const libc::sockaddr) -> Option<String> {
         .map(|byte| format!("{byte:02x}"))
         .collect();
     Some(bytes.join(":"))
+}
+
+#[cfg(target_vendor = "apple")]
+unsafe fn mac_of(address: *const libc::sockaddr) -> Option<String> {
+    if address.is_null() {
+        return None;
+    }
+    // SAFETY: the caller passes the address of an `AF_LINK` entry, i.e. a `sockaddr_dl`.
+    let link = unsafe { &*address.cast::<libc::sockaddr_dl>() };
+    if link.sdl_alen != 6 {
+        return None;
+    }
+    let start = usize::from(link.sdl_nlen);
+    let bytes = link.sdl_data.get(start..start + 6)?;
+    Some(
+        bytes
+            .iter()
+            .map(|byte| format!("{:02x}", byte.cast_unsigned()))
+            .collect::<Vec<_>>()
+            .join(":"),
+    )
+}
+
+#[cfg(target_os = "linux")]
+const LINK_FAMILY: libc::c_int = libc::AF_PACKET;
+#[cfg(target_vendor = "apple")]
+const LINK_FAMILY: libc::c_int = libc::AF_LINK;
+#[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
+const LINK_FAMILY: libc::c_int = -1;
+
+#[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
+unsafe fn mac_of(_address: *const libc::sockaddr) -> Option<String> {
+    None
 }
 
 #[expect(
@@ -221,8 +255,8 @@ pub(crate) fn op_os_network_interfaces() -> Result<String, JsErrorBox> {
         if !entry.ifa_addr.is_null() {
             // SAFETY: `ifa_addr` is non-null and starts with the common `sockaddr` header.
             let family = i32::from(unsafe { (*entry.ifa_addr).sa_family });
-            let mac = if family == libc::AF_PACKET {
-                // SAFETY: an `AF_PACKET` entry carries a `sockaddr_ll` in `ifa_addr`.
+            let mac = if family == LINK_FAMILY {
+                // SAFETY: a `LINK_FAMILY` entry carries a link-layer address in `ifa_addr`.
                 unsafe { mac_of(entry.ifa_addr) }
             } else {
                 None

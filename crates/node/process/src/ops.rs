@@ -11,6 +11,7 @@ pub(crate) const OPS: &[OpDecl] = &[
     op_process_chdir(),
     op_process_info(),
     op_process_exit(),
+    op_process_kill(),
     op_process_umask(),
     op_process_ids(),
     op_process_memory(),
@@ -82,6 +83,18 @@ pub(crate) fn op_process_exit(code: i32) {
 }
 
 #[op2(fast)]
+pub(crate) fn op_process_kill(pid: i32, signal: i32) -> Result<(), JsErrorBox> {
+    // SAFETY: `kill(2)` takes plain integers and reports a bad pid or signal through its
+    // return value instead of being undefined behaviour.
+    if unsafe { libc::kill(pid, signal) } == -1 {
+        let error = std::io::Error::last_os_error();
+        let errno = error.raw_os_error().unwrap_or(libc::EINVAL);
+        return Err(JsErrorBox::new("Error", format!("-{errno}\0{error}")));
+    }
+    Ok(())
+}
+
+#[op2(fast)]
 pub(crate) fn op_process_umask(#[smi] mask: i32) -> i32 {
     // SAFETY: `umask` only reads and replaces the process umask; every bit pattern is valid.
     let previous = unsafe { libc::umask(0) };
@@ -137,11 +150,21 @@ fn rusage() -> Result<libc::rusage, JsErrorBox> {
     Ok(usage)
 }
 
+/// Converts a `timeval` to microseconds.
+///
+/// `tv_usec` is `suseconds_t`, which is `i64` on Linux and `i32` on Apple platforms.
+const fn micros(time: libc::timeval) -> i64 {
+    #[cfg(target_vendor = "apple")]
+    let usec = time.tv_usec as i64;
+    #[cfg(not(target_vendor = "apple"))]
+    let usec = time.tv_usec;
+    time.tv_sec * 1_000_000 + usec
+}
+
 #[op2]
 #[string]
 pub(crate) fn op_process_cpu_usage() -> Result<String, JsErrorBox> {
     let usage = rusage()?;
-    let micros = |time: libc::timeval| time.tv_sec * 1_000_000 + time.tv_usec;
     Ok(format!(
         "{}\0{}",
         micros(usage.ru_utime),
@@ -153,7 +176,6 @@ pub(crate) fn op_process_cpu_usage() -> Result<String, JsErrorBox> {
 #[string]
 pub(crate) fn op_process_resource_usage() -> Result<String, JsErrorBox> {
     let usage = rusage()?;
-    let micros = |time: libc::timeval| time.tv_sec * 1_000_000 + time.tv_usec;
     Ok(format!(
         "{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}",
         micros(usage.ru_utime),

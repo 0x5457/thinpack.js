@@ -76,6 +76,8 @@ pub(crate) fn extensions() -> Vec<deno_core::Extension> {
     extensions.push(thinpack_node_net::init());
     #[cfg(feature = "node-zlib")]
     extensions.push(thinpack_node_zlib::init());
+    #[cfg(feature = "node-cluster")]
+    extensions.push(thinpack_node_cluster::init());
     #[cfg(feature = "node-http")]
     extensions.push(thinpack_node_http::init());
     #[cfg(feature = "node-tls")]
@@ -165,6 +167,8 @@ pub(crate) fn enabled() -> Vec<&'static str> {
     names.push("net");
     #[cfg(feature = "node-zlib")]
     names.push("zlib");
+    #[cfg(feature = "node-cluster")]
+    names.push("cluster");
     #[cfg(feature = "node-http")]
     names.push("http");
     #[cfg(feature = "node-tls")]

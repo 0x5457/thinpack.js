@@ -3,6 +3,13 @@
   const { codes, opErrorParts } = require("node:thinpack/internal/errors");
   const { UVException } = require("node:thinpack/internal/errors");
   const { parseAddress } = require("node:thinpack/internal/net/address");
+  // Set by the cluster child; absent in a primary or a process that does not use cluster.
+  const kClusterListen = Symbol.for("thinpack.cluster.listen");
+
+  // Node's active socket handles keep the event loop alive even when user code drops the
+  // only JS reference. The runtime's lifetime follows pending ops, so retain the socket
+  // object (and with it its read pump) until it closes.
+  const activeSockets = new Set();
   const invalidFdType = (type) => {
     const error = new TypeError(`Unsupported fd type: ${type}`);
     error.code = "ERR_INVALID_FD_TYPE";
@@ -86,6 +93,8 @@
 
     #adopt(id) {
       this.#id = id;
+      activeSockets.add(this);
+      this.once("close", () => activeSockets.delete(this));
       this._thinpackConnectionId = id;
       const [kind, localRaw, remoteRaw] = Deno.core.ops.op_net_info(id).split("\0");
       this.connecting = false;
@@ -158,6 +167,16 @@
             if (chunk.length === 0) {
               this.#reading = false;
               this.push(null);
+              // `net.Socket` closes its writable half on EOF unless allowHalfOpen is set,
+              // even while the readable side is paused. The stream's own end hook only runs
+              // once the readable side is consumed, which is too late for a paused socket.
+              if (this.allowHalfOpen === false && !this.writableEnded) this.end();
+              if (this.allowHalfOpen === false && this.readableFlowing === null) {
+                // A paused readable never emits 'end', so release the handle explicitly once
+                // the writable half has finished.
+                if (this.writableFinished) this.destroy();
+                else this.once("finish", () => this.destroy());
+              }
               return;
             }
             this.bytesRead += chunk.length;
@@ -320,16 +339,32 @@
       }
       const path = typeof options.path === "string" ? options.path : undefined;
       if (path !== undefined) {
+        if (options.exclusive !== true && Server[kClusterListen] !== undefined) {
+          throw new codes.ERR_NOT_IMPLEMENTED("cluster sharing a UNIX socket");
+        }
         this.#listenUnix(path, callback);
         return this;
       }
       const port = Number(options.port ?? 0);
       const host = options.host ?? "0.0.0.0";
+      // Node treats an explicit reusePort as an exclusive listener, which is exactly the
+      // independent binding a cluster worker needs.
+      if (options.reusePort === true) options.exclusive = true;
+      if (options.exclusive !== true && Server[kClusterListen] !== undefined) {
+        Server[kClusterListen](this, { address: host, port }, (bindPort) => {
+          this.#bindTcp(host, bindPort, true, callback);
+        });
+        return this;
+      }
+      this.#bindTcp(host, port, options.reusePort === true, callback);
+      return this;
+    }
+
+    #bindTcp(host, port, reusePort, callback) {
       Deno.core.ops
-        .op_net_listen(String(host), port)
+        .op_net_listen(String(host), port, reusePort === true)
         .then((id) => this.#listening(id, callback))
         .catch((error) => this.emit("error", socketError(error, "listen", `${host}:${port}`)));
-      return this;
     }
     #listenFd(fd, callback) {
       if (!Number.isInteger(fd) || fd < 0) {
@@ -363,7 +398,8 @@
       this.#tcp = kind === "tcp";
       this.listening = true;
       this.emit("listening");
-      if (callback) callback();
+      // Node invokes the listen callback with the server as `this`.
+      if (callback) callback.call(this);
       this.#accept();
     }
 
@@ -445,16 +481,26 @@
         this.#options.signal.removeEventListener("abort", this.#abort);
         this.#abort = undefined;
       }
-      for (const socket of this.#connections) socket.destroy();
-      this.#connections.clear();
+
       const accepting = this.#accepting;
       this.#accepting = null;
+      const acceptSettled = accepting
+        ? accepting.then(() => {}, () => {})
+        : Promise.resolve();
       const closed = () => {
         this.emit("close");
         if (callback) callback();
       };
-      if (accepting) accepting.then(closed, closed);
-      else closed();
+      // Node stops accepting new connections but keeps the existing ones; 'close' waits
+      // until they have all ended.
+      const finish = () => {
+        if (this.#connections.size === 0) acceptSettled.then(closed);
+      };
+      if (this.#connections.size === 0) {
+        finish();
+      } else {
+        for (const socket of this.#connections) socket.once("close", finish);
+      }
       return this;
     }
 
@@ -467,10 +513,16 @@
     }
   }
 
+  // Node's net.Server is callable without `new`; keep that shape while retaining the class
+  // internals that private fields need.
+  const ServerExport = new Proxy(Server, {
+    apply: (target, thisArg, args) => new target(...args),
+  });
+
   module.exports = {
     Socket,
     Stream: Socket,
-    Server,
+    Server: ServerExport,
     createServer: (options, connectionListener) => new Server(options, connectionListener),
     connect,
     createConnection: connect,

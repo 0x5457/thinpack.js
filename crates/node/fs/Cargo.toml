@@ -11,7 +11,7 @@ deno_core.workspace = true
 deno_error.workspace = true
 thinpack-core = { workspace = true }
 libc = "0.2"
-inotify = "0.11"
+notify = "8.2"
 tokio.workspace = true
 
 [lints]

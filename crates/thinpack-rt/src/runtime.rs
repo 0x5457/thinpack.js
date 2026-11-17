@@ -175,6 +175,12 @@ pub(crate) fn run(
                 let _ = packed.files;
             }
             runtime.install_assets(assets);
+            runtime.execute_script(
+                "<cluster>",
+                "if (typeof globalThis.__thinpack_cluster_bootstrap__ === \"function\") \
+                 globalThis.__thinpack_cluster_bootstrap__();"
+                    .to_owned(),
+            )?;
             execute(&mut runtime, entry).await
         });
     Ok(outcome?)

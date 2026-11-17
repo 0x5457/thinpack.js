@@ -22,6 +22,12 @@ static CONNECT_CANCELS: thinpack_core::CancelTable = thinpack_core::CancelTable:
 static READ_CANCELS: thinpack_core::CancelTable = thinpack_core::CancelTable::new();
 static ACCEPT_CANCELS: thinpack_core::CancelTable = thinpack_core::CancelTable::new();
 
+// The keep-alive idle time socket option is spelled differently on Apple platforms.
+#[cfg(target_vendor = "apple")]
+const TCP_KEEP_IDLE: libc::c_int = libc::TCP_KEEPALIVE;
+#[cfg(not(target_vendor = "apple"))]
+const TCP_KEEP_IDLE: libc::c_int = libc::TCP_KEEPIDLE;
+
 pub(crate) const OPS: &[OpDecl] = &[
     op_net_listen(),
     op_net_listen_unix(),
@@ -162,7 +168,7 @@ impl Transport {
                     setsockopt_int(
                         fd,
                         libc::IPPROTO_TCP,
-                        libc::TCP_KEEPIDLE,
+                        TCP_KEEP_IDLE,
                         delay_seconds.cast_signed(),
                     )?;
                 }
@@ -704,10 +710,18 @@ fn listeners() -> &'static Mutex<HashMap<u32, Arc<Listener>>> {
 }
 
 #[op2(async(lazy), fast)]
-async fn op_net_listen(#[string] host: String, port: u16) -> Result<u32, JsErrorBox> {
-    let listener = tokio::net::TcpListener::bind((host.as_str(), port))
-        .await
-        .map_err(io_error)?;
+async fn op_net_listen(
+    #[string] host: String,
+    port: u16,
+    reuse_port: bool,
+) -> Result<u32, JsErrorBox> {
+    let listener = if reuse_port {
+        bind_reuse_port(&host, port).await.map_err(io_error)?
+    } else {
+        tokio::net::TcpListener::bind((host.as_str(), port))
+            .await
+            .map_err(io_error)?
+    };
     let local = listener
         .local_addr()
         .map(|address| address.to_string())
@@ -718,6 +732,27 @@ async fn op_net_listen(#[string] host: String, port: u16) -> Result<u32, JsError
         .expect("listener table")
         .insert(id, Arc::new(Listener::Tcp { listener, local }));
     Ok(id)
+}
+
+async fn bind_reuse_port(host: &str, port: u16) -> io::Result<tokio::net::TcpListener> {
+    use tokio::net::TcpSocket;
+
+    let mut last_error = None;
+    for address in tokio::net::lookup_host((host, port)).await? {
+        let socket = if address.is_ipv4() {
+            TcpSocket::new_v4()?
+        } else {
+            TcpSocket::new_v6()?
+        };
+        socket.set_reuseaddr(true)?;
+        socket.set_reuseport(true)?;
+        match socket.bind(address) {
+            Ok(()) => return socket.listen(511),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error
+        .unwrap_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "no address to bind")))
 }
 
 #[op2(async(lazy), fast)]

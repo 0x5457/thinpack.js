@@ -304,6 +304,23 @@
   hrtime.bigint = monotonicNanoseconds;
 
   let exitCode;
+  let exiting = false;
+  const SIGNALS = {
+    SIGABRT: 6, SIGALRM: 14, SIGBUS: 7, SIGCHLD: 17, SIGCONT: 18, SIGFPE: 8,
+    SIGHUP: 1, SIGILL: 4, SIGINT: 2, SIGKILL: 9, SIGPIPE: 13, SIGQUIT: 3,
+    SIGSEGV: 11, SIGSTOP: 19, SIGTERM: 15, SIGTSTP: 20, SIGTTIN: 21,
+    SIGTTOU: 22, SIGUSR1: 10, SIGUSR2: 12, SIGVTALRM: 26, SIGXCPU: 24,
+    SIGXFSZ: 25,
+  };
+  const signalNumber = (signal) => {
+    if (signal === undefined) return SIGNALS.SIGTERM;
+    if (typeof signal === "number") return signal;
+    const number = SIGNALS[String(signal)];
+    if (number !== undefined) return number;
+    const error = new Error(`Unknown signal: ${signal}`);
+    error.code = "ERR_UNKNOWN_SIGNAL";
+    throw error;
+  };
   const processListeners = new Map();
   const addProcessListener = (event, listener, prepend = false) => {
     if (!processListeners.has(event)) processListeners.set(event, []);
@@ -535,11 +552,24 @@
     },
     nextTick,
     emitWarning,
+    kill: (pid, signal) => {
+      try {
+        ops.op_process_kill(pid | 0, signalNumber(signal));
+      } catch (error) {
+        const errno = Number(String(error.message).split("\0")[0]);
+        if (!Number.isInteger(errno)) throw error;
+        const { UVException } = internalErrors();
+        throw new UVException({ errno, syscall: "kill" });
+      }
+      return true;
+    },
     exit: (code) => {
-      const resolved = code === undefined
-        ? (exitCode === undefined ? 0 : exitCode)
-        : code | 0;
-      ops.op_process_exit(resolved);
+      if (exiting) return;
+      exiting = true;
+      if (code !== undefined) exitCode = code | 0;
+      const resolved = exitCode === undefined ? 0 : exitCode | 0;
+      process.emit("exit", resolved);
+      ops.op_process_exit(exitCode === undefined ? resolved : exitCode | 0);
     },
   };
 
@@ -553,6 +583,9 @@
   globalThis.process = process;
   __thinpack_on_finish(restoreTerminal);
   __thinpack_on_finish(() => {
+    if (exiting) return;
+    exiting = true;
+    process.emit("exit", exitCode === undefined ? 0 : exitCode | 0);
     if (exitCode !== undefined) {
       ops.op_process_exit(exitCode | 0);
     }
