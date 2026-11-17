@@ -66,9 +66,16 @@ fn atomics_wait_notify_across_threads() {
     let worker = std::thread::spawn(move || {
         let mut rt = JsRuntime::new(RuntimeOptions::default());
         install(&mut rt, &worker_store);
+        // Slot 0 is the wait word and stays 0; the notify is repeated until the
+        // waiter acknowledges on slot 1, so a notify that lands before the wait
+        // has started cannot turn the result into "not-equal" or lose the wakeup.
         rt.execute_script(
             "notify",
-            "Atomics.store(new Int32Array(sab), 0, 1); Atomics.notify(new Int32Array(sab), 0, 1);",
+            "const view = new Int32Array(sab);
+             for (;;) {
+               Atomics.notify(view, 0, 1);
+               if (Atomics.load(view, 1) === 1) break;
+             }",
         )
         .unwrap();
     });
@@ -76,7 +83,12 @@ fn atomics_wait_notify_across_threads() {
     let mut rt = JsRuntime::new(RuntimeOptions::default());
     install(&mut rt, &store);
     let status = rt
-        .execute_script("wait", "Atomics.wait(new Int32Array(sab), 0, 0, 5000)")
+        .execute_script(
+            "wait",
+            "const status = Atomics.wait(new Int32Array(sab), 0, 0, 5000);
+             Atomics.store(new Int32Array(sab), 1, 1);
+             status",
+        )
         .unwrap();
     let status = {
         let context = rt.main_context();
