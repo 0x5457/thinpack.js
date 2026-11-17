@@ -768,10 +768,24 @@ fn timespec(seconds: f64) -> libc::timespec {
     }
 }
 
+#[cfg(target_vendor = "apple")]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "macOS mode_t is u16; fchmod(2) only reads the low permission bits, and Node truncates the same way"
+)]
+fn fchmod_mode(mode: u32) -> libc::mode_t {
+    mode as libc::mode_t
+}
+
+#[cfg(not(target_vendor = "apple"))]
+fn fchmod_mode(mode: u32) -> libc::mode_t {
+    mode
+}
+
 #[op2(fast)]
 fn op_fs_fchmod(#[smi] fd: i32, #[smi] mode: u32) -> Result<(), JsErrorBox> {
     // SAFETY: fchmod(2) reads only the descriptor and the mode bits.
-    if unsafe { libc::fchmod(fd, mode) } == -1 {
+    if unsafe { libc::fchmod(fd, fchmod_mode(mode)) } == -1 {
         return Err(fs_error(io::Error::last_os_error()));
     }
     Ok(())
