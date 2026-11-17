@@ -192,9 +192,14 @@ and the feature blocks.
 
 ```sh
 cargo test
+cargo test -p thinpack-rt --test node   # Node.js compatibility suite
 cargo xtask gen --check   # are generated files stale?
 cargo xtask size          # build, strip, measure, record
 ```
+
+The compatibility suite ports Node.js' own tests unchanged and records known
+skips in `tests/node/config.toml`; see `tests/node/README.md` for the layout,
+filters (`cargo test ... -- path`) and the procedure for adding a module.
 
 ## Known limits
 

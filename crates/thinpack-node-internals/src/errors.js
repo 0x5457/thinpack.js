@@ -1,19 +1,104 @@
 (() => {
+  // Mirrors Node's `determineSpecificType`; error messages are part of the
+  // observable API, and the upstream tests assert them verbatim.
   const describe = (value) => {
     if (value === null) return "null";
+    if (value === undefined) return "undefined";
+
     const type = typeof value;
-    if (type === "undefined") return "undefined";
-    if (type === "object" || type === "function") {
-      const name = value.constructor && value.constructor.name;
-      return "an instance of " + (name || "Object");
+    switch (type) {
+      case "bigint":
+        return "type bigint (" + value + "n)";
+      case "number":
+        if (value === 0) return 1 / value === -Infinity ? "type number (-0)" : "type number (0)";
+        if (value !== value) return "type number (NaN)";
+        if (value === Infinity) return "type number (Infinity)";
+        if (value === -Infinity) return "type number (-Infinity)";
+        return "type number (" + value + ")";
+      case "boolean":
+        return value ? "type boolean (true)" : "type boolean (false)";
+      case "symbol":
+        return "type symbol (" + String(value) + ")";
+      case "function":
+        return "function " + value.name;
+      case "object": {
+        const name = value.constructor && value.constructor.name;
+        if (typeof name === "string" && name !== "") {
+          return "an instance of " + name;
+        }
+        return String(inspectValue(value, { depth: -1 }));
+      }
+      case "string": {
+        if (value.length > 28) value = value.slice(0, 25) + "...";
+        if (!value.includes("'")) return "type string ('" + value + "')";
+        return "type string (" + JSON.stringify(value) + ")";
+      }
+      default: {
+        let inspected = inspectValue(value);
+        if (inspected.length > 28) inspected = inspected.slice(0, 25) + "...";
+        return "type " + type + " (" + inspected + ")";
+      }
     }
-    return "type " + type + " (" + String(value) + ")";
   };
 
-  const formatExpected = (expected) =>
-    Array.isArray(expected) ? expected.join(" or ") : expected;
-  const inspectValue = (value) => {
-    let inspected = require("node:thinpack/internal/util/inspect").inspect(value);
+  const TYPES = new Set([
+    "string", "function", "number", "object", "Function", "Object",
+    "boolean", "bigint", "symbol",
+  ]);
+
+  const formatList = (list, type) => {
+    if (list.length === 0) return "";
+    if (list.length === 1) return String(list[0]);
+    if (list.length === 2) return list[0] + " " + type + " " + list[1];
+    return list.slice(0, -1).join(", ") + ", " + type + " " + list[list.length - 1];
+  };
+
+  const formatExpected = (expected) => {
+    const values = Array.isArray(expected) ? expected : [expected];
+    const types = [];
+    const instances = [];
+    const other = [];
+    for (const value of values) {
+      if (TYPES.has(value)) {
+        types.push(String(value).toLowerCase());
+      } else if (/^[A-Z][a-zA-Z0-9]*$/.test(value)) {
+        instances.push(value);
+      } else {
+        other.push(value);
+      }
+    }
+
+    if (instances.length > 0) {
+      const object = types.indexOf("object");
+      if (object !== -1) {
+        types.splice(object, 1);
+        instances.push("Object");
+      }
+    }
+
+    let message = "";
+    if (types.length > 0) {
+      message += (types.length > 1 ? "one of type " : "of type ") +
+        formatList(types, "or");
+      if (instances.length > 0 || other.length > 0) message += " or ";
+    }
+    if (instances.length > 0) {
+      message += "an instance of " + formatList(instances, "or");
+      if (other.length > 0) message += " or ";
+    }
+    if (other.length > 0) {
+      if (other.length > 1) {
+        message += "one of " + formatList(other, "or");
+      } else {
+        if (String(other[0]).toLowerCase() !== other[0]) message += "an ";
+        message += String(other[0]);
+      }
+    }
+    return message;
+  };
+
+  const inspectValue = (value, options) => {
+    let inspected = require("node:thinpack/internal/util/inspect").inspect(value, options);
     if (inspected.length > 128) inspected = inspected.slice(0, 128) + "...";
     return inspected;
   };
@@ -58,10 +143,15 @@
 
   class ERR_INVALID_ARG_TYPE extends TypeError {
     constructor(name, expected, actual) {
-      super(
-        'The "' + name + '" argument must be of type ' +
-          formatExpected(expected) + ". Received " + describe(actual),
-      );
+      let message;
+      if (name.endsWith(" argument")) {
+        message = "The " + name + " ";
+      } else {
+        const type = name.includes(".") ? "property" : "argument";
+        message = 'The "' + name + '" ' + type + " ";
+      }
+      super(message + "must be " + formatExpected(expected) +
+        ". Received " + describe(actual));
       this.code = "ERR_INVALID_ARG_TYPE";
     }
   }
@@ -89,18 +179,39 @@
   }
 
   class ERR_UNHANDLED_ERROR extends Error {
-    constructor(message) {
-      super(message);
+    constructor(error = undefined) {
+      super(error === undefined ? "Unhandled error." : "Unhandled error. (" + error + ")");
       this.code = "ERR_UNHANDLED_ERROR";
     }
   }
 
+  const addNumericalSeparator = (value) => {
+    let result = "";
+    let index = value.length;
+    const start = value[0] === "-" ? 1 : 0;
+    for (; index >= start + 4; index -= 3) {
+      result = "_" + value.slice(index - 3, index) + result;
+    }
+    return value.slice(0, index) + result;
+  };
+
   class ERR_OUT_OF_RANGE extends RangeError {
-    constructor(name, range, value) {
-      super(
-        'The value of "' + name + '" is out of range. It must be ' +
-          range + ". Received " + String(value),
-      );
+    constructor(name, range, value, replaceDefaultBoolean = false) {
+      let message = replaceDefaultBoolean ? name :
+        'The value of "' + name + '" is out of range.';
+      let received;
+      if (Number.isInteger(value) && Math.abs(value) > 2 ** 32) {
+        received = addNumericalSeparator(String(value));
+      } else if (typeof value === "bigint") {
+        received = String(value);
+        if (value > 2n ** 32n || value < -(2n ** 32n)) {
+          received = addNumericalSeparator(received);
+        }
+        received += "n";
+      } else {
+        received = inspectValue(value);
+      }
+      super(message + " It must be " + range + ". Received " + received);
       this.code = "ERR_OUT_OF_RANGE";
     }
   }

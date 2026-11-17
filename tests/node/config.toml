@@ -1,0 +1,1331 @@
+# Node.js compatibility suite manifest.
+#
+# Each key is a file under `tests/node/compat/test`, copied from Node.js'
+# `test/` directory. `module` groups the test for filtering and reporting;
+# `ignore` records why a ported test does not run yet. An ignored test is still
+# part of the suite: `cargo test ... -- --ignored` runs it, and the reason is
+# printed by `--list`.
+#
+# The runner refuses to start when a `test-*` file under `parallel/` is missing
+# here, so copying a test is never enough on its own.
+
+
+# --- cluster ---
+
+[tests."parallel/test-cluster-basic.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-bind-privileged-port.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-call-and-destroy.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-child-index-net.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-concurrent-disconnect.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-cwd.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-disconnect-before-exit.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-disconnect-exitedAfterDisconnect-race.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-disconnect-idle-worker.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-disconnect-leak.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-disconnect-race.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-disconnect-unshared-tcp.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-disconnect-with-no-workers.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-disconnect.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-fork-env.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-invalid-message.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-ipc-throw.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-kill-disconnect.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-kill-infinite-loop.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-listening-port.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-message.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-net-listen-ipv6only-false.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-net-listen.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-process-disconnect.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-server-restart-none.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-setup-primary-argv.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-setup-primary-cumulative.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-setup-primary-emit.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-setup-primary-multiple.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-setup-primary.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-shared-handle-bind-privileged-port.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-worker-constructor.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-worker-death.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-worker-destroy.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-worker-disconnect-on-error.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-worker-disconnect.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-worker-events.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-worker-exit.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-worker-forced-exit.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-worker-init.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-worker-isconnected.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-worker-isdead.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-worker-kill-signal.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-worker-kill.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-worker-no-exit.js"]
+module = "cluster"
+
+[tests."parallel/test-cluster-worker-wait-server-close.js"]
+module = "cluster"
+
+# --- path ---
+
+[tests."parallel/test-path-basename.js"]
+module = "path"
+
+[tests."parallel/test-path-dirname.js"]
+module = "path"
+
+[tests."parallel/test-path-extname.js"]
+module = "path"
+
+[tests."parallel/test-path-glob.js"]
+module = "path"
+
+[tests."parallel/test-path-isabsolute.js"]
+module = "path"
+
+[tests."parallel/test-path-join.js"]
+module = "path"
+
+[tests."parallel/test-path-makelong.js"]
+module = "path"
+
+[tests."parallel/test-path-normalize.js"]
+module = "path"
+
+[tests."parallel/test-path-parse-format.js"]
+module = "path"
+
+[tests."parallel/test-path-posix-exists.js"]
+module = "path"
+
+[tests."parallel/test-path-posix-relative-on-windows.js"]
+module = "path"
+
+[tests."parallel/test-path-relative.js"]
+module = "path"
+
+[tests."parallel/test-path-resolve.js"]
+module = "path"
+
+[tests."parallel/test-path-win32-exists.js"]
+module = "path"
+
+[tests."parallel/test-path-win32-normalize-device-names.js"]
+module = "path"
+
+[tests."parallel/test-path-zero-length-strings.js"]
+module = "path"
+
+[tests."parallel/test-path.js"]
+module = "path"
+
+# --- querystring ---
+
+[tests."parallel/test-querystring-escape.js"]
+module = "querystring"
+
+[tests."parallel/test-querystring-maxKeys-non-finite.js"]
+module = "querystring"
+
+[tests."parallel/test-querystring-multichar-separator.js"]
+module = "querystring"
+
+[tests."parallel/test-querystring.js"]
+module = "querystring"
+ignore = "requires vm.runInNewContext, which the vm module does not implement yet"
+
+# --- events ---
+
+[tests."parallel/test-event-capture-rejections.js"]
+module = "events"
+ignore = "async listener rejections are not routed through captureRejections; the rejection terminates the process"
+
+[tests."parallel/test-event-emitter-add-listeners.js"]
+module = "events"
+
+[tests."parallel/test-event-emitter-check-listener-leaks.js"]
+module = "events"
+
+[tests."parallel/test-event-emitter-emit-context.js"]
+module = "events"
+
+[tests."parallel/test-event-emitter-error-monitor.js"]
+module = "events"
+
+[tests."parallel/test-event-emitter-errors.js"]
+module = "events"
+
+[tests."parallel/test-event-emitter-get-max-listeners.js"]
+module = "events"
+
+[tests."parallel/test-event-emitter-invalid-listener.js"]
+module = "events"
+
+[tests."parallel/test-event-emitter-listener-count.js"]
+module = "events"
+
+[tests."parallel/test-event-emitter-listeners-side-effects.js"]
+module = "events"
+
+[tests."parallel/test-event-emitter-listeners.js"]
+module = "events"
+
+[tests."parallel/test-event-emitter-max-listeners-warning-for-null.js"]
+module = "events"
+
+[tests."parallel/test-event-emitter-max-listeners-warning-for-symbol.js"]
+module = "events"
+
+[tests."parallel/test-event-emitter-max-listeners-warning.js"]
+module = "events"
+
+[tests."parallel/test-event-emitter-max-listeners.js"]
+module = "events"
+
+[tests."parallel/test-event-emitter-method-names.js"]
+module = "events"
+
+[tests."parallel/test-event-emitter-modify-in-emit.js"]
+module = "events"
+
+[tests."parallel/test-event-emitter-no-error-provided-to-error-event.js"]
+module = "events"
+ignore = "requires the domain module, which thinpack does not implement"
+
+[tests."parallel/test-event-emitter-num-args.js"]
+module = "events"
+
+[tests."parallel/test-event-emitter-once.js"]
+module = "events"
+
+[tests."parallel/test-event-emitter-prepend.js"]
+module = "events"
+
+[tests."parallel/test-event-emitter-remove-all-listeners.js"]
+module = "events"
+
+[tests."parallel/test-event-emitter-remove-listeners.js"]
+module = "events"
+
+[tests."parallel/test-event-emitter-set-max-listeners-side-effects.js"]
+module = "events"
+
+[tests."parallel/test-event-emitter-special-event-names.js"]
+module = "events"
+
+[tests."parallel/test-event-emitter-subclass.js"]
+module = "events"
+
+[tests."parallel/test-event-emitter-symbols.js"]
+module = "events"
+
+[tests."parallel/test-event-target.js"]
+module = "events"
+
+[tests."parallel/test-eventemitter-asyncresource.js"]
+module = "events"
+ignore = "asserts V8's private-field error message; QuickJS reports a different one"
+
+[tests."parallel/test-events-add-abort-listener.mjs"]
+module = "events"
+ignore = "uses node:test, which thinpack does not implement"
+
+[tests."parallel/test-events-customevent.js"]
+module = "events"
+ignore = "requires Node's internal event_target module"
+
+[tests."parallel/test-events-getmaxlisteners.js"]
+module = "events"
+
+[tests."parallel/test-events-list.js"]
+module = "events"
+
+[tests."parallel/test-events-listener-count-with-listener.js"]
+module = "events"
+
+[tests."parallel/test-events-on-async-iterator.js"]
+module = "events"
+ignore = "requires Node's internal event_target module"
+
+[tests."parallel/test-events-once.js"]
+module = "events"
+ignore = "AbortSignal dispatches a plain object instead of an Event, so stopImmediatePropagation is unavailable"
+
+[tests."parallel/test-events-static-geteventlisteners.js"]
+module = "events"
+ignore = "requires Node's internal event_target module"
+
+[tests."parallel/test-events-uncaught-exception-stack.js"]
+module = "events"
+ignore = "process.on('uncaughtException') is not invoked for an unhandled 'error' event"
+
+[tests."parallel/test-eventsource-disabled.js"]
+module = "events"
+
+[tests."parallel/test-eventsource.js"]
+module = "events"
+ignore = "the EventSource global is not implemented"
+
+[tests."parallel/test-eventtarget-brandcheck.js"]
+module = "events"
+ignore = "requires Node's internal event_target module"
+
+[tests."parallel/test-eventtarget-custom-inspect-does-not-throw.js"]
+module = "events"
+
+[tests."parallel/test-eventtarget-memoryleakwarning.js"]
+module = "events"
+ignore = "requires Node's internal event_target module"
+
+[tests."parallel/test-eventtarget-once-twice.js"]
+module = "events"
+
+[tests."parallel/test-eventtarget.js"]
+module = "events"
+ignore = "requires Node's internal event_target module"
+
+# --- os ---
+
+[tests."parallel/test-os-checked-function.js"]
+module = "os"
+ignore = "requires Node's internal test binding"
+
+[tests."parallel/test-os-constants-signals.js"]
+module = "os"
+ignore = "uses node:test, which thinpack does not implement"
+
+[tests."parallel/test-os-eol.js"]
+module = "os"
+
+[tests."parallel/test-os-fast.js"]
+module = "os"
+ignore = "requires Node's internal test binding"
+
+[tests."parallel/test-os-homedir-no-envvar.js"]
+module = "os"
+
+[tests."parallel/test-os-process-priority.js"]
+module = "os"
+ignore = "os.constants.priority, os.getPriority and os.setPriority are not implemented"
+
+[tests."parallel/test-os-userinfo-handles-getter-errors.js"]
+module = "os"
+ignore = "os.userInfo ignores its options, so the getter-error path is unreachable"
+
+[tests."parallel/test-os.js"]
+module = "os"
+ignore = "os.constants.priority is not implemented"
+
+# --- string_decoder ---
+
+[tests."parallel/test-string-decoder-end.js"]
+module = "string_decoder"
+ignore = "base64 and base64url decoding does not carry incomplete groups between write() calls"
+
+[tests."parallel/test-string-decoder-fuzz.js"]
+module = "string_decoder"
+ignore = "base64 and base64url fuzz inputs decode to empty strings"
+
+[tests."parallel/test-string-decoder-utf8-large.js"]
+module = "string_decoder"
+
+[tests."parallel/test-string-decoder.js"]
+module = "string_decoder"
+ignore = "StringDecoder does not report lastNeed/lastTotal while buffering an incomplete UTF-8 sequence"
+
+# --- buffer ---
+
+[tests."parallel/test-buffer-alloc-alignment.js"]
+module = "buffer"
+ignore = "requires Node's internal test binding"
+
+[tests."parallel/test-buffer-alloc-unsafe-is-initialized-with-zero-fill-flag.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-alloc-unsafe-is-uninitialized.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-alloc.js"]
+module = "buffer"
+ignore = "QuickJS reports an invalid typed array length differently from V8"
+
+[tests."parallel/test-buffer-arraybuffer.js"]
+module = "buffer"
+ignore = "Buffer.from(ArrayBuffer subclass) throws the engine error instead of ERR_INVALID_ARG_TYPE"
+
+[tests."parallel/test-buffer-ascii.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-backing-arraybuffer.js"]
+module = "buffer"
+ignore = "requires Node's internal test binding"
+
+[tests."parallel/test-buffer-badhex.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-bigint64.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-bytelength.js"]
+module = "buffer"
+ignore = "requires vm.runInNewContext, which is not implemented"
+
+[tests."parallel/test-buffer-compare-offset.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-compare.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-concat.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-constants.js"]
+module = "buffer"
+ignore = "String.prototype.repeat does not throw for kStringMaxLength + 1"
+
+[tests."parallel/test-buffer-constructor-deprecation-error.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-constructor-node-modules-paths.js"]
+module = "buffer"
+ignore = "spawns the runtime with Node command-line flags (-p) that thinpack does not parse"
+
+[tests."parallel/test-buffer-constructor-node-modules.js"]
+module = "buffer"
+ignore = "spawns the runtime with Node command-line flags (-p) that thinpack does not parse"
+
+[tests."parallel/test-buffer-constructor-outside-node-modules.js"]
+module = "buffer"
+ignore = "requires vm.runInNewContext, which is not implemented"
+
+[tests."parallel/test-buffer-copy-immutable.js"]
+module = "buffer"
+ignore = "Buffer.copy writes into an immutable backing store instead of treating the copy as a no-op"
+
+[tests."parallel/test-buffer-copy.js"]
+module = "buffer"
+ignore = "Buffer.copy mishandles overlapping ranges with non-zero target offsets"
+
+[tests."parallel/test-buffer-equals.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-failed-alloc-typed-arrays.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-fakes.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-fill.js"]
+module = "buffer"
+ignore = "requires Node's internal errors module"
+
+[tests."parallel/test-buffer-from.js"]
+module = "buffer"
+ignore = "requires vm.runInNewContext, which is not implemented"
+
+[tests."parallel/test-buffer-generic-methods.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-includes.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-indexof.js"]
+module = "buffer"
+ignore = "Buffer.indexOf with a UTF-16 needle and a start offset returns -1 instead of 4"
+
+[tests."parallel/test-buffer-inheritance.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-inspect.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-isascii.js"]
+module = "buffer"
+ignore = "requires structuredClone with a transfer list"
+
+[tests."parallel/test-buffer-isencoding.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-islatin1.js"]
+module = "buffer"
+ignore = "the buffer binding does not implement bindingIsLatin1"
+
+[tests."parallel/test-buffer-isutf8-isascii-fast.js"]
+module = "buffer"
+ignore = "the buffer binding does not implement bindingIsLatin1"
+
+[tests."parallel/test-buffer-isutf8.js"]
+module = "buffer"
+ignore = "requires structuredClone with a transfer list"
+
+[tests."parallel/test-buffer-iterator.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-new.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-no-negative-allocation.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-nopendingdep-map.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-of-no-deprecation.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-over-max-length.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-parent-property.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-pending-deprecation.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-pool-untransferable.js"]
+module = "buffer"
+ignore = "transferring a pooled ArrayBuffer through postMessage does not throw DataCloneError"
+
+[tests."parallel/test-buffer-prototype-inspect.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-read.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-readdouble.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-readfloat.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-readint.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-readuint.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-resizable.js"]
+module = "buffer"
+ignore = "uses node:test, which thinpack does not implement"
+
+[tests."parallel/test-buffer-safe-unsafe.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-set-inspect-max-bytes.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-sharedarraybuffer.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-slice.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-slow.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-stringlength.js"]
+module = "buffer"
+ignore = "the buffer binding does not implement bindingStringLengthUtf8"
+
+[tests."parallel/test-buffer-swap-fast.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-swap.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-tojson.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-tostring-4gb.js"]
+module = "buffer"
+ignore = "QuickJS typed arrays cannot allocate 4 GB"
+
+[tests."parallel/test-buffer-tostring-range.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-tostring-rangeerror.js"]
+module = "buffer"
+ignore = "times out while allocating and stringifying kStringMaxLength"
+
+[tests."parallel/test-buffer-tostring.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-write-fast.js"]
+module = "buffer"
+ignore = "requires Node's internal test binding"
+
+[tests."parallel/test-buffer-write-utf8-two-byte.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-write.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-writedouble.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-writefloat.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-writeint.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-writeuint.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-zero-fill-cli.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-zero-fill-reset.js"]
+module = "buffer"
+
+[tests."parallel/test-buffer-zero-fill.js"]
+module = "buffer"
+
+# --- url ---
+
+[tests."parallel/test-url-domain-ascii-unicode.js"]
+module = "url"
+ignore = "uses node:test, which thinpack does not implement"
+
+[tests."parallel/test-url-fileurltopath.js"]
+module = "url"
+ignore = "uses node:test, which thinpack does not implement"
+
+[tests."parallel/test-url-format-invalid-input.js"]
+module = "url"
+ignore = "uses node:test, which thinpack does not implement"
+
+[tests."parallel/test-url-format-whatwg.js"]
+module = "url"
+ignore = "uses node:test, which thinpack does not implement"
+
+[tests."parallel/test-url-format.js"]
+module = "url"
+ignore = "uses node:test, which thinpack does not implement"
+
+[tests."parallel/test-url-invalid-file-url-path-input.js"]
+module = "url"
+
+[tests."parallel/test-url-is-url-internal.js"]
+module = "url"
+ignore = "requires Node's internal url module"
+
+[tests."parallel/test-url-parse-deprecation.js"]
+module = "url"
+ignore = "Node suppresses deprecation warnings raised inside node_modules; thinpack does not"
+
+[tests."parallel/test-url-parse-format.js"]
+module = "url"
+ignore = "uses node:test, which thinpack does not implement"
+
+[tests."parallel/test-url-parse-invalid-input.js"]
+module = "url"
+ignore = "url.parse accepts input that Node rejects with ERR_INVALID_URL"
+
+[tests."parallel/test-url-parse-query.js"]
+module = "url"
+
+[tests."parallel/test-url-pathtofileurl.js"]
+module = "url"
+ignore = "pathToFileURL drops a trailing slash"
+
+[tests."parallel/test-url-relative.js"]
+module = "url"
+
+[tests."parallel/test-url-revokeobjecturl.js"]
+module = "url"
+ignore = "URL.revokeObjectURL is not implemented"
+
+[tests."parallel/test-url-urltooptions.js"]
+module = "url"
+ignore = "urlToHttpOptions reports a different ERR_INVALID_ARG_TYPE message"
+
+[tests."parallel/test-urlpattern-invalidthis.js"]
+module = "url"
+ignore = "URLPattern is not implemented"
+
+[tests."parallel/test-urlpattern-types.js"]
+module = "url"
+ignore = "URLPattern is not implemented"
+
+[tests."parallel/test-urlpattern.js"]
+module = "url"
+ignore = "URLPattern is not implemented"
+
+# --- util ---
+
+[tests."parallel/test-util-callbackify.js"]
+module = "util"
+ignore = "stack frames from child processes do not match Node's format"
+
+[tests."parallel/test-util-convert-signal-to-exit-code.mjs"]
+module = "util"
+ignore = "convertProcessSignalToExitCode throws ERR_UNKNOWN_SIGNAL where Node throws ERR_INVALID_ARG_VALUE"
+
+[tests."parallel/test-util-debounce.js"]
+module = "util"
+ignore = "requires Node's internal timers module"
+
+[tests."parallel/test-util-deprecate-invalid-code.js"]
+module = "util"
+
+[tests."parallel/test-util-deprecate.js"]
+module = "util"
+ignore = "requires Node's internal util module"
+
+[tests."parallel/test-util-emit-experimental-warning.js"]
+module = "util"
+ignore = "requires Node's internal util module"
+
+[tests."parallel/test-util-exception-with-host-port.js"]
+module = "util"
+
+[tests."parallel/test-util-format.js"]
+module = "util"
+ignore = "util.format output differs from Node"
+
+[tests."parallel/test-util-getcallsites-preparestacktrace.js"]
+module = "util"
+ignore = "util.getCallSites does not honor prepareStackTrace the way Node does"
+
+[tests."parallel/test-util-getcallsites-sourcemap.js"]
+module = "util"
+ignore = "requires Node's internal source map cache"
+
+[tests."parallel/test-util-getcallsites.js"]
+module = "util"
+
+[tests."parallel/test-util-inherits.js"]
+module = "util"
+
+[tests."parallel/test-util-inspect-getters-accessing-this.js"]
+module = "util"
+
+[tests."parallel/test-util-inspect-long-running.js"]
+module = "util"
+
+[tests."parallel/test-util-inspect-namespace.js"]
+module = "util"
+ignore = "requires vm.Module, which is not implemented"
+
+[tests."parallel/test-util-inspect-proxy.js"]
+module = "util"
+ignore = "requires Node's internal test binding"
+
+[tests."parallel/test-util-inspect-regexp.js"]
+module = "util"
+
+[tests."parallel/test-util-inspect.js"]
+module = "util"
+ignore = "requires Node's internal test binding"
+
+[tests."parallel/test-util-internal.js"]
+module = "util"
+ignore = "requires Node's internal test binding"
+
+[tests."parallel/test-util-isDeepStrictEqual.js"]
+module = "util"
+ignore = "uses node:test, which thinpack does not implement"
+
+[tests."parallel/test-util-isPartialDeepStrictEqual.js"]
+module = "util"
+ignore = "uses node:test, which thinpack does not implement"
+
+[tests."parallel/test-util-parse-env.js"]
+module = "util"
+ignore = "util.parseEnv is not implemented"
+
+[tests."parallel/test-util-primordial-monkeypatching.js"]
+module = "util"
+
+[tests."parallel/test-util-promisify-custom-names.mjs"]
+module = "util"
+ignore = "promisified functions do not preserve the custom name"
+
+[tests."parallel/test-util-promisify.js"]
+module = "util"
+ignore = "requires Node's internal util module"
+
+[tests."parallel/test-util-sleep.js"]
+module = "util"
+ignore = "requires Node's internal util module"
+
+[tests."parallel/test-util-stripvtcontrolcharacters.js"]
+module = "util"
+ignore = "uses node:test, which thinpack does not implement"
+
+[tests."parallel/test-util-styletext-hex.js"]
+module = "util"
+ignore = "uses node:test, which thinpack does not implement"
+
+[tests."parallel/test-util-styletext.js"]
+module = "util"
+
+[tests."parallel/test-util-text-decoder.js"]
+module = "util"
+ignore = "uses node:test, which thinpack does not implement"
+
+[tests."parallel/test-util-throttle-timing.js"]
+module = "util"
+ignore = "uses node:test, which thinpack does not implement"
+
+[tests."parallel/test-util-throttle.js"]
+module = "util"
+ignore = "requires Node's internal util and timers modules"
+
+[tests."parallel/test-util-types-exists.js"]
+module = "util"
+
+[tests."parallel/test-util-types.js"]
+module = "util"
+ignore = "requires Node's internal test binding"
+
+# --- cluster (unsupported shapes) ---
+
+[tests."parallel/test-cluster-accept-fail.js"]
+module = "cluster"
+ignore = "uses cluster internals and primary-side handle distribution"
+
+[tests."parallel/test-cluster-advanced-serialization.js"]
+module = "cluster"
+ignore = "only serialization: 'json' is supported"
+
+[tests."parallel/test-cluster-bind-twice.js"]
+module = "cluster"
+ignore = "requires child_process.fork, which is not implemented"
+
+[tests."parallel/test-cluster-child-index-dgram.js"]
+module = "cluster"
+ignore = "dgram is not implemented"
+
+[tests."parallel/test-cluster-dgram-1.js"]
+module = "cluster"
+ignore = "dgram is not implemented"
+
+[tests."parallel/test-cluster-dgram-2.js"]
+module = "cluster"
+ignore = "dgram is not implemented"
+
+[tests."parallel/test-cluster-dgram-bind-fd.js"]
+module = "cluster"
+ignore = "dgram is not implemented"
+
+[tests."parallel/test-cluster-dgram-ipv6only.js"]
+module = "cluster"
+ignore = "dgram is not implemented"
+
+[tests."parallel/test-cluster-dgram-reuse.js"]
+module = "cluster"
+ignore = "dgram is not implemented"
+
+[tests."parallel/test-cluster-dgram-reuseport.js"]
+module = "cluster"
+ignore = "dgram is not implemented"
+
+[tests."parallel/test-cluster-disconnect-unshared-udp.js"]
+module = "cluster"
+ignore = "dgram is not implemented"
+
+[tests."parallel/test-cluster-eaccess.js"]
+module = "cluster"
+ignore = "UNIX-domain socket sharing is not supported"
+
+[tests."parallel/test-cluster-eaddrinuse.js"]
+module = "cluster"
+ignore = "requires child_process.fork, which is not implemented"
+
+[tests."parallel/test-cluster-fork-stdio.js"]
+module = "cluster"
+ignore = "custom fork stdio is not supported"
+
+[tests."parallel/test-cluster-fork-windowsHide.js"]
+module = "cluster"
+ignore = "requires child_process.fork, which is not implemented"
+
+[tests."parallel/test-cluster-http-pipe.js"]
+module = "cluster"
+ignore = "UNIX-domain socket sharing is not supported"
+
+[tests."parallel/test-cluster-listen-pipe-readable-writable.js"]
+module = "cluster"
+ignore = "UNIX-domain socket sharing is not supported"
+
+[tests."parallel/test-cluster-net-listen-backlog.js"]
+module = "cluster"
+ignore = "round-robin scheduling and primary-side handle distribution are not supported"
+
+[tests."parallel/test-cluster-net-listen-relative-path.js"]
+module = "cluster"
+ignore = "UNIX-domain socket sharing is not supported"
+
+[tests."parallel/test-cluster-net-reuseport.js"]
+module = "cluster"
+ignore = "round-robin scheduling and primary-side handle distribution are not supported"
+
+[tests."parallel/test-cluster-net-send.js"]
+module = "cluster"
+ignore = "handle passing and shared server handles are not supported"
+
+[tests."parallel/test-cluster-net-server-drop-connection.js"]
+module = "cluster"
+ignore = "UNIX-domain socket sharing is not supported"
+
+[tests."parallel/test-cluster-primary-error.js"]
+module = "cluster"
+ignore = "requires child_process.fork, which is not implemented"
+
+[tests."parallel/test-cluster-primary-kill.js"]
+module = "cluster"
+ignore = "requires child_process.fork, which is not implemented"
+
+[tests."parallel/test-cluster-rr-domain-listen.js"]
+module = "cluster"
+ignore = "round-robin scheduling and primary-side handle distribution are not supported"
+
+[tests."parallel/test-cluster-rr-handle-close.js"]
+module = "cluster"
+ignore = "round-robin scheduling and primary-side handle distribution are not supported"
+
+[tests."parallel/test-cluster-rr-handle-keep-loop-alive.js"]
+module = "cluster"
+ignore = "round-robin scheduling and primary-side handle distribution are not supported"
+
+[tests."parallel/test-cluster-rr-handle-ref-unref.js"]
+module = "cluster"
+ignore = "round-robin scheduling and primary-side handle distribution are not supported"
+
+[tests."parallel/test-cluster-rr-ref.js"]
+module = "cluster"
+ignore = "round-robin scheduling and primary-side handle distribution are not supported"
+
+[tests."parallel/test-cluster-send-deadlock.js"]
+module = "cluster"
+ignore = "handle passing and shared server handles are not supported"
+
+[tests."parallel/test-cluster-send-handle-twice.js"]
+module = "cluster"
+ignore = "handle passing and shared server handles are not supported"
+
+[tests."parallel/test-cluster-send-socket-to-worker-http-server.js"]
+module = "cluster"
+ignore = "handle passing and shared server handles are not supported"
+
+[tests."parallel/test-cluster-server-restart-rr.js"]
+module = "cluster"
+ignore = "round-robin scheduling and primary-side handle distribution are not supported"
+
+[tests."parallel/test-cluster-shared-handle-bind-error.js"]
+module = "cluster"
+ignore = "handle passing and shared server handles are not supported"
+
+[tests."parallel/test-cluster-shared-leak.js"]
+module = "cluster"
+ignore = "handle passing and shared server handles are not supported"
+
+[tests."parallel/test-cluster-uncaught-exception.js"]
+module = "cluster"
+ignore = "requires child_process.fork, which is not implemented"
+
+[tests."parallel/test-cluster-worker-handle-close.js"]
+module = "cluster"
+ignore = "handle passing and shared server handles are not supported"
+
+[tests."parallel/test-util.js"]
+module = "util"
+ignore = "requires Node's internal errors module"
+
+# --- timers ---
+
+[tests."parallel/test-timers-api-refs.js"]
+module = "timers"
+
+[tests."parallel/test-timers-args.js"]
+module = "timers"
+
+[tests."parallel/test-timers-async-store-leak.js"]
+module = "timers"
+ignore = "requires Node's internal timers module"
+
+[tests."parallel/test-timers-clear-null-does-not-throw-error.js"]
+module = "timers"
+
+[tests."parallel/test-timers-clear-object-does-not-throw-error.js"]
+module = "timers"
+ignore = "clearTimeout throws on a non-timer object instead of ignoring it"
+
+[tests."parallel/test-timers-clear-timeout-interval-equivalent.js"]
+module = "timers"
+
+[tests."parallel/test-timers-clearImmediate-als.js"]
+module = "timers"
+ignore = "clearImmediate does not preserve the AsyncLocalStorage store"
+
+[tests."parallel/test-timers-clearImmediate.js"]
+module = "timers"
+
+[tests."parallel/test-timers-destroyed.js"]
+module = "timers"
+
+[tests."parallel/test-timers-dispose.js"]
+module = "timers"
+ignore = "Symbol.dispose is not implemented for timers"
+
+[tests."parallel/test-timers-fast-calls.js"]
+module = "timers"
+ignore = "requires Node's internal test binding"
+
+[tests."parallel/test-timers-immediate-promisified.js"]
+module = "timers"
+ignore = "requires Node's internal event_target module"
+
+[tests."parallel/test-timers-immediate-queue-throw.js"]
+module = "timers"
+ignore = "requires the domain module, which thinpack does not implement"
+
+[tests."parallel/test-timers-immediate-queue.js"]
+module = "timers"
+ignore = "requires Node's internal test binding"
+
+[tests."parallel/test-timers-immediate-unref-nested-once.js"]
+module = "timers"
+
+[tests."parallel/test-timers-immediate-unref-simple.js"]
+module = "timers"
+
+[tests."parallel/test-timers-immediate-unref.js"]
+module = "timers"
+ignore = "immediate objects do not implement hasRef()"
+
+[tests."parallel/test-timers-immediate.js"]
+module = "timers"
+
+[tests."parallel/test-timers-interval-promisified.js"]
+module = "timers"
+ignore = "requires Node's internal event_target module"
+
+[tests."parallel/test-timers-interval-throw.js"]
+module = "timers"
+ignore = "uncaught exceptions thrown from interval callbacks are not reported the way Node does"
+
+[tests."parallel/test-timers-invalid-clear.js"]
+module = "timers"
+
+[tests."parallel/test-timers-linked-list.js"]
+module = "timers"
+ignore = "requires Node's internal linkedlist module"
+
+[tests."parallel/test-timers-max-duration-warning.js"]
+module = "timers"
+
+[tests."parallel/test-timers-nan-duration-emit-once-per-process.js"]
+module = "timers"
+
+[tests."parallel/test-timers-nan-duration-warning-promises.js"]
+module = "timers"
+
+[tests."parallel/test-timers-nan-duration-warning.js"]
+module = "timers"
+ignore = "setTimeout does not emit TimeoutNaNWarning"
+
+[tests."parallel/test-timers-negative-duration-warning-emit-once-per-process.js"]
+module = "timers"
+
+[tests."parallel/test-timers-negative-duration-warning.js"]
+module = "timers"
+ignore = "setTimeout does not emit TimeoutNegativeWarning"
+
+[tests."parallel/test-timers-nested.js"]
+module = "timers"
+ignore = "requires Node's internal util module"
+
+[tests."parallel/test-timers-next-tick.js"]
+module = "timers"
+ignore = "requires Node's internal util module"
+
+[tests."parallel/test-timers-non-integer-delay.js"]
+module = "timers"
+
+[tests."parallel/test-timers-not-emit-duration-zero.js"]
+module = "timers"
+
+[tests."parallel/test-timers-now.js"]
+module = "timers"
+ignore = "requires Node's internal test binding"
+
+[tests."parallel/test-timers-ordering.js"]
+module = "timers"
+ignore = "requires Node's internal test binding"
+
+[tests."parallel/test-timers-process-tampering.js"]
+module = "timers"
+
+[tests."parallel/test-timers-promises-scheduler.js"]
+module = "timers"
+ignore = "scheduler ordering differs from Node"
+
+[tests."parallel/test-timers-promises.js"]
+module = "timers"
+ignore = "uses node:test, which thinpack does not implement"
+
+[tests."parallel/test-timers-refresh-in-callback.js"]
+module = "timers"
+
+[tests."parallel/test-timers-refresh.js"]
+module = "timers"
+ignore = "requires Node's internal timers module"
+
+[tests."parallel/test-timers-reset-process-domain-on-throw.js"]
+module = "timers"
+ignore = "requires the domain module, which thinpack does not implement"
+
+[tests."parallel/test-timers-same-timeout-wrong-list-deleted.js"]
+module = "timers"
+
+[tests."parallel/test-timers-setimmediate-infinite-loop.js"]
+module = "timers"
+
+[tests."parallel/test-timers-socket-timeout-removes-other-socket-unref-timer.js"]
+module = "timers"
+ignore = "times out on the socket timeout and unref timer interaction"
+
+[tests."parallel/test-timers-this.js"]
+module = "timers"
+ignore = "the callback this value is not the Timeout object"
+
+[tests."parallel/test-timers-throw-when-cb-not-function.js"]
+module = "timers"
+
+[tests."parallel/test-timers-timeout-promisified.js"]
+module = "timers"
+ignore = "requires Node's internal event_target module"
+
+[tests."parallel/test-timers-timeout-to-interval.js"]
+module = "timers"
+
+[tests."parallel/test-timers-timeout-with-non-integer.js"]
+module = "timers"
+
+[tests."parallel/test-timers-to-primitive.js"]
+module = "timers"
+ignore = "timer objects lack Symbol.toPrimitive handling"
+
+[tests."parallel/test-timers-uncaught-exception.js"]
+module = "timers"
+ignore = "timer callbacks that throw are not reported through process.on('uncaughtException')"
+
+[tests."parallel/test-timers-unenroll-unref-interval.js"]
+module = "timers"
+ignore = "interval objects do not implement close()"
+
+[tests."parallel/test-timers-unref-throw-then-ref.js"]
+module = "timers"
+ignore = "unref and ref around a throwing callback differ from Node"
+
+[tests."parallel/test-timers-unref.js"]
+module = "timers"
+ignore = "timer objects do not implement hasRef()"
+
+[tests."parallel/test-timers-unrefd-interval-still-fires.js"]
+module = "timers"
+
+[tests."parallel/test-timers-unrefed-in-beforeexit.js"]
+module = "timers"
+
+[tests."parallel/test-timers-unrefed-in-callback.js"]
+module = "timers"
+
+[tests."parallel/test-timers-user-call.js"]
+module = "timers"
+
+[tests."parallel/test-timers-zero-timeout.js"]
+module = "timers"
+
+[tests."parallel/test-timers.js"]
+module = "timers"
+ignore = "times out after 30 seconds while exercising timer ordering"
+
+# --- console ---
+
+[tests."parallel/test-console-assign-undefined.js"]
+module = "console"
+
+[tests."parallel/test-console-async-write-error.js"]
+module = "console"
+
+[tests."parallel/test-console-clear.js"]
+module = "console"
+ignore = "console.clear output differs from Node"
+
+[tests."parallel/test-console-count.js"]
+module = "console"
+ignore = "console.count output differs from Node"
+
+[tests."parallel/test-console-diagnostics-channels.js"]
+module = "console"
+
+[tests."parallel/test-console-formatTime.js"]
+module = "console"
+ignore = "requires Node's internal debuglog module"
+
+[tests."parallel/test-console-group.js"]
+module = "console"
+ignore = "console.group output differs from Node"
+
+[tests."parallel/test-console-instance.js"]
+module = "console"
+ignore = "the Console constructor does not throw for invalid options"
+
+[tests."parallel/test-console-issue-43095.js"]
+module = "console"
+ignore = "console does not handle revoked proxies like Node"
+
+[tests."parallel/test-console-log-stdio-broken-dest.js"]
+module = "console"
+
+[tests."parallel/test-console-log-throw-primitive.js"]
+module = "console"
+ignore = "throwing a primitive from console.log terminates the process"
+
+[tests."parallel/test-console-methods.js"]
+module = "console"
+ignore = "console formatting differs from Node"
+
+[tests."parallel/test-console-no-swallow-stack-overflow.js"]
+module = "console"
+ignore = "a stack overflow inside console is not surfaced as RangeError"
+
+[tests."parallel/test-console-not-call-toString.js"]
+module = "console"
+
+[tests."parallel/test-console-self-assign.js"]
+module = "console"
+
+[tests."parallel/test-console-stdio-setters.js"]
+module = "console"
+
+[tests."parallel/test-console-sync-write-error.js"]
+module = "console"
+
+[tests."parallel/test-console-table.js"]
+module = "console"
+ignore = "console.table does not validate its arguments like Node"
+
+[tests."parallel/test-console-tty-colors-per-stream.js"]
+module = "console"
+ignore = "console color detection differs from Node"
+
+[tests."parallel/test-console-tty-colors.js"]
+module = "console"
+ignore = "console color detection differs from Node"
+
+[tests."parallel/test-console-with-frozen-intrinsics.js"]
+module = "console"
+ignore = "console.dirxml is not implemented"
+
+[tests."parallel/test-console.js"]
+module = "console"
+ignore = "console formatting differs from Node"
+
+# --- tty ---
+
+[tests."parallel/test-tty-backwards-api.js"]
+module = "tty"
+ignore = "requires Node's internal test binding"
+
+[tests."parallel/test-tty-stdin-end.js"]
+module = "tty"
+ignore = "process.stdin is not an EventEmitter"
+
+[tests."parallel/test-tty-stdin-pipe.js"]
+module = "tty"
+
+[tests."parallel/test-ttywrap-invalid-fd.js"]
+module = "tty"
+ignore = "requires Node's internal test binding"
+
+[tests."parallel/test-ttywrap-stack.js"]
+module = "tty"

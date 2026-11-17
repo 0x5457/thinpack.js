@@ -8,6 +8,7 @@
       this.reason = undefined;
       this.onabort = null;
       this._listeners = null;
+      this[Symbol.for("nodejs.event_target.max_listeners")] = 0;
     }
 
     addEventListener(type, listener, options) {

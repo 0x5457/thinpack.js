@@ -11,8 +11,7 @@
   const uptime = Number(system[6]) || 0;
   const loadavg = [system[7], system[8], system[9]].map(Number);
 
-  module.exports = {
-    EOL: "\n",
+  const os = {
     arch: () => process.arch,
     platform: () => process.platform,
     type: () => (process.platform === "linux" ? "Linux" : process.platform),
@@ -20,7 +19,13 @@
     version: () => version,
     hostname: () => hostname,
     homedir: () => process.env.HOME || "/",
-    tmpdir: () => process.env.TMPDIR || "/tmp",
+    tmpdir: () => {
+      let path = process.env.TMPDIR || process.env.TMP || process.env.TEMP;
+      if (path && path.length > 1) {
+        while (path.endsWith("/")) path = path.slice(0, -1);
+      }
+      return path || "/tmp";
+    },
     endianness: () => "LE",
     cpus: () => {
       const fields = Deno.core.ops.op_os_cpus().split("\0");
@@ -78,4 +83,12 @@
     getPriority: () => 0,
     setPriority: () => {},
   };
+
+  Object.defineProperty(os, "EOL", {
+    value: "\n",
+    writable: false,
+    configurable: true,
+    enumerable: true,
+  });
+  module.exports = os;
 })();

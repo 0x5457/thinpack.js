@@ -50,6 +50,13 @@
     }
   }
 
+  Object.defineProperties(Event, {
+    NONE: { value: 0, writable: false, configurable: false, enumerable: true },
+    CAPTURING_PHASE: { value: 1, writable: false, configurable: false, enumerable: true },
+    AT_TARGET: { value: 2, writable: false, configurable: false, enumerable: true },
+    BUBBLING_PHASE: { value: 3, writable: false, configurable: false, enumerable: true },
+  });
+
   class CustomEvent extends Event {
     constructor(type, init = {}) {
       super(type, init);
@@ -60,6 +67,8 @@
   class EventTarget {
     constructor() {
       this._listeners = null;
+      this[Symbol.for("nodejs.event_target.max_listeners")] = 10;
+      this[Symbol.for("nodejs.event_target.max_listeners_warned")] = false;
     }
 
     addEventListener(type, listener, options) {

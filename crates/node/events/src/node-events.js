@@ -91,9 +91,9 @@ const kCapture = Symbol('kCapture');
 const kErrorMonitor = Symbol('events.errorMonitor');
 const kShapeMode = Symbol('shapeMode');
 const kEmitting = Symbol('events.emitting');
-const kMaxEventTargetListeners = Symbol('events.maxEventTargetListeners');
+const kMaxEventTargetListeners = Symbol.for('nodejs.event_target.max_listeners');
 const kMaxEventTargetListenersWarned =
-  Symbol('events.maxEventTargetListenersWarned');
+  Symbol.for('nodejs.event_target.max_listeners_warned');
 const kWatermarkData = SymbolFor('nodejs.watermarkData');
 
 let EventEmitterAsyncResource;

@@ -1,3 +1,11 @@
+#![cfg_attr(
+    test,
+    allow(
+        unused_crate_dependencies,
+        reason = "the dev-dependencies belong to the node integration test target"
+    )
+)]
+
 use std::env;
 use std::ffi::OsString;
 use std::io::Write;

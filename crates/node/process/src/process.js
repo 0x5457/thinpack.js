@@ -272,11 +272,14 @@
     const details = warning instanceof Error ? warning : new Error(String(warning));
     const name = type || details.name || "Warning";
     const warningCode = code || details.code;
+    if (type) details.name = type;
+    if (warningCode) details.code = warningCode;
     const prefix = warningCode ? "[" + warningCode + "] " : "";
     ops.op_thinpack_io_write(
       "(node:" + pid + ") " + prefix + name + ": " + details.message + "\n",
       true,
     );
+    process.nextTick(() => process.emit("warning", details));
   };
 
   const monotonicNanoseconds = () => {

@@ -3332,6 +3332,7 @@ name = "thinpack-rt"
 version = "0.1.0"
 dependencies = [
  "deno_core",
+ "serde",
  "thinpack-caps",
  "thinpack-core",
  "thinpack-io",
@@ -3378,6 +3379,7 @@ dependencies = [
  "thinpack-pack",
  "thinpack-vfs",
  "tokio",
+ "toml",
 ]
 
 [[package]]
