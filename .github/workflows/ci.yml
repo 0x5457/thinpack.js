@@ -78,3 +78,22 @@ jobs:
       # The npm-based acceptance fixtures under tests/ are not part of CI:
       # they download target packages and are run manually.
       - run: cargo test --workspace
+
+  windows-tools:
+    name: Host tools (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ""
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+
+      # The runtime and the Node builtins are Unix-only today (raw libc
+      # sockets, fork/socketpair, termios). This job covers the engine-free
+      # host side: analysis, resolution, the payload format and the CLI.
+      - run: cargo test -p thinpack-analyze -p thinpack-resolve -p thinpack-pack
+      - run: cargo build -p thinpack-cli --release

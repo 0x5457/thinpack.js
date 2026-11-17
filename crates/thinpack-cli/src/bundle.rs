@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::fs;
+use std::io;
 use std::io::Cursor;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use thinpack_analyze::Analysis;
@@ -95,9 +95,23 @@ pub(crate) fn write(
     let binary = thinpack_pack::append_to_binary(&runtime, &payload)?;
     fs::write(output, &binary).map_err(|error| format!("{}: {error}", output.display()))?;
 
-    let mode = fs::metadata(template)?.permissions().mode();
-    fs::set_permissions(output, fs::Permissions::from_mode(mode))?;
+    copy_permissions(template, output)?;
     Ok((payload.len(), binary.len()))
+}
+
+/// Carries the template's executable bit over to the artifact.
+#[cfg(unix)]
+fn copy_permissions(template: &Path, output: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = fs::metadata(template)?.permissions().mode();
+    fs::set_permissions(output, fs::Permissions::from_mode(mode))
+}
+
+/// Windows decides executability by extension, not by a mode bit.
+#[cfg(not(unix))]
+fn copy_permissions(_template: &Path, _output: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 pub(crate) fn default_output(entry: &Path) -> PathBuf {
