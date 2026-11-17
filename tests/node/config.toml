@@ -412,6 +412,9 @@ ignore = "base64 and base64url fuzz inputs decode to empty strings"
 
 [tests."parallel/test-string-decoder-utf8-large.js"]
 module = "string_decoder"
+# 1 MiB inputs across every chunking and byte class; a debug QuickJS build
+# needs more than the suite's 30 s default on a busy CI runner.
+timeout_ms = 120_000
 
 [tests."parallel/test-string-decoder.js"]
 module = "string_decoder"
