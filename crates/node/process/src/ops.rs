@@ -94,18 +94,42 @@ pub(crate) fn op_process_kill(pid: i32, signal: i32) -> Result<(), JsErrorBox> {
     Ok(())
 }
 
+#[cfg(target_vendor = "apple")]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "macOS mode_t is u16; umask only reads the low permission bits"
+)]
+const fn umask_mode(mask: i32) -> libc::mode_t {
+    mask.cast_unsigned() as libc::mode_t
+}
+
+#[cfg(not(target_vendor = "apple"))]
+const fn umask_mode(mask: i32) -> libc::mode_t {
+    mask.cast_unsigned()
+}
+
+#[cfg(target_vendor = "apple")]
+const fn umask_value(mode: libc::mode_t) -> i32 {
+    i32::from(mode)
+}
+
+#[cfg(not(target_vendor = "apple"))]
+const fn umask_value(mode: libc::mode_t) -> i32 {
+    mode.cast_signed()
+}
+
 #[op2(fast)]
 pub(crate) fn op_process_umask(#[smi] mask: i32) -> i32 {
     // SAFETY: `umask` only reads and replaces the process umask; every bit pattern is valid.
     let previous = unsafe { libc::umask(0) };
     if mask >= 0 {
         // SAFETY: `umask` only reads and replaces the process umask; every bit pattern is valid.
-        unsafe { libc::umask(mask.cast_unsigned()) };
+        unsafe { libc::umask(umask_mode(mask)) };
     } else {
         // SAFETY: `umask` only reads and replaces the process umask; every bit pattern is valid.
         unsafe { libc::umask(previous) };
     }
-    previous.cast_signed()
+    umask_value(previous)
 }
 
 #[op2]
