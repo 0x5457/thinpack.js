@@ -773,12 +773,12 @@ fn timespec(seconds: f64) -> libc::timespec {
     clippy::cast_possible_truncation,
     reason = "macOS mode_t is u16; fchmod(2) only reads the low permission bits, and Node truncates the same way"
 )]
-fn fchmod_mode(mode: u32) -> libc::mode_t {
+const fn fchmod_mode(mode: u32) -> libc::mode_t {
     mode as libc::mode_t
 }
 
 #[cfg(not(target_vendor = "apple"))]
-fn fchmod_mode(mode: u32) -> libc::mode_t {
+const fn fchmod_mode(mode: u32) -> libc::mode_t {
     mode
 }
 
