@@ -78,7 +78,7 @@ unpacked), Linux x86_64. Artifact sizes are MiB, peak RSS in MB:
 | Approach | Artifact | Peak RSS | Runnable |
 | --- | ---: | ---: | --- |
 | thinpack (QuickJS, 34 capabilities) | 14.31 MiB (gzip 7.18 MiB) | 105 MB | yes |
-| bun 1.4.4 `build --compile` | 115.1 MiB (gzip 51.3 MiB) | 82–90 MB | yes |
+| bun 1.4.4 `build --compile` | 115.17 MiB (gzip 51.30 MiB) | 82–90 MB | yes |
 | Node 26.8.1 SEA (esbuild CJS bundle) | 157.7 MiB (gzip 46.9 MiB) | — | no |
 
 - The size gap comes from the runtime base: the app sources compress to 2.6 MiB, while the
@@ -88,17 +88,19 @@ unpacked), Linux x86_64. Artifact sizes are MiB, peak RSS in MB:
 
 ### Other CLIs
 
-Each app gets a template built for its own capability closure (`pack --rebuild`); bun is
-1.4.4 `build --compile`. Sizes in MiB; thinpack cells also give gzip -9. Linux x86_64.
+Each app gets a template built for its own capability closure (`pack --rebuild`), from the
+entry the package ships as its `bin`; bun 1.4.4 `build --compile` gets the same entry, and the
+last column says what, if anything, makes it run. Sizes in MiB; thinpack cells also give
+gzip -9. Linux x86_64.
 
 | Program | thinpack | bun | thinpack runs | bun runs |
 | --- | ---: | ---: | --- | --- |
-| `typescript@5.9.3` (`tsc`) | 10.57 MiB (gzip 5.68 MiB) | 104.1 MiB | yes, compiles `hello.ts` (4.8 s) | no: exits 0, prints nothing |
-| `prettier@3.10.1` | 9.01 MiB (gzip 4.16 MiB) | 104.1 MiB | yes, with `--include …/internal` | no: `Cannot find module '../internal/legacy-cli.mjs'` |
-| `eslint@10.15` | 8.50 MiB (gzip 3.62 MiB) | build fails (optional `jiti`) | yes, `--version` | — |
-| `terser@5.51.2` | 8.05 MiB (gzip 3.20 MiB) | 104.1 MiB | yes, minifies | no: exits 0, prints nothing |
-| `js-yaml@5.5.0` | 7.82 MiB (gzip 2.98 MiB) | 104.3 MiB | yes, YAML to JSON | no |
-| `pi-coding-agent@1.5.0` | 14.31 MiB (gzip 7.18 MiB) | 115.1 MiB | yes, `--version` prints `1.5.0` | yes (`--version` prints `0.0.0`) |
+| `typescript@5.9.3` (`tsc`) | 10.57 MiB (gzip 5.68 MiB) | 109.56 MiB | yes, `--include …/lib`: compiles `hello.ts` (4.8 s) | yes, from a copy of `bin/tsc` named `*.js` |
+| `prettier@3.10.1` | 9.01 MiB (gzip 4.16 MiB) | 110.04 MiB | yes, `--include …/internal` | yes, through a wrapper importing `internal/legacy-cli.mjs` |
+| `eslint@10.15.0` | 8.50 MiB (gzip 3.62 MiB) | 107.14 MiB | yes, `--version` | yes, with `--external jiti` |
+| `terser@5.51.2` | 8.05 MiB (gzip 3.20 MiB) | 105.38 MiB | yes, minifies | yes, from a copy of `bin/terser` named `*.js` |
+| `js-yaml@5.5.0` | 7.82 MiB (gzip 2.98 MiB) | 104.29 MiB | yes, YAML to JSON | no |
+| `pi-coding-agent@1.5.0` | 14.31 MiB (gzip 7.18 MiB) | 115.17 MiB | yes, `--version` prints `1.5.0` | yes, `--version` prints `0.0.0` |
 
 Startup of the thinpack artifacts (`--version`, median of seven runs, ms), cold and warm
 bytecode cache:
@@ -112,14 +114,17 @@ bytecode cache:
 | `js-yaml` | 135 ms | 97 ms |
 | `pi` | 906 ms | 700 ms |
 
-- bun's artifacts are runtime-dominated: the bun binary alone is 102 MiB, so every row lands
-  near 104 MiB regardless of the app.
-- bun bundles `tsc`, `terser` and `prettier` without an error, but the resulting binaries do
-  not run the CLI (silent exit 0, or a missing `$bunfs` module). Their rows above are sizes
-  only.
+- As shipped, `--compile` fails to produce a working binary on every row but `pi`, two of them
+  silently: an extensionless `bin/tsc` or `bin/terser` is embedded byte for byte as an asset,
+  leaving a binary that exits 0 and does nothing; `bin/prettier.cjs` reaches
+  `internal/legacy-cli.mjs` through `new Function`, so the bundle dies on `Cannot find module`;
+  `eslint` needs its optional peer `jiti` excluded to build; `js-yaml` reads `../package.json`
+  at module top level, which lands in `/$bunfs` and is the one failure no flag fixes.
+- `bun <entry>` runs all of these CLIs unchanged, so the limit is `--compile`'s static
+  analysis, not the runtime.
+- bun's artifacts are runtime-dominated: the bun binary alone is 102 MiB, so every row sits
+  between 104 and 116 MiB regardless of the app.
 - `tsc`'s 4.8 s is type-checking work, not startup.
-- `prettier` and `tsc` need `--include`: the former hides its import behind `new Function`,
-  the latter reads `lib/*.d.ts` through `fs`.
 
 ## Built-in modules
 
