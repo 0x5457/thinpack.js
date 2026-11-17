@@ -73,7 +73,12 @@ pub(crate) fn op_process_info() -> String {
         "aarch64" => "arm64",
         other => other,
     };
-    format!("{}\0{arch}\0{}", std::env::consts::OS, std::process::id())
+    // Node calls macOS "darwin"; `std::env::consts::OS` calls it "macos".
+    let platform = match std::env::consts::OS {
+        "macos" => "darwin",
+        other => other,
+    };
+    format!("{platform}\0{arch}\0{}", std::process::id())
 }
 
 #[op2(fast)]
