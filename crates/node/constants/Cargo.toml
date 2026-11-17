@@ -1,0 +1,12 @@
+[package]
+name = "thinpack-node-constants"
+description = "Deprecated node:constants builtin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+deno_core.workspace = true
+
+[lints]
+workspace = true

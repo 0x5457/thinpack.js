@@ -1,0 +1,16 @@
+[package]
+name = "thinpack-node-child-process"
+description = "child_process (spawn/exec) for thinpack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+deno_core.workspace = true
+deno_error.workspace = true
+libc = "0.2"
+thinpack-core = { workspace = true }
+tokio.workspace = true
+
+[lints]
+workspace = true

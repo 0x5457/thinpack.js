@@ -1,0 +1,168 @@
+use std::borrow::Cow;
+
+use deno_core::{Extension, ExtensionFileSource};
+
+const STARTUP: &[ExtensionFileSource] = &[ExtensionFileSource::new(
+    "thinpack:node-stream-globals",
+    deno_core::ascii_str_include!("stream_globals.js"),
+)];
+
+const BUILTINS: &[ExtensionFileSource] = &[
+    ExtensionFileSource::new(
+        "node:stream",
+        deno_core::ascii_str_include!("node-stream.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:stream/consumers",
+        deno_core::ascii_str_include!("consumers.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:stream/promises",
+        deno_core::ascii_str_include!("node-stream-promises.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:stream/web",
+        deno_core::ascii_str_include!("node-stream-web.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/streams/legacy",
+        deno_core::ascii_str_include!("internal/legacy.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/streams/readable",
+        deno_core::ascii_str_include!("internal/readable.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/streams/writable",
+        deno_core::ascii_str_include!("internal/writable.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/streams/duplex",
+        deno_core::ascii_str_include!("internal/duplex.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/streams/transform",
+        deno_core::ascii_str_include!("internal/transform.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/streams/passthrough",
+        deno_core::ascii_str_include!("internal/passthrough.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/streams/pipeline",
+        deno_core::ascii_str_include!("internal/pipeline.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/streams/destroy",
+        deno_core::ascii_str_include!("internal/destroy.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/streams/duplexify",
+        deno_core::ascii_str_include!("internal/duplexify.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/streams/from",
+        deno_core::ascii_str_include!("internal/from.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/streams/compose",
+        deno_core::ascii_str_include!("internal/compose.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/streams/operators",
+        deno_core::ascii_str_include!("internal/operators.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/streams/end-of-stream",
+        deno_core::ascii_str_include!("internal/end-of-stream.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/streams/state",
+        deno_core::ascii_str_include!("internal/state.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/streams/lazy_transform",
+        deno_core::ascii_str_include!("internal/lazy_transform.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/streams/duplexpair",
+        deno_core::ascii_str_include!("internal/duplexpair.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/binding/stream_wrap",
+        deno_core::ascii_str_include!("binding_stream_wrap.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/worker/io",
+        deno_core::ascii_str_include!("internal/worker_io.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/webstreams/readablestream",
+        deno_core::ascii_str_include!("internal/webstreams/readablestream.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/webstreams/writablestream",
+        deno_core::ascii_str_include!("internal/webstreams/writablestream.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/webstreams/transformstream",
+        deno_core::ascii_str_include!("internal/webstreams/transformstream.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/webstreams/queuingstrategies",
+        deno_core::ascii_str_include!("internal/webstreams/queuingstrategies.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/webstreams/adapters",
+        deno_core::ascii_str_include!("internal/webstreams/adapters.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/webstreams/util",
+        deno_core::ascii_str_include!("internal/webstreams/util.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/webstreams/transfer",
+        deno_core::ascii_str_include!("internal/webstreams/transfer.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/webstreams/compression",
+        deno_core::ascii_str_include!("internal/webstreams/compression.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/webstreams/encoding",
+        deno_core::ascii_str_include!("internal/webstreams/encoding.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/streams/add-abort-signal",
+        deno_core::ascii_str_include!("internal/add-abort-signal.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/async_context_frame",
+        deno_core::ascii_str_include!("async_context_frame.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/binding/uv",
+        deno_core::ascii_str_include!("binding_uv.js"),
+    ),
+    ExtensionFileSource::new(
+        "node:thinpack/internal/binding/messaging",
+        deno_core::ascii_str_include!("binding_messaging.js"),
+    ),
+];
+
+#[must_use]
+pub fn init() -> Extension {
+    Extension {
+        name: "thinpack_node_stream",
+        deps: &[
+            "thinpack_node_internals",
+            "thinpack_node_buffer",
+            "thinpack_node_events",
+            "thinpack_node_string_decoder",
+            "thinpack_node_util",
+        ],
+        js_files: Cow::Borrowed(STARTUP),
+        lazy_loaded_js_files: Cow::Borrowed(BUILTINS),
+        ..Default::default()
+    }
+}

@@ -1,0 +1,19 @@
+[package]
+name = "thinpack-analyze"
+description = "Static analysis for thinpack pack (CLI only, no JS engine)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thinpack-caps = { workspace = true }
+thinpack-resolve = { workspace = true }
+oxc_allocator = "0.158"
+oxc_ast = "0.158"
+oxc_ast_visit = "0.158"
+oxc_parser = "0.158"
+oxc_span = "0.158"
+oxc_str = "0.158"
+
+[lints]
+workspace = true

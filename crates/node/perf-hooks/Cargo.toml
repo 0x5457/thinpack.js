@@ -1,0 +1,12 @@
+[package]
+name = "thinpack-node-perf-hooks"
+description = "performance API (perf_hooks) for thinpack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+deno_core.workspace = true
+
+[lints]
+workspace = true

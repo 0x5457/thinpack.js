@@ -1,0 +1,26 @@
+[package]
+name = "deno_ffi"
+version = "0.247.0"
+edition = "2024"
+license = "MIT"
+description = "Vendored Deno FFI for thinpack node:ffi"
+
+[dependencies]
+deno_core = { path = "../deno_core", default-features = false, features = ["reactor-tokio"] }
+deno_error = "=0.7.1"
+cranelift = "0.117"
+cranelift-native = "0.117"
+dlopen2 = "0.6.1"
+libffi = "=5.1.0"
+libc = "0.2"
+log = "0.4"
+memmap2 = "0.9"
+num-bigint = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+
+[lib]
+name = "deno_ffi"
+path = "lib.rs"

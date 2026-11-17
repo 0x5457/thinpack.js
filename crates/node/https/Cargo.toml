@@ -1,0 +1,12 @@
+[package]
+name = "thinpack-node-https"
+description = "HTTPS builtin for thinpack (HTTP/1.1 over TLS)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+deno_core.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,12 @@
+/target
+
+# Node fixture dependencies stay out of the repository
+tests/*/node_modules/
+/target-http2/
+/target-core/
+
+# Python cache
+__pycache__/
+
+# Local agent state
+.pi/

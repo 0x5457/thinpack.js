@@ -1,0 +1,7 @@
+{
+  "name": "thinpack-esbuild-fixture",
+  "private": true,
+  "dependencies": {
+    "esbuild": "0.25.12"
+  }
+}

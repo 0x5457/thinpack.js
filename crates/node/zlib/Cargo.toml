@@ -1,0 +1,16 @@
+[package]
+name = "thinpack-node-zlib"
+description = "zlib and Brotli for thinpack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+deno_core.workspace = true
+deno_error.workspace = true
+flate2 = "1"
+brotli = "8"
+zstd = "0.13"
+
+[lints]
+workspace = true

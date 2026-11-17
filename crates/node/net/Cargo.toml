@@ -1,0 +1,16 @@
+[package]
+name = "thinpack-node-net"
+description = "TCP sockets (net) for thinpack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+deno_core.workspace = true
+thinpack-core = { workspace = true }
+deno_error.workspace = true
+tokio.workspace = true
+libc = "0.2"
+
+[lints]
+workspace = true

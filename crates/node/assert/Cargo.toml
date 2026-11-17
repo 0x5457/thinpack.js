@@ -1,0 +1,12 @@
+[package]
+name = "thinpack-node-assert"
+description = "assert (vendored Node source) for thinpack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+deno_core.workspace = true
+
+[lints]
+workspace = true

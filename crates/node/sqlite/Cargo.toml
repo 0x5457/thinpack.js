@@ -1,0 +1,14 @@
+[package]
+name = "thinpack-node-sqlite"
+description = "node:sqlite on the bundled SQLite for thinpack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+deno_core.workspace = true
+deno_error.workspace = true
+rusqlite = { version = "0.40.1", default-features = false, features = ["bundled", "session"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,8 @@
+{
+  "name": "thinpack-k8s-t0-fixture",
+  "private": true,
+  "description": "Kubernetes T0 end-to-end fixture",
+  "dependencies": {
+    "@kubernetes/client-node": "2.0.2"
+  }
+}

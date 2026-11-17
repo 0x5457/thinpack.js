@@ -1,0 +1,84 @@
+use std::error::Error;
+
+use crate::bundle;
+use crate::capabilities::{analyze_entry, print_capabilities};
+use crate::options::parse_options;
+use crate::templates::{self, resolve_template};
+
+pub(crate) fn pack_command(args: Vec<String>) -> Result<(), Box<dyn Error>> {
+    let parsed = parse_options(args, true)?;
+    if parsed.help {
+        println!("{}", crate::USAGE);
+        return Ok(());
+    }
+    let options = parsed.options;
+    let analyzed = analyze_entry(&options)?;
+
+    if options.list_capabilities {
+        print_capabilities(&analyzed.analysis, &analyzed.capabilities, &analyzed.root);
+        return Ok(());
+    }
+
+    let template = resolve_template(&options, &analyzed.capabilities)?;
+    let info = templates::inspect(&template)?;
+    let bundle = bundle::build(
+        &analyzed.root,
+        &analyzed.entry,
+        &analyzed.capabilities,
+        &info,
+        &analyzed.analysis,
+        &options.assets,
+    )?;
+    let output = options
+        .output
+        .unwrap_or_else(|| bundle::default_output(&analyzed.entry));
+    let (payload_len, total) = bundle::write(&template, &bundle.manifest, &bundle.blob, &output)?;
+
+    println!(
+        "packed {} files, {} capabilities ({} bytes payload, {} bytes total) -> {}",
+        bundle.manifest.files.len(),
+        bundle.manifest.capabilities.len(),
+        payload_len,
+        total,
+        output.display()
+    );
+    Ok(())
+}
+
+pub(crate) fn run_command(args: Vec<String>) -> Result<i32, Box<dyn Error>> {
+    let parsed = parse_options(args, false)?;
+    if parsed.help {
+        println!("{}", crate::USAGE);
+        return Ok(0);
+    }
+    let options = parsed.options;
+    let analyzed = analyze_entry(&options)?;
+    let template = resolve_template(&options, &analyzed.capabilities)?;
+    let status = std::process::Command::new(&template)
+        .arg(&analyzed.entry)
+        .args(&parsed.rest)
+        .status()
+        .map_err(|error| format!("{}: {error}", template.display()))?;
+    Ok(status.code().unwrap_or(1))
+}
+
+pub(crate) fn templates_command() -> Result<(), Box<dyn Error>> {
+    let entries = templates::Cache::from_env()?.entries()?;
+    if entries.is_empty() {
+        println!(
+            "no templates cached yet; `thinpack pack --rebuild` or `thinpack run --rebuild` builds one"
+        );
+        return Ok(());
+    }
+    println!("{:<10} {:<8} {:>9}  path", "version", "backend", "modules");
+    for entry in entries {
+        println!(
+            "{:<10} {:<8} {:>9}  {}",
+            entry.version,
+            entry.backend,
+            entry.capabilities,
+            entry.path.display()
+        );
+    }
+    Ok(())
+}

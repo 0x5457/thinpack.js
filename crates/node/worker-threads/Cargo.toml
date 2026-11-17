@@ -1,0 +1,14 @@
+[package]
+name = "thinpack-node-worker-threads"
+description = "worker_threads import surface for thinpack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+deno_core.workspace = true
+deno_error.workspace = true
+thinpack-core.workspace = true
+
+[lints]
+workspace = true

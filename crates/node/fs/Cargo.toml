@@ -1,0 +1,18 @@
+[package]
+name = "thinpack-node-fs"
+description = "File system for thinpack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thinpack-node-internals = { workspace = true, features = ["glob"] }
+deno_core.workspace = true
+deno_error.workspace = true
+thinpack-core = { workspace = true }
+libc = "0.2"
+inotify = "0.11"
+tokio.workspace = true
+
+[lints]
+workspace = true

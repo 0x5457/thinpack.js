@@ -1,0 +1,125 @@
+(() => {
+  const types = require("node:thinpack/internal/binding/types");
+  const { codes } = require("node:thinpack/internal/errors");
+  const ALL_PROPERTIES = 0;
+  const ONLY_ENUMERABLE = 2;
+  const SKIP_SYMBOLS = 8;
+  const kPending = 0;
+  const kRejected = 1;
+  const isArrayIndex = (key) => {
+    if (typeof key !== "string") return false;
+    if (key.length === 0 || key.length > 10) return false;
+    const index = Number(key);
+    return (
+      Number.isInteger(index) &&
+      index >= 0 &&
+      index < 4294967295 &&
+      String(index) === key
+    );
+  };
+
+  const getOwnNonIndexProperties = (object, filter) => {
+    const keys = [];
+    for (const key of Reflect.ownKeys(object)) {
+      if (isArrayIndex(key)) continue;
+      if ((filter & SKIP_SYMBOLS) !== 0 && typeof key === "symbol") continue;
+      if (
+        (filter & ONLY_ENUMERABLE) !== 0 &&
+        !Object.getOwnPropertyDescriptor(object, key).enumerable
+      ) {
+        continue;
+      }
+      keys.push(key);
+    }
+    return keys;
+  };
+  const getConstructorName = (object) => {
+    let current = object;
+    while (current !== null) {
+      const descriptor = Object.getOwnPropertyDescriptor(current, "constructor");
+      if (
+        descriptor !== undefined &&
+        typeof descriptor.value === "function" &&
+        descriptor.value.name !== ""
+      ) {
+        return descriptor.value.name;
+      }
+      current = Object.getPrototypeOf(current);
+    }
+    return "";
+  };
+  const getPromiseDetails = (value) =>
+    types.isPromise(value) ? [kPending] : undefined;
+  const getProxyDetails = () => undefined;
+  const getExternalValue = () => undefined;
+  const previewEntries = (value, withIsKeyValue) => {
+    let entries;
+    let isKeyValue = false;
+    if (types.isMap(value)) {
+      entries = [];
+      for (const [key, entryValue] of value) entries.push(key, entryValue);
+      isKeyValue = true;
+    } else if (types.isSet(value)) {
+      entries = [...value];
+    } else if (types.isWeakMap(value)) {
+      entries = [];
+      isKeyValue = true;
+    } else if (types.isWeakSet(value)) {
+      entries = [];
+    } else if (types.isMapIterator(value)) {
+      entries = [];
+      isKeyValue = true;
+    } else if (types.isSetIterator(value)) {
+      entries = [];
+    } else {
+      return undefined;
+    }
+    return withIsKeyValue === true ? [entries, isKeyValue] : entries;
+  };
+  const getCallSites = (frameCount) => {
+    const stackTraceLimit = Error.stackTraceLimit;
+    const prepareStackTrace = Error.prepareStackTrace;
+    Error.stackTraceLimit = frameCount + 1;
+    Error.prepareStackTrace = (_, frames) => frames;
+    const error = new Error();
+    Error.captureStackTrace(error, getCallSites);
+    const frames = error.stack;
+    Error.stackTraceLimit = stackTraceLimit;
+    Error.prepareStackTrace = prepareStackTrace;
+
+    return frames.map((frame) => ({
+      __proto__: null,
+      functionName: frame.getFunctionName() ?? "",
+      scriptName: frame.getFileName() ?? "",
+      lineNumber: frame.getLineNumber() ?? 0,
+      columnNumber: frame.getColumnNumber() ?? 0,
+      column: frame.getColumnNumber() ?? 0,
+    }));
+  };
+  const isInsideNodeModules = () => false;
+  const parseEnv = () => {
+    throw new codes.ERR_NOT_IMPLEMENTED("util.parseEnv");
+  };
+  const getSharedArrayBufferGrowable = (buffer) =>
+    Boolean(buffer && buffer.growable === true);
+
+  module.exports = {
+    getSharedArrayBufferGrowable,
+    markPromiseAsHandled: () => false,
+    constants: { ALL_PROPERTIES, ONLY_ENUMERABLE, SKIP_SYMBOLS, kPending, kRejected },
+    getCallSites,
+    getConstructorName,
+    getExternalValue,
+    getOwnNonIndexProperties,
+    getPromiseDetails,
+    getProxyDetails,
+    isInsideNodeModules,
+    parseEnv,
+    privateSymbols: {
+      untransferable_object_private_symbol: Symbol(
+        "untransferable_object_private_symbol",
+      ),
+    },
+    previewEntries,
+  };
+})();

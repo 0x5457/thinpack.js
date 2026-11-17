@@ -1,0 +1,15 @@
+[package]
+name = "thinpack-node-internals"
+description = "Internal shims used by vendored Node.js module sources"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+deno_core.workspace = true
+
+[features]
+glob = []
+
+[lints]
+workspace = true

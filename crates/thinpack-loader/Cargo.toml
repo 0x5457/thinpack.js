@@ -1,0 +1,22 @@
+[package]
+name = "thinpack-loader"
+description = "CommonJS module semantics: require, cache, cycles, entry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+deno_core.workspace = true
+thinpack-core.workspace = true
+thinpack-resolve.workspace = true
+thinpack-caps.workspace = true
+deno_error = "0.7"
+thinpack-vfs.workspace = true
+url = "2"
+
+
+[dev-dependencies]
+thinpack-core = { workspace = true, features = ["backend-quickjs"] }
+
+[lints]
+workspace = true

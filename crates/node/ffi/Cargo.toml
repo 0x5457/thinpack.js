@@ -1,0 +1,13 @@
+[package]
+name = "thinpack-node-ffi"
+description = "node:ffi over the vendored Deno FFI engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+deno_core.workspace = true
+deno_ffi = { path = "../../../vendor/deno_ffi" }
+
+[lints]
+workspace = true

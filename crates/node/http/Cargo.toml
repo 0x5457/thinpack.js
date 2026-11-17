@@ -1,0 +1,12 @@
+[package]
+name = "thinpack-node-http"
+description = "Minimal http/https surface for thinpack (no server, no client)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+deno_core.workspace = true
+
+[lints]
+workspace = true

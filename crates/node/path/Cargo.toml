@@ -1,0 +1,13 @@
+[package]
+name = "thinpack-node-path"
+description = "path for thinpack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thinpack-node-internals = { workspace = true, features = ["glob"] }
+deno_core.workspace = true
+
+[lints]
+workspace = true

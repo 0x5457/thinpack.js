@@ -1,0 +1,18 @@
+[package]
+name = "thinpack-core"
+description = "Engine lifecycle and backend selection for thinpack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["backend-quickjs"]
+backend-quickjs = ["deno_core/quickjs"]
+backend-v8 = ["deno_core/v8"]
+
+[dependencies]
+deno_core.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

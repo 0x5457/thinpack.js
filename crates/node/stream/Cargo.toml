@@ -1,0 +1,12 @@
+[package]
+name = "thinpack-node-stream"
+description = "Node stream classes (vendored Node sources) for thinpack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+deno_core.workspace = true
+
+[lints]
+workspace = true

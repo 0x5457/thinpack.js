@@ -1,0 +1,183 @@
+# Single source of module metadata. `cargo xtask gen` generates from it:
+#   - crates/thinpack-caps/src/table.rs   (module table)
+#   - crates/thinpack-rt/src/registry.rs  (registration expanded per feature)
+#   - the [features] block of crates/thinpack-rt/Cargo.toml
+# Editing a generated file by hand is an error: change this file, then run `cargo xtask gen`.
+#
+# The module name determines the package and feature names: `[modules.foo_bar]` maps to package
+# `thinpack-node-foo-bar` and feature `node-foo-bar` (underscores become hyphens); the crate
+# directory follows the package: crates/node/<name>.
+#
+# Fields:
+#   builtins       Node builtin names provided by this module, without the `node:` prefix; unique repo-wide.
+#   deps           Hard dependencies: enabling this module enables them as well. Must be acyclic.
+#   optional_deps  Lazy dependencies: used by a single API only, excluded from the capability
+#                  closure; that API fails explicitly when the module is absent.
+#   ambient        Always-on module: present in every template, cannot be removed by --without.
+#   optional       Optional module: target packages probe for it; static analysis only warns
+#                  when it is absent instead of failing.
+#
+# Convention: a module crate exports `pub fn init() -> deno_core::Extension` and registers its
+# ops and embedded JS there (the shape of a Deno ext crate). Generated code in `thinpack-rt`
+# composes them in dependency order.
+
+[modules.assert]
+builtins = ["assert", "assert/strict"]
+deps = ["util"]
+
+[modules.constants]
+builtins = ["constants"]
+deps = []
+
+[modules.console]
+builtins = ["console"]
+deps = ["util"]
+ambient = true
+
+[modules.perf_hooks]
+builtins = ["perf_hooks"]
+deps = []
+
+[modules.process]
+builtins = ["process"]
+deps = []
+ambient = true
+
+[modules.timers]
+builtins = ["timers", "timers/promises"]
+deps = []
+ambient = true
+
+[modules.inspector]
+builtins = ["inspector"]
+deps = []
+
+[modules.module]
+builtins = ["module"]
+deps = ["path"]
+
+[modules.os]
+builtins = ["os"]
+deps = ["process"]
+
+[modules.path]
+builtins = ["path", "path/posix", "path/win32"]
+deps = ["process"]
+
+[modules.events]
+builtins = ["events"]
+deps = ["process"]
+optional_deps = ["async_hooks"]
+
+[modules.net]
+builtins = ["net"]
+deps = ["stream", "events"]
+
+[modules.diagnostics_channel]
+builtins = ["diagnostics_channel"]
+deps = []
+
+[modules.worker_threads]
+builtins = ["worker_threads"]
+deps = ["events", "path"]
+
+[modules.child_process]
+builtins = ["child_process"]
+deps = ["events", "stream"]
+
+[modules.tty]
+builtins = ["tty"]
+deps = ["process"]
+optional_deps = ["readline"]
+
+[modules.v8]
+builtins = ["v8"]
+deps = ["buffer"]
+
+[modules.vm]
+builtins = ["vm"]
+deps = []
+
+[modules.zlib]
+builtins = ["zlib"]
+deps = ["buffer", "stream"]
+
+[modules.crypto]
+builtins = ["crypto"]
+deps = ["buffer", "stream"]
+
+[modules.dns]
+builtins = ["dns", "dns/promises"]
+deps = []
+
+[modules.tls]
+builtins = ["tls"]
+deps = ["stream", "net", "events"]
+
+[modules.http]
+builtins = ["http"]
+deps = ["stream", "net"]
+optional_deps = ["https", "crypto", "buffer"]
+
+[modules.https]
+builtins = ["https"]
+deps = ["http", "tls"]
+
+[modules.http2]
+builtins = ["http2"]
+deps = ["stream", "net", "tls", "events", "buffer"]
+optional = true
+
+[modules.readline]
+builtins = ["readline", "readline/promises"]
+deps = ["events"]
+
+[modules.stream]
+builtins = ["stream", "stream/consumers", "stream/promises", "stream/web"]
+deps = ["buffer", "events", "string_decoder", "util"]
+optional_deps = ["zlib"]
+
+[modules.string_decoder]
+builtins = ["string_decoder"]
+deps = ["buffer"]
+
+[modules.fs]
+builtins = ["fs", "fs/promises"]
+deps = ["buffer", "path", "events", "readline", "string_decoder", "stream", "timers", "util"]
+
+[modules.querystring]
+builtins = ["querystring"]
+deps = ["buffer"]
+
+[modules.async_hooks]
+builtins = ["async_hooks"]
+deps = []
+
+[modules.buffer]
+builtins = ["buffer"]
+deps = ["process"]
+optional_deps = ["timers", "stream"]
+ambient = true
+
+[modules.util]
+builtins = ["util", "util/types"]
+deps = []
+optional_deps = ["buffer", "timers", "worker_threads"]
+
+[modules.url]
+builtins = ["url"]
+deps = ["process", "querystring"]
+ambient = true
+
+[modules.sea]
+builtins = ["sea"]
+deps = ["buffer"]
+
+[modules.sqlite]
+builtins = ["sqlite"]
+deps = []
+optional = true
+
+[modules.ffi]
+builtins = ["ffi"]
+deps = []

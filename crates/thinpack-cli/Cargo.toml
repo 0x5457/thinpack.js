@@ -1,0 +1,20 @@
+[package]
+name = "thinpack-cli"
+description = "thinpack CLI: pack apps into a single executable"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "thinpack"
+path = "src/main.rs"
+
+[dependencies]
+thinpack-pack = { workspace = true }
+thinpack-analyze = { workspace = true }
+thinpack-resolve = { workspace = true }
+thinpack-caps = { workspace = true }
+brotli = "8"
+
+[lints]
+workspace = true

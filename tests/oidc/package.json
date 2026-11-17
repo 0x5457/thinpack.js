@@ -1,0 +1,8 @@
+{
+  "name": "thinpack-oidc-fixture",
+  "private": true,
+  "description": "jose/RS256 verification fixture",
+  "dependencies": {
+    "jose": "6.2.17"
+  }
+}

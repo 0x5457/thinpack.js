@@ -1,0 +1,11 @@
+[package]
+name = "thinpack-resolve"
+description = "Node module resolution over a FileSystem abstraction"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "thinpack-node-readline"
+description = "readline for thinpack: line splitting and terminal line editing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+deno_core.workspace = true
+
+[lints]
+workspace = true
