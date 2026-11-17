@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  generated:
+    name: Format and generated files
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      # The pinned toolchain and components come from rust-toolchain.toml.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ""
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo fmt --all --check
+      - run: cargo xtask gen --check
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      # rust-toolchain.toml pins the channel and the clippy/rustfmt components.
+      # The runner image already provides the C toolchain and cmake that the
+      # QuickJS vendor build (WAMR) needs; V8 is linked from rusty_v8's prebuilt
+      # release archive, which the build script downloads on demand.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ""
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+
+      # rustfmt + clippy over QuickJS and V8, exactly as the local commit gate.
+      - run: cargo xtask lint
+
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ""
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+
+      # The npm-based acceptance fixtures under tests/ are not part of CI:
+      # they download target packages and are run manually.
+      - run: cargo test --workspace
