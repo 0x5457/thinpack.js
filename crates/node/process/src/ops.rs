@@ -109,7 +109,7 @@ const fn umask_mode(mask: i32) -> libc::mode_t {
 }
 
 #[cfg(target_vendor = "apple")]
-const fn umask_value(mode: libc::mode_t) -> i32 {
+fn umask_value(mode: libc::mode_t) -> i32 {
     i32::from(mode)
 }
 
