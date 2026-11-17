@@ -6,7 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-brotli-decompressor = "5"
+brotli-decompressor = "6"
 
 [lints]
 workspace = true
