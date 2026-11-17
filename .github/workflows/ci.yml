@@ -77,7 +77,11 @@ jobs:
       # platform-specific build (WAMR/QuickJS on macOS) and unit tests.
       # The npm-based acceptance fixtures under tests/ are not part of CI:
       # they download target packages and are run manually.
-      - run: cargo test --workspace
+      #
+      # Twice as many test threads as the runner has cores: the node compatibility
+      # suite spends most of its time supervising child processes, and the heavy
+      # encoding tests would otherwise pin the tail of the run.
+      - run: cargo test --workspace -- --test-threads 8
 
   windows-tools:
     name: Host tools (windows-latest)

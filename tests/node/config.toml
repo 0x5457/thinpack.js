@@ -643,6 +643,9 @@ ignore = "requires Node's internal test binding"
 
 [tests."parallel/test-buffer-write-utf8-two-byte.js"]
 module = "buffer"
+# Strings up to 12000 repeats encoded by a byte-at-a-time JS reference encoder;
+# a debug QuickJS build needs more than the suite's 30 s default on a busy runner.
+timeout_ms = 120_000
 
 [tests."parallel/test-buffer-write.js"]
 module = "buffer"
