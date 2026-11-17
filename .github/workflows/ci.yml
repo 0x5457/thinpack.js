@@ -57,9 +57,13 @@ jobs:
       - run: cargo xtask lint
 
   test:
-    name: Test
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
 
@@ -69,6 +73,8 @@ jobs:
           cache: false
       - uses: Swatinem/rust-cache@v2
 
+      # The lint gate is platform-independent and runs once; this job covers the
+      # platform-specific build (WAMR/QuickJS on macOS) and unit tests.
       # The npm-based acceptance fixtures under tests/ are not part of CI:
       # they download target packages and are run manually.
       - run: cargo test --workspace
