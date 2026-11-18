@@ -61,8 +61,6 @@ fn staged() -> Vec<(&'static str, bool)> {
 struct Config {
     backend: Backend,
     target: String,
-    /// A build for the host needs no `--target`, so its output sits in the flat directory.
-    host: bool,
     out: PathBuf,
 }
 
@@ -95,11 +93,9 @@ fn parse(args: &[String]) -> Result<Config, String> {
         }
     }
 
-    let host = host_triple();
     Ok(Config {
         backend,
-        host: target.as_deref().is_none_or(|target| target == host),
-        target: target.unwrap_or(host),
+        target: target.unwrap_or_else(host_triple),
         out,
     })
 }
@@ -120,14 +116,10 @@ fn dist(config: &Config) -> Result<(), String> {
     println!("staging {}", stage.display());
     let built = build(config, &table)?;
     stage_files(config, &stage, &built)?;
-    if config.host {
-        verify(config, &stage, &table)?;
-    } else {
-        println!(
-            "skipping the probe: {} cannot run on this host",
-            config.target
-        );
-    }
+    // Always `--target`, so the artifact is never published unverified: a static musl build
+    // runs on the glibc host that produced it, and a target that cannot run here is a mistake
+    // in the release matrix, not a reason to skip the check.
+    verify(config, &stage, &table)?;
     let archive = archive(config, &stage)?;
 
     let bytes = fs::metadata(&archive)
@@ -167,9 +159,7 @@ fn build(config: &Config, table: &[capabilities::Module]) -> Result<PathBuf, Str
     ]);
     command.arg(features.join(","));
     command.arg("--target-dir").arg(&target_dir);
-    if !config.host {
-        command.args(["--target", &config.target]);
-    }
+    command.args(["--target", &config.target]);
     // The template profile: `crates/thinpack-cli/src/templates.rs` rebuilds templates with the
     // same flags, so a downloaded pair and a locally rebuilt one agree.
     command.env(
@@ -187,11 +177,7 @@ fn build(config: &Config, table: &[capabilities::Module]) -> Result<PathBuf, Str
     if !status.success() {
         return Err(format!("build failed ({status})"));
     }
-    Ok(if config.host {
-        target_dir.join("release")
-    } else {
-        target_dir.join(&config.target).join("release")
-    })
+    Ok(target_dir.join(&config.target).join("release"))
 }
 
 fn stage_files(config: &Config, stage: &Path, built: &Path) -> Result<(), String> {
@@ -348,7 +334,7 @@ fn rust_flags(target: &str) -> String {
     if target.contains("msvc") {
         return String::new();
     }
-    if target.contains("linux") && target.contains("x86_64") {
+    if target.contains("linux") && target.contains("x86_64") && !target.contains("musl") {
         return format!("{UNWIND} {PACK_RELATIVE_RELOCS}");
     }
     UNWIND.to_owned()

@@ -36,30 +36,33 @@ else
     fail "curl or wget is required"
 fi
 
-triple() {
+# Candidate archives in order of preference. Linux prefers the static musl build, which has no
+# libc floor: it runs on any distribution, Alpine included.
+candidates() {
     system=$(uname -s)
     machine=$(uname -m)
     case "${system}:${machine}" in
-        Linux:x86_64) echo x86_64-unknown-linux-gnu ;;
-        Linux:aarch64 | Linux:arm64) echo aarch64-unknown-linux-gnu ;;
+        Linux:x86_64) echo "x86_64-unknown-linux-musl x86_64-unknown-linux-gnu" ;;
+        Linux:aarch64 | Linux:arm64) echo "aarch64-unknown-linux-musl aarch64-unknown-linux-gnu" ;;
         Darwin:arm64) echo aarch64-apple-darwin ;;
         Darwin:x86_64) echo x86_64-apple-darwin ;;
         *) fail "no archive for ${system} ${machine}; see the releases page, or build from source" ;;
     esac
 }
 
-# The Linux archives carry the runner's glibc floor (Ubuntu 24.04 → 2.39). Refusing an older
-# loader here is better than installing a binary that the dynamic loader rejects or crashes on.
+# Only the fallback glibc archive needs this: it carries the runner's floor (Ubuntu 24.04 → 2.39),
+# and refusing an older loader beats installing a binary that the loader rejects.
 require_glibc() {
     [ "$(uname -s)" = Linux ] || return 0
     banner=$(ldd --version 2>&1 | head -n 1)
     case "${banner}" in
-        *musl*) fail "this host is musl and the archives are glibc-linked; build from source" ;;
+        *musl*) fail "this host is musl and only the glibc archive is available; build from source" ;;
     esac
-    version=$(printf '%s\n' "${banner}" | sed -n 's/.*[^0-9]\([0-9][0-9]*\)\.\([0-9][0-9]*\)$/\1 \2/p')
-    [ -n "${version}" ] || fail "cannot read the glibc version from \`${banner}\`; build from source"
-    major=${version%% *}
-    minor=${version#* }
+    # A distinct name: a shell function has no scope, and `${version}` is the release above.
+    glibc=$(printf '%s\n' "${banner}" | sed -n 's/.*[^0-9]\([0-9][0-9]*\)\.\([0-9][0-9]*\)$/\1 \2/p')
+    [ -n "${glibc}" ] || fail "cannot read the glibc version from \`${banner}\`; build from source"
+    major=${glibc%% *}
+    minor=${glibc#* }
     if [ "${major}" -lt 2 ] || { [ "${major}" -eq 2 ] && [ "${minor}" -lt 39 ]; }; then
         fail "this host has glibc ${major}.${minor} and the archives need 2.39 (built on Ubuntu 24.04); build from source"
     fi
@@ -107,18 +110,24 @@ digest() {
     fi
 }
 
-require_glibc
-target=$(triple)
 version=$(release_version)
 base=$(release_base "${version}")
-asset="thinpack-${version}-${target}.tar.gz"
-staging="thinpack-${version}-${target}"
-
 work=$(mktemp -d)
 trap 'rm -rf "${work}"' EXIT
 
-say "downloading ${asset}"
-download "${base}/${asset}" "${work}/${asset}" || fail "${asset} is not at ${base}"
+say "installing thinpack ${version}"
+for candidate in $(candidates); do
+    if download "${base}/thinpack-${version}-${candidate}.tar.gz" \
+        "${work}/thinpack-${version}-${candidate}.tar.gz" 2>/dev/null; then
+        target="${candidate}"
+        break
+    fi
+done
+[ -n "${target:-}" ] || fail "no archive for this host at ${base}"
+case "${target}" in *-gnu) require_glibc ;; esac
+asset="thinpack-${version}-${target}.tar.gz"
+staging="thinpack-${version}-${target}"
+say "downloaded ${asset}"
 
 expected=$(fetch "${base}/SHA256SUMS" | grep -F "  ${asset}" | cut -d' ' -f1)
 [ -n "${expected}" ] || fail "SHA256SUMS has no entry for ${asset}"
