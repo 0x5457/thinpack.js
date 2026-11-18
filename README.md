@@ -1,5 +1,7 @@
 # thinpack.js
 
+[![CI](https://github.com/0x5457/thinpack.js/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/0x5457/thinpack.js/actions/workflows/ci.yml)
+
 Packs a Node.js app into a single executable file. `deno_core`/`v8x` provide the JS engine,
 `oxc` static analysis computes the built-in module closure the app references, only those
 implementations are linked, and the app's sources and assets are appended to the template.
@@ -16,15 +18,37 @@ at 5.8 MiB against 104.3 and 143.8.
 - **Behavior parity**: user-visible modules follow the vendored Node sources, and the Node.js
   compatibility suite is part of the test run.
 
-## Quick start
+## Install
 
-Requires Rust 1.99.1 (pinned by `rust-toolchain.toml`).
+```sh
+curl -fsSL https://raw.githubusercontent.com/0x5457/thinpack.js/main/scripts/install.sh | sh
+thinpack pack app.js -o app
+./app
+```
+
+The installer puts `thinpack` and `thinpack-rt` in `~/.local/bin` (`THINPACK_INSTALL_DIR`
+overrides that, `THINPACK_VERSION` pins a release). They have to stay in the same directory: the
+CLI loads its template from next to itself. Archives for Linux (glibc, x86_64 and aarch64), macOS
+(arm64 and Intel) and Windows, with `SHA256SUMS`, are on the
+[releases page](https://github.com/0x5457/thinpack.js/releases).
+
+The archive carries one template with every built-in module, so any app packs. `--rebuild` from a
+source checkout builds a template that carries only the app's own capability set, which is where
+the smallest artifacts in the table below come from.
+
+## Build from source
+
+Requires Rust 1.99.1 (pinned by `rust-toolchain.toml`) and, for the vendored C in QuickJS/WAMR and
+sqlite, a C toolchain and cmake.
 
 ```sh
 cargo build --release -p thinpack-rt -p thinpack-cli
 ./target/release/thinpack pack app.js -o app
 ./app
 ```
+
+`cargo xtask dist` builds the release archive for the host and verifies it by packing and running
+`examples/hello.js` from the staged pair.
 
 ## Commands
 
@@ -164,6 +188,10 @@ for adding a module.
 
 - No full Intl data, no Temporal, no inspector protocol, no native backtraces;
   `Intl.Segmenter` on QuickJS is a lazy fallback implementation.
+- No `fetch` (`Headers`/`Request`/`Response`/`FormData`) and no `EventSource` or
+  `reportError`: Node defines those from dependencies bundled into its binary, and this
+  vendors Node's `lib/`, not its dependencies. `http`/`https` work; `WebSocket`, `Blob` and
+  `File` are present.
 - No N-API or native addon loading; code that needs native code goes through `node:ffi`.
 - WebAssembly is always available and cannot be trimmed (WAMR on QuickJS, about 217 KB).
 - ESM loader hooks run inside synchronous checkpoints, so hooks that wait on I/O fail.

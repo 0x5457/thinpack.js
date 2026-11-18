@@ -14,3 +14,6 @@ __pycache__/
 # Node.js compatibility suite scratch directories
 tests/node/compat/test/.tmp.*
 /measurements/
+
+# Release staging and archives from `cargo xtask dist`
+/dist/

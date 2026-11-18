@@ -5,6 +5,15 @@ entry follows: a feature either behaves like Node or it fails loudly
 (`ERR_NOT_IMPLEMENTED`); it never returns a fabricated value. Each entry names
 the divergence, why it exists, and where it lives.
 
+## Globals
+
+- The globals Node gets from undici are absent: `fetch` and its types
+  (`Headers`, `Request`, `Response`, `FormData`). Node defines them from a
+  dependency bundled into its binary; this project vendors Node's `lib/`, not its
+  dependencies. `WebSocket`, `Blob` and `File` are present, `EventSource` and
+  `reportError` are not, and code that reaches for a missing global fails with
+  `ReferenceError`. `http`, `https` and `http2` are unaffected.
+
 ## Event loop
 
 - `setImmediate` shares the timer queue as a 0 ms timer instead of running in a
