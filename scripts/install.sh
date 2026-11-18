@@ -36,36 +36,42 @@ else
     fail "curl or wget is required"
 fi
 
-# Candidate archives in order of preference. Linux prefers the static musl build, which has no
-# libc floor: it runs on any distribution, Alpine included.
+# Candidate archives in order of preference. The glibc build is the smaller one and comes first
+# when the host's libc can run it; the static musl build follows so a host that cannot, can.
+# `THINPACK_STATIC=1` asks for the static build regardless: it is what makes the artifacts you
+# pack run on older distributions, at about 1 MiB per artifact.
 candidates() {
     system=$(uname -s)
     machine=$(uname -m)
+    if [ "${THINPACK_STATIC:-}" = "1" ]; then
+        case "${machine}" in
+            x86_64) [ "${system}" = Linux ] && echo x86_64-unknown-linux-musl ;;
+            aarch64 | arm64) [ "${system}" = Linux ] && echo aarch64-unknown-linux-musl ;;
+        esac
+    fi
     case "${system}:${machine}" in
-        Linux:x86_64) echo "x86_64-unknown-linux-musl x86_64-unknown-linux-gnu" ;;
-        Linux:aarch64 | Linux:arm64) echo "aarch64-unknown-linux-musl aarch64-unknown-linux-gnu" ;;
+        Linux:x86_64) echo "x86_64-unknown-linux-gnu x86_64-unknown-linux-musl" ;;
+        Linux:aarch64 | Linux:arm64) echo "aarch64-unknown-linux-gnu aarch64-unknown-linux-musl" ;;
         Darwin:arm64) echo aarch64-apple-darwin ;;
         Darwin:x86_64) echo x86_64-apple-darwin ;;
         *) fail "no archive for ${system} ${machine}; see the releases page, or build from source" ;;
     esac
 }
 
-# Only the fallback glibc archive needs this: it carries the runner's floor (Ubuntu 24.04 → 2.39),
-# and refusing an older loader beats installing a binary that the loader rejects.
-require_glibc() {
+# The glibc archive carries the runner's floor (Ubuntu 24.04 → 2.39). A host below it skips that
+# candidate instead of being told to go away, because the static archive is right there.
+runs_glibc() {
     [ "$(uname -s)" = Linux ] || return 0
     banner=$(ldd --version 2>&1 | head -n 1)
     case "${banner}" in
-        *musl*) fail "this host is musl and only the glibc archive is available; build from source" ;;
+        *musl*) return 1 ;;
     esac
     # A distinct name: a shell function has no scope, and `${version}` is the release above.
     glibc=$(printf '%s\n' "${banner}" | sed -n 's/.*[^0-9]\([0-9][0-9]*\)\.\([0-9][0-9]*\)$/\1 \2/p')
-    [ -n "${glibc}" ] || fail "cannot read the glibc version from \`${banner}\`; build from source"
+    [ -n "${glibc}" ] || return 1
     major=${glibc%% *}
     minor=${glibc#* }
-    if [ "${major}" -lt 2 ] || { [ "${major}" -eq 2 ] && [ "${minor}" -lt 39 ]; }; then
-        fail "this host has glibc ${major}.${minor} and the archives need 2.39 (built on Ubuntu 24.04); build from source"
-    fi
+    [ "${major}" -gt 2 ] || { [ "${major}" -eq 2 ] && [ "${minor}" -ge 39 ]; }
 }
 
 # The release tag behind `/releases/latest`, read from the redirect rather than the API: the
@@ -117,14 +123,16 @@ trap 'rm -rf "${work}"' EXIT
 
 say "installing thinpack ${version}"
 for candidate in $(candidates); do
+    case "${candidate}" in
+        *-gnu) [ "$(uname -s)" != Linux ] || runs_glibc || continue ;;
+    esac
     if download "${base}/thinpack-${version}-${candidate}.tar.gz" \
         "${work}/thinpack-${version}-${candidate}.tar.gz" 2>/dev/null; then
         target="${candidate}"
         break
     fi
 done
-[ -n "${target:-}" ] || fail "no archive for this host at ${base}"
-case "${target}" in *-gnu) require_glibc ;; esac
+[ -n "${target:-}" ] || fail "no archive this host can run at ${base}; build from source"
 asset="thinpack-${version}-${target}.tar.gz"
 staging="thinpack-${version}-${target}"
 say "downloaded ${asset}"

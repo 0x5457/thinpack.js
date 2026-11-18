@@ -29,9 +29,12 @@ thinpack pack app.js -o app
 The installer puts `thinpack` and `thinpack-rt` in `~/.local/bin` (`THINPACK_INSTALL_DIR`
 overrides that, `THINPACK_VERSION` pins a release). They have to stay in the same directory: the
 CLI loads its template from next to itself. Archives with `SHA256SUMS` are on the
-[releases page](https://github.com/0x5457/thinpack.js/releases): Linux (static, x86_64 and aarch64,
-no libc floor), macOS (arm64 and Intel) and Windows. The Linux artifacts also come as glibc builds,
-which are smaller and need glibc 2.39 or newer; the installer takes the static one.
+[releases page](https://github.com/0x5457/thinpack.js/releases): Linux (x86_64 and aarch64), macOS
+(arm64 and Intel) and Windows. Linux ships twice: a glibc build that needs glibc 2.39 or newer, and
+a static one with no libc floor at all, which costs about 1 MiB per packed artifact. The installer
+takes the glibc build when the host can run it and the static one otherwise; `THINPACK_STATIC=1`
+asks for static regardless, which is what you want when the binary you pack has to run on a
+distribution older than your own.
 
 The archive carries one template with every built-in module, so any app packs. `--rebuild` builds a
 template that carries only the app's own capability set, which is where the smallest artifacts in
