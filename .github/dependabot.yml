@@ -1,8 +1,12 @@
 # Dependabot opens PRs against main and they run the normal CI gate.
 #
-# Deliberately out of scope:
+# Version updates are deliberately scoped out of:
 #   - tests/*/package.json: pinned acceptance fixtures, not build inputs.
 #   - vendor/: patched upstream snapshots, updated only with their patches.
+#
+# Security updates come from the dependency graph rather than this file, so the
+# fixtures still receive them; merge those by hand instead of pinning a
+# vulnerable version.
 version: 2
 
 updates:

@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+    # `labeled` so adding the `macos` label starts the macOS job without a push.
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
 
 permissions:
@@ -63,12 +65,8 @@ jobs:
       - run: cargo xtask lint
 
   test:
-    name: Test (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, macos-latest]
-    runs-on: ${{ matrix.os }}
+    name: Test (ubuntu-24.04)
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
@@ -87,6 +85,26 @@ jobs:
       # Twice as many test threads as the runner has cores: the node compatibility
       # suite spends most of its time supervising child processes, and the heavy
       # encoding tests would otherwise pin the tail of the run.
+      - run: cargo test --workspace -- --test-threads 8
+
+  test-macos:
+    name: Test (macos-latest)
+    # A hosted macOS runner is regularly unavailable for 15 minutes, at which
+    # point GitHub cancels the queued job, so a pull request can wait a quarter of
+    # an hour for a job that never starts. macOS runs on main, on dispatch, and on
+    # a PR labelled `macos`; the Linux job covers the rest of the suite.
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'macos')
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          rustflags: ""
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+
       - run: cargo test --workspace -- --test-threads 8
 
   windows-tools:
