@@ -16,6 +16,12 @@ const BUILTINS: &[ExtensionFileSource] = &[
         "node:thinpack/internal/assert",
         thinpack_js::js!("assert.js"),
     ),
+    // `assert` and `util.diff` both require the diff helper. It lives here because
+    // internals is linked unconditionally, while `assert` is an optional capability.
+    ExtensionFileSource::new_compressed(
+        "node:thinpack/internal/assert/myers_diff",
+        thinpack_js::js!("myers_diff.js"),
+    ),
     ExtensionFileSource::new_compressed(
         "node:thinpack/internal/binding/config",
         thinpack_js::js!("binding_config.js"),
