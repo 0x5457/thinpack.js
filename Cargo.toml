@@ -119,6 +119,7 @@ thinpack-node-tty = { path = "crates/node/tty" }
 thinpack-node-crypto = { path = "crates/node/crypto" }
 thinpack-node-string-decoder = { path = "crates/node/string-decoder" }
 thinpack-node-querystring = { path = "crates/node/querystring" }
+thinpack-node-punycode = { path = "crates/node/punycode" }
 thinpack-node-buffer = { path = "crates/node/buffer" }
 thinpack-node-util = { path = "crates/node/util" }
 thinpack-node-url = { path = "crates/node/url" }

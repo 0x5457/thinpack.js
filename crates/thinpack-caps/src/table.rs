@@ -195,6 +195,14 @@ pub const MODULES: &[Module] = &[
         optional: false,
     },
     Module {
+        name: "punycode",
+        feature: "node-punycode",
+        builtins: &["punycode"],
+        deps: &["process"],
+        ambient: false,
+        optional: false,
+    },
+    Module {
         name: "querystring",
         feature: "node-querystring",
         builtins: &["querystring"],

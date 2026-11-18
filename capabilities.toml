@@ -153,6 +153,10 @@ deps = ["buffer", "path", "events", "readline", "string_decoder", "stream", "tim
 builtins = ["querystring"]
 deps = ["buffer"]
 
+[modules.punycode]
+builtins = ["punycode"]
+deps = ["process"]
+
 [modules.async_hooks]
 builtins = ["async_hooks"]
 deps = []
