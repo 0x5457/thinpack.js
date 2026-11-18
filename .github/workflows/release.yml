@@ -76,10 +76,12 @@ jobs:
 
       - name: Install musl
         if: matrix.musl
-        run: sudo apt-get update && sudo apt-get install --yes musl-tools
+        run: sudo apt-get update && sudo apt-get install --yes musl-tools linux-libc-dev
 
-      # `cc` and `cmake` both build C here (QuickJS/WAMR, sqlite): point them at musl-gcc so the
-      # objects match the static musl libc the target links against.
+      # `cc` and `cmake` both build C here (QuickJS/WAMR, sqlite, libffi): point them at musl-gcc
+      # so the objects match the static musl libc the target links against. `musl-gcc` compiles
+      # with -nostdinc, so the kernel uapi headers under /usr/include have to be added back or
+      # libffi's tramp.c cannot find linux/limits.h.
       - name: Build, verify, and archive (static)
         if: matrix.musl
         shell: bash
@@ -91,6 +93,7 @@ jobs:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
           CMAKE_C_COMPILER: musl-gcc
+          CFLAGS: -idirafter /usr/include
         run: cargo xtask dist --target ${{ matrix.target }} --out dist
 
       - name: Build, verify, and archive
