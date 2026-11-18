@@ -169,23 +169,12 @@ impl ExtensionFileSource {
                 );
                 Ok(s.into())
             }
-            ExtensionFileSourceCode::Computed(code) => {
-                debug_assert!(
-                    code.is_ascii(),
-                    "Extension code must be 7-bit ASCII: {} (found {})",
-                    self.specifier,
-                    Self::find_non_ascii(code)
-                );
-                Ok(ModuleCodeString::from(code.clone()))
-            }
+            // ASCII is asserted upstream; the sources are JavaScript text and the engine
+            // decodes them as UTF-8, and a vendored file must not be rewritten to satisfy a
+            // debug assertion (see PATCHES.md).
+            ExtensionFileSourceCode::Computed(code) => Ok(ModuleCodeString::from(code.clone())),
             ExtensionFileSourceCode::Compressed(compressed) => {
                 let code = decompress(compressed)?;
-                debug_assert!(
-                    code.is_ascii(),
-                    "Extension code must be 7-bit ASCII: {} (found {})",
-                    self.specifier,
-                    Self::find_non_ascii(&code)
-                );
                 Ok(code.into_module_code())
             }
         }

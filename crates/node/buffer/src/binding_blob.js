@@ -27,6 +27,10 @@
           callback(1, parts[index]);
           index += 1;
         },
+        // Node's reader is C++ and can answer STATUS_BLOCK until bytes arrive, so blob.js
+        // registers a callback for that case. These parts are already in memory and `pull`
+        // always answers synchronously, so the callback is accepted and never invoked.
+        setWakeup() {},
       };
     }
 

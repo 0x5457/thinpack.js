@@ -32,7 +32,7 @@ const WINDOW: u32 = 22;
 ///
 /// # Panics
 ///
-/// Panics when `src/$file` is missing, is not ASCII, or when the argument is not a
+/// Panics when `src/$file` is missing, is not UTF-8, or when the argument is not a
 /// single plain string literal; a bad embed site is a build error either way.
 #[proc_macro]
 pub fn js(input: TokenStream) -> TokenStream {
@@ -40,9 +40,12 @@ pub fn js(input: TokenStream) -> TokenStream {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("cargo sets it"));
     let source = fs::read(manifest.join("src").join(&path))
         .unwrap_or_else(|error| panic!("cannot read src/{path}: {error}"));
+    // The source is JavaScript text, and the engine decodes it as UTF-8 when the module
+    // loads. ASCII was enough for Node's `lib/`; undici's bundle carries an author name in a
+    // licence header, and rewriting a vendored file to satisfy a build assertion is worse.
     assert!(
-        source.is_ascii(),
-        "{path}: embedded JavaScript must be ASCII"
+        std::str::from_utf8(&source).is_ok(),
+        "{path}: embedded JavaScript must be UTF-8"
     );
 
     let compressed = compress(&source);
