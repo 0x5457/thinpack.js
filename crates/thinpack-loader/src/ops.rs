@@ -43,7 +43,7 @@ fn op_require_resolve(
     }
     let fs = op_state.borrow::<ModuleFs>();
     match thinpack_resolve::resolve(specifier, Path::new(parent), fs) {
-        Ok(resolved) => Ok(resolved.path.to_string_lossy().into_owned()),
+        Ok(resolved) => Ok(fs.js_path(&resolved.path)),
         Err(error) => Err(JsErrorBox::new(
             "Error",
             format!("MODULE_NOT_FOUND\0{error}"),
@@ -152,16 +152,17 @@ fn op_require_esm<'s>(
 #[string]
 fn op_entry(state: Rc<RefCell<OpState>>) -> String {
     let op_state = state.borrow();
+    let fs = op_state.borrow::<ModuleFs>();
     match op_state.borrow::<Main>() {
         Main::File(path) => file_url(path).map_or_else(
-            || invalid_url(path),
-            |url| format!("f\0{}\0{url}\0", path.display()),
+            || invalid_url(&fs.js_path(path)),
+            |url| format!("f\0{}\0{url}\0", fs.js_path(path)),
         ),
         Main::Eval(source) => {
             let filename = std::env::current_dir()
                 .map_or_else(|_| "[eval]".into(), |directory| directory.join("[eval]"));
             let url = file_url(&filename).unwrap_or_else(|| "thinpack:eval".to_owned());
-            format!("v\0{}\0{url}\0{source}", filename.display())
+            format!("v\0{}\0{url}\0{source}", fs.js_path(&filename))
         }
     }
 }
@@ -179,10 +180,10 @@ fn lookup_builtin<'a>(builtins: &'a BuiltinSources, specifier: &str) -> Option<&
 }
 
 fn read(resolved: &Resolved, fs: &ModuleFs) -> String {
-    let path = resolved.path.display().to_string();
+    let path = fs.js_path(&resolved.path);
 
     let Some(url) = file_url(&resolved.path) else {
-        return invalid_url(&resolved.path);
+        return invalid_url(&path);
     };
 
     if resolved.format == Format::Esm {
@@ -247,11 +248,8 @@ pub(crate) fn path_from_url(url: &Url) -> Option<PathBuf> {
     })
 }
 
-fn invalid_url(path: &Path) -> String {
-    format!(
-        "e\0ERR_INVALID_URL\0{} cannot be converted to a file URL\0",
-        path.display()
-    )
+fn invalid_url(path: &str) -> String {
+    format!("e\0ERR_INVALID_URL\0{path} cannot be converted to a file URL\0")
 }
 
 fn resolve_error(error: &thinpack_resolve::Error) -> String {
