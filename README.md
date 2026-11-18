@@ -44,7 +44,7 @@ cargo build --release -p thinpack-rt -p thinpack-cli
 
 The payload records version, backend and capability-set hash, and the runtime verifies them at
 startup. Templates live under `$THINPACK_CACHE` (then `$XDG_CACHE_HOME/thinpack`, then
-`~/.cache/thinpack`) as `<version>/<backend>/<caps-hash>`, and resolve `--template` →
+`~/.cache/thinpack`) as `templates/<version>/<backend>/<caps-hash>`, and resolve `--template` →
 `--rebuild` → exact hit → smallest superset → the `thinpack-rt` next to the CLI. `--rebuild`
 comes before the cache so an app always packs against its own closure.
 
@@ -100,7 +100,7 @@ seven runs:
 | `js-yaml@5.5.0` | 5.80 (2.69) | 104.29 (49.28) | 143.75 (44.37) | 150 / 100 ms | — |
 | `pi-coding-agent@1.5.0` | 12.42 (7.16) | 115.24 (51.30) | 157.75 (46.94) | 983 / 702 ms | — |
 
-The SEA binaries start 4–8× faster at 17–24× the size. thinpack runs all six as shipped
+The SEA binaries start 4–8× faster at ~13–25× the size. thinpack runs all six as shipped
 (`tsc` and `prettier` need `--include` for their `lib`/`internal` files). bun needs a copy of
 `bin/tsc` and `bin/terser` named `*.js`, `--external jiti` for `eslint` and a wrapper for
 `prettier`, but `bun <entry>` runs all six unchanged — the limit is `--compile`'s static
@@ -135,6 +135,7 @@ crates/
   thinpack-vfs/      virtual file system of an artifact (virtual root /app)
   thinpack-io/       shared stdio ops
   thinpack-js/       proc macro: brotli-compress the embedded JavaScript at build time
+  thinpack-node-internals/  vendored Node internals: primordials, errors, inspect, encoding bindings
   thinpack-cli/      the thinpack CLI, links no JS engine
   thinpack-rt/       the thinpack-rt runtime binary
   node/<name>/       one crate per Node built-in module
