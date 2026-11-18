@@ -1,6 +1,10 @@
+mod ops;
+
 use std::borrow::Cow;
 
 use deno_core::{Extension, ExtensionFileSource};
+
+use crate::ops::OPS;
 
 const STARTUP: &[ExtensionFileSource] = &[ExtensionFileSource::new(
     "thinpack:node-internals",
@@ -166,6 +170,7 @@ const BUILTINS: &[ExtensionFileSource] = &[
 pub fn init() -> Extension {
     Extension {
         name: "thinpack_node_internals",
+        ops: Cow::Borrowed(OPS),
         js_files: Cow::Borrowed(STARTUP),
         lazy_loaded_js_files: Cow::Borrowed(BUILTINS),
         ..Default::default()

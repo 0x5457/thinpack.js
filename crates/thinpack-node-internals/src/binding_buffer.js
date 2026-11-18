@@ -15,123 +15,22 @@
 
   const toBytes = (input) =>
     input instanceof ArrayBuffer ? new Uint8Array(input) : input;
-  const isHighSurrogate = (code) => code >= 0xd800 && code <= 0xdbff;
-  const isLowSurrogate = (code) => code >= 0xdc00 && code <= 0xdfff;
-  const utf8Length = (string) => {
-    let length = 0;
-    for (let index = 0; index < string.length; index += 1) {
-      const code = string.charCodeAt(index);
-      if (code < 0x80) {
-        length += 1;
-      } else if (code < 0x800) {
-        length += 2;
-      } else if (isHighSurrogate(code) && isLowSurrogate(string.charCodeAt(index + 1))) {
-        length += 4;
-        index += 1;
-      } else {
-        length += 3;
-      }
-    }
-    return length;
-  };
-  const utf8WriteInto = (target, offset, maxBytes, string) => {
-    let written = 0;
-    for (let index = 0; index < string.length; index += 1) {
-      let code = string.charCodeAt(index);
-      let size = code < 0x80 ? 1 : code < 0x800 ? 2 : 3;
-      if (size === 3 && isHighSurrogate(code) && isLowSurrogate(string.charCodeAt(index + 1))) {
-        size = 4;
-      }
-      if (written + size > maxBytes) break;
-      if (size === 4) {
-        const codePoint =
-          0x10000 +
-          ((code - 0xd800) << 10) +
-          (string.charCodeAt(index + 1) - 0xdc00);
-        target[offset + written] = 0xf0 | (codePoint >> 18);
-        target[offset + written + 1] = 0x80 | ((codePoint >> 12) & 0x3f);
-        target[offset + written + 2] = 0x80 | ((codePoint >> 6) & 0x3f);
-        target[offset + written + 3] = 0x80 | (codePoint & 0x3f);
-        index += 1;
-      } else if (size === 3) {
-        if (isHighSurrogate(code) || isLowSurrogate(code)) code = 0xfffd;
-        target[offset + written] = 0xe0 | (code >> 12);
-        target[offset + written + 1] = 0x80 | ((code >> 6) & 0x3f);
-        target[offset + written + 2] = 0x80 | (code & 0x3f);
-      } else if (size === 2) {
-        target[offset + written] = 0xc0 | (code >> 6);
-        target[offset + written + 1] = 0x80 | (code & 0x3f);
-      } else {
-        target[offset + written] = code;
-      }
-      written += size;
-    }
-    return written;
-  };
+  const {
+    op_binding_utf8_length,
+    op_binding_utf8_slice,
+    op_binding_utf8_write,
+  } = Deno.core.ops;
+  const utf8Length = (string) => op_binding_utf8_length(string);
+  const utf8WriteInto = (target, offset, maxBytes, string) =>
+    op_binding_utf8_write(toBytes(target), offset, maxBytes, string);
 
   const utf8Encode = (string) => {
     const bytes = new Uint8Array(utf8Length(string));
     utf8WriteInto(bytes, 0, bytes.length, string);
     return bytes;
   };
-  const utf8Decode = (bytes, start, end) => {
-    let result = "";
-    let index = start;
-    while (index < end) {
-      const first = bytes[index];
-      if (first < 0x80) {
-        result += String.fromCharCode(first);
-        index += 1;
-        continue;
-      }
-      let needed;
-      let codePoint;
-      let lower = 0x80;
-      let upper = 0xbf;
-      if (first >= 0xc2 && first <= 0xdf) {
-        needed = 1;
-        codePoint = first & 0x1f;
-      } else if (first >= 0xe0 && first <= 0xef) {
-        needed = 2;
-        codePoint = first & 0x0f;
-        if (first === 0xe0) lower = 0xa0;
-        if (first === 0xed) upper = 0x9f;
-      } else if (first >= 0xf0 && first <= 0xf4) {
-        needed = 3;
-        codePoint = first & 0x07;
-        if (first === 0xf0) lower = 0x90;
-        if (first === 0xf4) upper = 0x8f;
-      } else {
-        result += "\ufffd";
-        index += 1;
-        continue;
-      }
-      index += 1;
-      let consumed = 0;
-      while (consumed < needed) {
-        const next = bytes[index];
-        if (index >= end || next < lower || next > upper) break;
-        codePoint = (codePoint << 6) | (next & 0x3f);
-        index += 1;
-        consumed += 1;
-        lower = 0x80;
-        upper = 0xbf;
-      }
-      if (consumed === needed) {
-        if (codePoint > 0xffff) {
-          result += String.fromCharCode(
-            0xd800 + ((codePoint - 0x10000) >> 10),
-            0xdc00 + ((codePoint - 0x10000) & 0x3ff),
-          );
-        } else {
-          result += String.fromCharCode(codePoint);
-        }
-      } else {
-        result += "\ufffd";
-      }
-    }
-    return result;
-  };
+  const utf8Decode = (bytes, start, end) =>
+    op_binding_utf8_slice(toBytes(bytes), start, end);
   const latin1WriteInto = (target, offset, maxBytes, string) => {
     const written = Math.min(maxBytes, string.length);
     for (let index = 0; index < written; index += 1) {
