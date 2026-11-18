@@ -97,7 +97,7 @@ mod unix {
         assert!(!result.status.success(), "stale template was selected");
         assert!(
             String::from_utf8_lossy(&result.stderr)
-                .contains("no cached template covers these capabilities"),
+                .contains("no quickjs template covers these capabilities"),
             "unexpected error: {}",
             String::from_utf8_lossy(&result.stderr)
         );

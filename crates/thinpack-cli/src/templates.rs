@@ -17,6 +17,12 @@ const UNWIND_ARGS: &str = "-C force-unwind-tables=no";
 const ELF_LINK_ARGS: &str = "-C force-unwind-tables=no -C link-arg=-Wl,-z,pack-relative-relocs";
 const C_FLAGS: &str = "-fno-asynchronous-unwind-tables -fno-unwind-tables";
 
+/// The template binary: the CLI looks for it next to itself, and a cache entry is a copy of it.
+/// Windows binaries carry an extension, POSIX ones do not.
+fn runtime_binary() -> String {
+    format!("thinpack-rt{}", std::env::consts::EXE_SUFFIX)
+}
+
 const fn rust_flags() -> &'static str {
     if cfg!(target_os = "linux") {
         ELF_LINK_ARGS
@@ -129,7 +135,7 @@ impl Cache {
     ) -> Result<PathBuf, Box<dyn Error>> {
         let directory = self.entry_dir(info);
         fs::create_dir_all(&directory)?;
-        let installed = directory.join("thinpack-rt");
+        let installed = directory.join(runtime_binary());
         fs::copy(binary, &installed)?;
         fs::set_permissions(&installed, fs::metadata(binary)?.permissions())?;
         fs::write(
@@ -154,7 +160,7 @@ impl Cache {
             if backend.is_some_and(|wanted| wanted != entry.backend) {
                 continue;
             }
-            let binary = entry.directory.join("thinpack-rt");
+            let binary = entry.directory.join(runtime_binary());
             if !binary.is_file() {
                 continue;
             }
@@ -189,7 +195,7 @@ impl Cache {
                 version: entry.version,
                 backend: entry.backend,
                 capabilities: entry.capabilities.len(),
-                path: entry.directory.join("thinpack-rt"),
+                path: entry.directory.join(runtime_binary()),
             })
             .collect();
         entries.sort_by(|left, right| left.path.cmp(&right.path));
@@ -291,7 +297,7 @@ impl Cache {
             return Err("building the runtime template failed".into());
         }
 
-        let binary = target_dir.join("release/thinpack-rt");
+        let binary = target_dir.join("release").join(runtime_binary());
         let info = inspect(&binary)?;
         self.install(&binary, &info)
     }
@@ -305,7 +311,10 @@ pub(crate) struct CacheEntry {
 }
 
 fn sibling_template() -> Option<PathBuf> {
-    let template = std::env::current_exe().ok()?.parent()?.join("thinpack-rt");
+    let template = std::env::current_exe()
+        .ok()?
+        .parent()?
+        .join(runtime_binary());
     template.is_file().then_some(template)
 }
 pub(crate) fn resolve_template(
@@ -349,8 +358,9 @@ pub(crate) fn resolve_template(
         return Ok(sibling);
     }
 
+    let backend = options.backend.as_deref().unwrap_or(DEFAULT_BACKEND);
     Err(format!(
-        "no cached template covers these capabilities: {}\n\
+        "no {backend} template covers these capabilities: {}\n\
          pass --template <thinpack-rt>, or --rebuild to build one with cargo",
         required
             .iter()
