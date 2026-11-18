@@ -77,6 +77,9 @@ jobs:
   release:
     name: Publish
     needs: dist
+    # Dispatching the workflow on a branch builds and verifies the whole matrix without
+    # publishing anything, which is how the release itself is rehearsed.
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -101,10 +104,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           DRAFT: ${{ inputs.draft && '--draft' || '' }}
         run: |
-          tag="${GITHUB_REF_NAME}"
-          case "${tag}" in
-            v*) ;;
-            *) echo "a release needs a v* tag, not ${tag}" >&2; exit 1 ;;
-          esac
-          gh release create "${tag}" dist/*.tar.gz dist/SHA256SUMS \
-            --title "${tag}" --notes-file .github/release-notes.md ${DRAFT}
+          gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz dist/SHA256SUMS \
+            --title "${GITHUB_REF_NAME}" --notes-file .github/release-notes.md ${DRAFT}
