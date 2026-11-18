@@ -1,5 +1,5 @@
 {
   "name": "thinpack-websocket-fixture",
   "private": true,
-  "dependencies": { "ws": "8.18.3" }
+  "dependencies": { "ws": "8.21.0" }
 }
