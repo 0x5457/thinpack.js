@@ -33,7 +33,7 @@ cargo build --release -p thinpack-rt -p thinpack-cli
 | `templates` | list the template cache |
 | `--template <path>` | use the given runtime template |
 | `--backend <quickjs\|v8>` | pick the template backend, `quickjs` by default |
-| `--rebuild` `--source <checkout>` | build a template with cargo and cache it |
+| `--rebuild` `--source <checkout>` | build a template for this app's own capability set with cargo and cache it |
 | `--asset <key>=<path>` | embed an asset, readable through `node:sea` |
 | `--include <path>` | pack extra data files (`.d.ts`, templates); JavaScript is analyzed too |
 | `--with <module>` `--without <module>` | override the derived capability set; ambient modules cannot be removed |
@@ -48,11 +48,13 @@ identities and asks for a re-pack.
 
 The cache key is `<version>/<backend>/<caps-hash>`, resolved under `$THINPACK_CACHE`, then
 `$XDG_CACHE_HOME/thinpack`, then `~/.cache/thinpack`. Template selection: `--template` →
-exact hit → smallest superset covering the required capabilities → `--rebuild` → the
-`thinpack-rt` sitting next to the CLI in a development tree.
+`--rebuild` → exact hit → smallest superset covering the required capabilities → the
+`thinpack-rt` sitting next to the CLI in a development tree. `--rebuild` comes before the
+cache so that an app always packs against its own closure instead of a larger template that
+happens to be installed.
 
 The runtime caches compiled module bytecode under `<cache-root>/bytecode`; a warm start is
-about 23% faster than a cold one (pi: 906 ms → 700 ms). `V82JSC_NO_BC_CACHE=1` disables it,
+about 29% faster than a cold one (pi: 983 ms → 702 ms). `V82JSC_NO_BC_CACHE=1` disables it,
 deleting the directory clears it. An artifact can be pre-warmed at deploy time with
 `--warm-cache`: it compiles only the payload's modules and runs no application code.
 
@@ -63,28 +65,32 @@ that is the transfer size, not a format the runtime executes.
 
 | Backend | Core (no built-in modules) | All modules |
 | --- | ---: | ---: |
-| QuickJS | 5,527,968 B (5.27 MiB), gzip 2,292,655 B (2.19 MiB) | 13,386,304 B (12.77 MiB), gzip 5,615,822 B (5.36 MiB) |
-| V8 | 48,123,016 B (45.89 MiB), gzip 17,621,969 B (16.81 MiB) | 56,007,816 B (53.41 MiB), gzip 20,964,500 B (19.99 MiB) |
+| QuickJS | 5,451,616 B (5.20 MiB), gzip 2,323,704 B (2.22 MiB) | 12,169,792 B (11.61 MiB), gzip 5,776,622 B (5.51 MiB) |
+| V8 | 48,049,288 B (45.82 MiB), gzip 17,653,560 B (16.84 MiB) | 54,787,208 B (52.25 MiB), gzip 21,132,769 B (20.15 MiB) |
 
 Artifact size follows the capability closure the app resolves, not the full set above. The
 only measurement entry point is `cargo xtask size` (build, strip, measure, write
-`measurements/`).
+`measurements/`). `pack --rebuild` builds templates with the same flags, so an artifact is
+this profile plus its payload. The Node.js sources themselves are embedded
+brotli-compressed (`thinpack_js::js!`) and decode when a module first loads: 2.0 MB of
+JavaScript costs 0.43 MB of template and a few milliseconds per start.
 
 ## Compared with other single-file approaches
 
-Same app (`@earendil-works/pi-coding-agent@1.5.0`'s `dist/cli.js`, 2,377 modules, 19.4 MB
-unpacked), Linux x86_64. Artifact sizes are MiB, peak RSS in MB:
+Same app (`@earendil-works/pi-coding-agent@1.5.0`'s `dist/cli.js`, 2,377 modules, 16.5 MB of
+sources), Linux x86_64. Artifact sizes are MiB, peak RSS in MB:
 
 | Approach | Artifact | Peak RSS | Runnable |
 | --- | ---: | ---: | --- |
-| thinpack (QuickJS, 34 capabilities) | 14.31 MiB (gzip 7.18 MiB) | 105 MB | yes |
-| bun 1.4.4 `build --compile` | 115.17 MiB (gzip 51.30 MiB) | 82–90 MB | yes |
+| thinpack (QuickJS, 34 capabilities) | 12.42 MiB (gzip 7.16 MiB) | 104 MB | yes |
+| bun 1.4.4 `build --compile` | 115.24 MiB (gzip 51.30 MiB) | 84–91 MB | yes |
 | Node 26.8.1 SEA (esbuild CJS bundle) | 157.75 MiB (gzip 46.94 MiB) | — | no |
 
 - The size gap comes from the runtime base: the app sources compress to 2.6 MiB, while the
   other two carry a 102 MiB and a 143 MiB general-purpose runtime.
-- Startup is 3–4× slower (QuickJS parses less throughput than JSC/V8); the Node SEA artifact
-  dies in `fileURLToPath(import.meta.url)` before `main`, so it serves as a size reference only.
+- Startup is about 4× slower (QuickJS parses less throughput than JSC/V8): pi `--help` takes
+  777 ms against bun's 192 ms. The Node SEA artifact dies in `fileURLToPath(import.meta.url)`
+  before `main`, so it serves as a size reference only.
 
 ### Other CLIs
 
@@ -96,18 +102,18 @@ Linux x86_64:
 
 | Program | thinpack | bun | Node SEA |
 | --- | ---: | ---: | ---: |
-| `typescript@5.9.3` (`tsc`) | 10.57 MiB (gzip 5.68 MiB) | 109.56 MiB (gzip 50.18 MiB) | 149.82 MiB (gzip 45.35 MiB) |
-| `prettier@3.10.1` | 9.01 MiB (gzip 4.16 MiB) | 110.04 MiB (gzip 50.85 MiB) | 143.57 MiB (gzip 44.32 MiB) |
-| `eslint@10.15.0` | 8.50 MiB (gzip 3.62 MiB) | 107.14 MiB (gzip 49.78 MiB) | 147.25 MiB (gzip 44.96 MiB) |
-| `terser@5.51.2` | 8.05 MiB (gzip 3.20 MiB) | 105.38 MiB (gzip 49.48 MiB) | 144.94 MiB (gzip 44.57 MiB) |
-| `js-yaml@5.5.0` | 7.82 MiB (gzip 2.98 MiB) | 104.29 MiB (gzip 49.28 MiB) | 143.75 MiB (gzip 44.37 MiB) |
-| `pi-coding-agent@1.5.0` | 14.31 MiB (gzip 7.18 MiB) | 115.17 MiB (gzip 51.30 MiB) | 157.75 MiB (gzip 46.94 MiB) |
+| `typescript@5.9.3` (`tsc`) | 9.00 MiB (gzip 5.65 MiB) | 109.63 MiB (gzip 50.19 MiB) | 149.82 MiB (gzip 45.35 MiB) |
+| `prettier@3.10.1` | 7.41 MiB (gzip 4.14 MiB) | 110.04 MiB (gzip 50.85 MiB) | 143.57 MiB (gzip 44.32 MiB) |
+| `eslint@10.15.0` | 6.93 MiB (gzip 3.60 MiB) | 107.15 MiB (gzip 49.78 MiB) | 147.25 MiB (gzip 44.96 MiB) |
+| `terser@5.51.2` | 6.06 MiB (gzip 2.91 MiB) | 105.38 MiB (gzip 49.48 MiB) | 144.94 MiB (gzip 44.57 MiB) |
+| `js-yaml@5.5.0` | 5.80 MiB (gzip 2.69 MiB) | 104.29 MiB (gzip 49.28 MiB) | 143.75 MiB (gzip 44.37 MiB) |
+| `pi-coding-agent@1.5.0` | 12.42 MiB (gzip 7.16 MiB) | 115.24 MiB (gzip 51.30 MiB) | 157.75 MiB (gzip 46.94 MiB) |
 
 What each artifact then does with `--version` and with its own workload:
 
 | Program | thinpack | bun | Node SEA |
 | --- | --- | --- | --- |
-| `tsc` | yes, `--include …/lib`: compiles `hello.ts` (4.8 s of type-checking) | yes, from a copy of `bin/tsc` named `*.js` | `--version` only, prints `5.9.3`; no type-checking: `lib/*.d.ts` are not in the blob |
+| `tsc` | yes, `--include …/lib`: compiles `hello.ts` (4.3 s of type-checking) | yes, from a copy of `bin/tsc` named `*.js` | `--version` only, prints `5.9.3`; no type-checking: `lib/*.d.ts` are not in the blob |
 | `prettier` | yes, `--include …/internal` | yes, through a wrapper importing `internal/legacy-cli.mjs` | no: `bin` imports through `new Function`, and `internal/legacy-cli.mjs` needs `createRequire(import.meta.url)` |
 | `eslint` | yes, `--version` | yes, with `--external jiti` | `--version` only, prints `10.15.0`; no linting: the flat config loads through `import()`, which a blob resolves against built-in modules only (bundled with `jiti` external) |
 | `terser` | yes, minifies | yes, from a copy of `bin/terser` named `*.js` | yes, minifies |
@@ -119,14 +125,14 @@ where the artifact starts at all:
 
 | Program | thinpack cold | thinpack warm | Node SEA |
 | --- | ---: | ---: | ---: |
-| `tsc` | 522 ms | 348 ms | 78 ms |
-| `prettier` | 218 ms | 157 ms | — |
-| `eslint` | 262 ms | 182 ms | 63 ms |
-| `terser` | 208 ms | 140 ms | 35 ms |
-| `js-yaml` | 135 ms | 97 ms | — |
-| `pi` | 906 ms | 700 ms | — |
+| `tsc` | 578 ms | 347 ms | 77 ms |
+| `prettier` | 235 ms | 155 ms | — |
+| `eslint` | 288 ms | 186 ms | 64 ms |
+| `terser` | 226 ms | 145 ms | 35 ms |
+| `js-yaml` | 150 ms | 100 ms | — |
+| `pi` | 983 ms | 702 ms | — |
 
-The SEA binaries start 4–7× faster than thinpack's, at 14–18× the size.
+The SEA binaries start 4–7× faster than thinpack's, at 17–24× the size.
 
 - As shipped, `--compile` fails to produce a working binary on every row but `pi`, two of them
   silently: an extensionless `bin/tsc` or `bin/terser` is embedded byte for byte as an asset,
@@ -147,7 +153,7 @@ The SEA binaries start 4–7× faster than thinpack's, at 14–18× the size.
   `js-yaml` (248 KiB of app) lands at 143.75 MiB and `pi` (14.19 MiB of app) at 157.75 MiB,
   and gzip tracks the runtime at 44–47 MiB, below bun's 49–51 MiB. Stripping the injected
   file breaks it (SIGILL); stripping Node before injection gives `terser` 113.63 MiB (gzip
-  39.21 MiB), 14× its thinpack artifact.
+  39.21 MiB), 19× its thinpack artifact.
 
 ## Built-in modules
 
