@@ -151,10 +151,7 @@ pub(crate) fn run(
     crate::cache::prepare_bytecode_cache();
     thinpack_core::worker::install_boot(run_worker);
 
-    let main = match input {
-        Main::File(path) => Main::File(std::path::absolute(path)?),
-        Main::Eval(source) => Main::Eval(source),
-    };
+    let main = input;
     let entry = match &main {
         Main::File(path) => Some((path.clone(), thinpack_loader::is_esm(path, &fs))),
         Main::Eval(_) => None,

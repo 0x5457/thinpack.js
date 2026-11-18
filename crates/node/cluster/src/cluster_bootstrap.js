@@ -1,6 +1,7 @@
 (() => {
   if (!Object.hasOwn(process.env, "NODE_UNIQUE_ID") ||
-      !Object.hasOwn(process.env, "NODE_CHANNEL_FD")) {
+      (!Object.hasOwn(process.env, "NODE_CHANNEL_FD") &&
+       !Object.hasOwn(process.env, "NODE_CHANNEL_PORT"))) {
     return;
   }
   // The loader cannot resolve builtins while extensions are still initializing, so defer the

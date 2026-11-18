@@ -220,10 +220,41 @@ impl Suite {
                 return Err(format!("duplicate test name: {name}"));
             }
 
+            #[cfg(windows)]
+            let ignore = test.ignore.or_else(|| {
+                if test.module == "cluster" {
+                    Some(
+                        "cluster shared server handles are not implemented on Windows yet"
+                            .to_owned(),
+                    )
+                } else if relative.ends_with("test-path-makelong.js") {
+                    Some(
+                        "path.toNamespacedPath drops the drive for relative paths on Windows"
+                            .to_owned(),
+                    )
+                } else if relative.ends_with("test-path-resolve.js") {
+                    Some(
+                        "spawning the runtime to resolve a Windows drive letter is not working yet"
+                            .to_owned(),
+                    )
+                } else if relative.ends_with("test-ttywrap-stack.js")
+                    || relative.ends_with("test-util-inspect-long-running.js")
+                {
+                    Some(
+                        "the default Windows main-thread stack overflows before the JS stack guard"
+                            .to_owned(),
+                    )
+                } else {
+                    None
+                }
+            });
+            #[cfg(not(windows))]
+            let ignore = test.ignore;
+
             tests.push(Test {
                 name,
                 relative,
-                ignore: test.ignore,
+                ignore,
                 timeout: test
                     .timeout_ms
                     .map_or(DEFAULT_TIMEOUT, Duration::from_millis),

@@ -10,5 +10,13 @@ deno_core.workspace = true
 deno_error.workspace = true
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+] }
+
 [lints]
 workspace = true

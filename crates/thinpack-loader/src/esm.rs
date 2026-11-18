@@ -14,6 +14,7 @@ use thinpack_resolve::{FileSystem, Format};
 
 use crate::ModuleFs;
 use crate::cjs_exports;
+use crate::ops::{file_url, path_from_url};
 
 #[derive(Debug)]
 struct HookLoad {
@@ -207,16 +208,17 @@ pub(crate) fn resolve(
     } else {
         let url = ModuleSpecifier::parse(referrer).map_err(|error| error.to_string())?;
         Some(
-            url.to_file_path()
-                .map_err(|()| format!("cannot resolve `{specifier}` from `{referrer}`"))?,
+            path_from_url(&url)
+                .ok_or_else(|| format!("cannot resolve `{specifier}` from `{referrer}`"))?,
         )
     };
 
     let base = parent.as_deref().unwrap_or_else(|| Path::new("/"));
     let resolved = thinpack_resolve::resolve_import(specifier, base, fs)
         .map_err(|error| format!("cannot resolve `{specifier}`: {error}"))?;
-    ModuleSpecifier::from_file_path(&resolved.path)
-        .map_err(|()| format!("{} cannot be represented as a URL", resolved.path.display()))
+    let url = file_url(&resolved.path)
+        .ok_or_else(|| format!("{} cannot be represented as a URL", resolved.path.display()))?;
+    ModuleSpecifier::parse(&url).map_err(|error| error.to_string())
 }
 
 fn collect_reexports(
@@ -276,9 +278,8 @@ pub(crate) fn default_source(
             .map(|source| ("builtin", source.to_owned()))
             .ok_or_else(|| JsErrorBox::generic(format!("No such built-in module: {specifier}"))),
         "file" => {
-            let path = specifier
-                .to_file_path()
-                .map_err(|()| JsErrorBox::generic(format!("{specifier}: not a file URL")))?;
+            let path = path_from_url(specifier)
+                .ok_or_else(|| JsErrorBox::generic(format!("{specifier}: not a file URL")))?;
             let bytes = fs
                 .read(&path)
                 .map_err(|error| JsErrorBox::generic(format!("{}: {error}", path.display())))?;
@@ -328,7 +329,7 @@ fn module_from_format(
         "module" => Ok(module_source(specifier, ModuleType::JavaScript, source)),
         "json" => Ok(module_source(specifier, ModuleType::Json, source)),
         "commonjs" => {
-            let path = specifier.to_file_path().ok();
+            let path = path_from_url(specifier);
             let mut names = cjs_exports::export_names(&source);
             if let Some(path) = path.as_deref() {
                 collect_reexports(fs, path, &source, &mut names, &mut BTreeSet::new());

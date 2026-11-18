@@ -13,6 +13,9 @@ use hickory_resolver::proto::xfer::Protocol;
 use hickory_resolver::{Resolver, TokioResolver};
 use tokio::net::lookup_host;
 
+/// libuv reports "not found" as errno 2; the JS layer maps any integer to ENOTFOUND.
+const EAI_NONAME: i32 = -2;
+
 pub(crate) const OPS: &[OpDecl] = &[op_dns_lookup(), op_dns_resolve(), op_dns_reverse()];
 
 #[op2(async(lazy), fast)]
@@ -22,7 +25,7 @@ async fn op_dns_lookup(#[string] hostname: String, family: u8) -> Result<String,
         lookup_host((hostname.as_str(), 0))
             .await
             .map_err(|error: std::io::Error| {
-                let errno = error.raw_os_error().unwrap_or(libc::EAI_NONAME);
+                let errno = error.raw_os_error().unwrap_or(EAI_NONAME);
                 JsErrorBox::new("Error", (-errno).to_string())
             })?;
 
@@ -39,7 +42,7 @@ async fn op_dns_lookup(#[string] hostname: String, family: u8) -> Result<String,
         entries.push(ip);
     }
     if entries.is_empty() {
-        return Err(JsErrorBox::new("Error", (-libc::EAI_NONAME).to_string()));
+        return Err(JsErrorBox::new("Error", (-EAI_NONAME).to_string()));
     }
     Ok(entries.join("\0"))
 }

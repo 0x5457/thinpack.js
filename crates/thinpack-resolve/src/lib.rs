@@ -111,7 +111,10 @@ fn resolve_with(
     if specifier.starts_with('#') {
         return resolve_package_import(specifier, parent, fs, prefer_import);
     }
-    if Path::new(specifier).is_absolute() {
+    // A leading `/` is rooted on Unix and virtual `/app` paths on Windows are
+    // not host-absolute (they have no drive), but they are still absolute
+    // specifiers, not package names.
+    if Path::new(specifier).is_absolute() || specifier.starts_with('/') {
         return load_path(&normalize(Path::new(specifier)), fs);
     }
     if matches!(specifier, "." | "..")

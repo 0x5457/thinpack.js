@@ -9,24 +9,29 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::io;
+#[cfg(unix)]
 use std::mem::size_of;
+#[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use deno_core::{OpDecl, op2};
 use deno_error::JsErrorBox;
+#[cfg(unix)]
 use tokio::io::unix::AsyncFd;
-use tokio::net::{TcpStream, UnixStream};
+#[cfg(windows)]
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpStream;
+#[cfg(unix)]
+use tokio::net::UnixStream;
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeServer, ServerOptions};
+
+const EBADF: i32 = 9;
 
 static CONNECT_CANCELS: thinpack_core::CancelTable = thinpack_core::CancelTable::new();
 static READ_CANCELS: thinpack_core::CancelTable = thinpack_core::CancelTable::new();
 static ACCEPT_CANCELS: thinpack_core::CancelTable = thinpack_core::CancelTable::new();
-
-// The keep-alive idle time socket option is spelled differently on Apple platforms.
-#[cfg(target_vendor = "apple")]
-const TCP_KEEP_IDLE: libc::c_int = libc::TCP_KEEPALIVE;
-#[cfg(not(target_vendor = "apple"))]
-const TCP_KEEP_IDLE: libc::c_int = libc::TCP_KEEPIDLE;
 
 pub(crate) const OPS: &[OpDecl] = &[
     op_net_listen(),
@@ -51,8 +56,36 @@ pub(crate) const OPS: &[OpDecl] = &[
 
 enum Transport {
     Tcp(TcpStream),
+    #[cfg(unix)]
     Stream(UnixStream),
+    #[cfg(unix)]
     Pipe(AsyncFd<OwnedFd>),
+    #[cfg(windows)]
+    Pipe(PipeTransport),
+}
+
+/// Named-pipe half of Node's path-based `net` on Windows; libuv uses named
+/// pipes for `net.connect(path)` and `server.listen(path)` there.
+///
+/// Reads and writes are split so the connection's read pump does not hold a
+/// lock the write side needs. A single mutex around the pipe deadlocks as soon
+/// as both directions are used.
+#[cfg(windows)]
+struct PipeTransport {
+    read: tokio::sync::Mutex<Box<dyn AsyncRead + Unpin + Send>>,
+    write: tokio::sync::Mutex<Box<dyn AsyncWrite + Unpin + Send>>,
+}
+
+#[cfg(windows)]
+fn pipe_transport<T>(pipe: T) -> PipeTransport
+where
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let (read, write) = tokio::io::split(pipe);
+    PipeTransport {
+        read: tokio::sync::Mutex::new(Box::new(read)),
+        write: tokio::sync::Mutex::new(Box::new(write)),
+    }
 }
 macro_rules! read_ready {
     ($stream:expr, $buffer:expr) => {{
@@ -87,31 +120,34 @@ impl Transport {
     const fn kind(&self) -> &'static str {
         match self {
             Self::Tcp(_) => "tcp",
+            #[cfg(unix)]
             Self::Stream(_) | Self::Pipe(_) => "stream",
+            #[cfg(windows)]
+            Self::Pipe(_) => "stream",
         }
     }
 
     async fn read(&self, buffer: &mut [u8]) -> io::Result<usize> {
         match self {
             Self::Tcp(stream) => read_ready!(stream, buffer),
+            #[cfg(unix)]
             Self::Stream(stream) => read_ready!(stream, buffer),
+            #[cfg(unix)]
             Self::Pipe(fd) => pipe_read(fd, buffer).await,
+            #[cfg(windows)]
+            Self::Pipe(pipe) => pipe.read.lock().await.read(buffer).await,
         }
     }
 
     async fn write_all(&self, data: &[u8]) -> io::Result<()> {
         match self {
             Self::Tcp(stream) => write_ready!(stream, data),
+            #[cfg(unix)]
             Self::Stream(stream) => write_ready!(stream, data),
+            #[cfg(unix)]
             Self::Pipe(fd) => pipe_write(fd, data).await,
-        }
-    }
-
-    fn fd(&self) -> RawFd {
-        match self {
-            Self::Tcp(stream) => stream.as_raw_fd(),
-            Self::Stream(stream) => stream.as_raw_fd(),
-            Self::Pipe(fd) => fd.as_raw_fd(),
+            #[cfg(windows)]
+            Self::Pipe(pipe) => pipe.write.lock().await.write_all(data).await,
         }
     }
     fn addresses(&self) -> (String, String) {
@@ -126,59 +162,82 @@ impl Transport {
                     .map(|address| address.to_string())
                     .unwrap_or_default(),
             ),
+            #[cfg(unix)]
             Self::Stream(stream) => (
                 path_name(stream.local_addr()),
                 path_name(stream.peer_addr()),
             ),
+            #[cfg(unix)]
+            Self::Pipe(_) => (String::new(), String::new()),
+            #[cfg(windows)]
             Self::Pipe(_) => (String::new(), String::new()),
         }
     }
     fn shutdown(&self, how: i32) -> io::Result<()> {
-        // SAFETY: `self.fd()` stays open for the whole call because `self` owns the
-        // descriptor; `shutdown(2)` reports anything else through its return value.
-        if unsafe { libc::shutdown(self.fd(), how) } == 0 {
-            return Ok(());
-        }
-        let error = io::Error::last_os_error();
-        if error.raw_os_error() == Some(libc::ENOTSOCK) {
-            Ok(())
-        } else {
-            Err(error)
+        use std::net::Shutdown;
+
+        use socket2::SockRef;
+
+        let shutdown = match how {
+            0 => Shutdown::Read,
+            1 => Shutdown::Write,
+            _ => Shutdown::Both,
+        };
+        match self {
+            Self::Tcp(stream) => SockRef::from(stream).shutdown(shutdown),
+            #[cfg(unix)]
+            Self::Stream(stream) => SockRef::from(stream).shutdown(shutdown),
+            #[cfg(unix)]
+            Self::Pipe(fd) => {
+                // SAFETY: the descriptor stays open for the call because `self` owns it.
+                if unsafe { libc::shutdown(fd.as_raw_fd(), how) } == 0 {
+                    return Ok(());
+                }
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::ENOTSOCK) {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            }
+            #[cfg(windows)]
+            Self::Pipe(_) => Ok(()),
         }
     }
     fn set_no_delay(&self, no_delay: bool) -> io::Result<()> {
         match self {
             Self::Tcp(stream) => stream.set_nodelay(no_delay),
+            #[cfg(unix)]
             Self::Stream(_) | Self::Pipe(_) => Ok(()),
+            #[cfg(windows)]
+            Self::Pipe(_) => Ok(()),
         }
     }
     fn set_keep_alive(&self, enable: bool, delay_seconds: u32) -> io::Result<()> {
         match self {
             Self::Tcp(stream) => {
-                let fd = stream.as_raw_fd();
-                setsockopt_int(
-                    fd,
-                    libc::SOL_SOCKET,
-                    libc::SO_KEEPALIVE,
-                    libc::c_int::from(enable),
-                )?;
+                use socket2::{SockRef, TcpKeepalive};
+                use std::time::Duration;
+
+                let socket = SockRef::from(stream);
+                socket.set_keepalive(enable)?;
                 if enable {
-                    // A delay above `i32::MAX` reinterprets as a negative C int, which the
-                    // kernel rejects with `EINVAL` -- the same error Node surfaces today.
-                    setsockopt_int(
-                        fd,
-                        libc::IPPROTO_TCP,
-                        TCP_KEEP_IDLE,
-                        delay_seconds.cast_signed(),
+                    socket.set_tcp_keepalive(
+                        &TcpKeepalive::new()
+                            .with_time(Duration::from_secs(u64::from(delay_seconds))),
                     )?;
                 }
                 Ok(())
             }
+            #[cfg(unix)]
             Self::Stream(_) | Self::Pipe(_) => Ok(()),
+            #[cfg(windows)]
+            Self::Pipe(_) => Ok(()),
         }
     }
 }
 
+#[cfg(unix)]
 async fn pipe_read(fd: &AsyncFd<OwnedFd>, buffer: &mut [u8]) -> io::Result<usize> {
     loop {
         let mut ready = fd.readable().await?;
@@ -198,6 +257,7 @@ async fn pipe_read(fd: &AsyncFd<OwnedFd>, buffer: &mut [u8]) -> io::Result<usize
     }
 }
 
+#[cfg(unix)]
 async fn pipe_write(fd: &AsyncFd<OwnedFd>, data: &[u8]) -> io::Result<()> {
     let mut offset = 0;
     while offset < data.len() {
@@ -227,32 +287,12 @@ async fn pipe_write(fd: &AsyncFd<OwnedFd>, data: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn path_name(address: io::Result<tokio::net::unix::SocketAddr>) -> String {
     address
         .ok()
         .and_then(|address| address.as_pathname().map(|path| path.display().to_string()))
         .unwrap_or_default()
-}
-
-fn setsockopt_int(
-    fd: RawFd,
-    level: libc::c_int,
-    name: libc::c_int,
-    value: libc::c_int,
-) -> io::Result<()> {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "`size_of::<libc::c_int>()` is 4 on every supported platform"
-    )]
-    let length = size_of::<libc::c_int>() as libc::socklen_t;
-    // SAFETY: `fd` is an open socket owned by the caller, `value` stays live for the
-    // whole call and `length` describes its size exactly.
-    let result = unsafe { libc::setsockopt(fd, level, name, (&raw const value).cast(), length) };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
 }
 
 fn option_error(error: io::Error) -> JsErrorBox {
@@ -296,7 +336,7 @@ fn insert_connection(stream: Transport) -> u32 {
     reason = "`io::Error` is a `map_err` sink: taking a reference would only force a closure at every call site"
 )]
 fn io_error(error: io::Error) -> JsErrorBox {
-    let errno = error.raw_os_error().map_or(5, |code| -code);
+    let errno = deno_core::uv_compat::io_error_to_uv(&error);
     JsErrorBox::new("Error", errno.to_string())
 }
 
@@ -305,7 +345,7 @@ fn cancelled(detail: &str) -> JsErrorBox {
 }
 
 fn bad_connection() -> JsErrorBox {
-    JsErrorBox::new("Error", format!("-{}", libc::EBADF))
+    JsErrorBox::new("Error", format!("-{EBADF}"))
 }
 
 #[op2(fast)]
@@ -343,16 +383,31 @@ async fn connect_tcp(host: String, port: u16) -> Result<u32, JsErrorBox> {
     Ok(insert_connection(Transport::Tcp(stream)))
 }
 
+#[cfg(unix)]
 #[op2(async(lazy), fast)]
 async fn op_net_connect_unix(#[string] path: String, attempt: u32) -> Result<u32, JsErrorBox> {
     with_connect_cancel(attempt, connect_unix(path)).await
 }
 
+#[cfg(unix)]
 async fn connect_unix(path: String) -> Result<u32, JsErrorBox> {
     let stream = UnixStream::connect(&path).await.map_err(io_error)?;
     Ok(insert_connection(Transport::Stream(stream)))
 }
 
+#[cfg(windows)]
+#[op2(async(lazy), fast)]
+async fn op_net_connect_unix(#[string] path: String, attempt: u32) -> Result<u32, JsErrorBox> {
+    with_connect_cancel(attempt, connect_pipe(path)).await
+}
+
+#[cfg(windows)]
+async fn connect_pipe(path: String) -> Result<u32, JsErrorBox> {
+    let client = ClientOptions::new().open(&path).map_err(io_error)?;
+    Ok(insert_connection(Transport::Pipe(pipe_transport(client))))
+}
+
+#[cfg(unix)]
 #[derive(Clone, Copy)]
 enum FdKind {
     Tcp,
@@ -364,6 +419,7 @@ enum FdKind {
     Unknown,
 }
 
+#[cfg(unix)]
 impl FdKind {
     const fn name(self) -> &'static str {
         match self {
@@ -377,6 +433,7 @@ impl FdKind {
     }
 }
 
+#[cfg(unix)]
 fn fd_kind(fd: RawFd) -> FdKind {
     // SAFETY: `isatty` only inspects the descriptor and reports a bad one through its
     // return value.
@@ -425,6 +482,7 @@ fn fd_kind(fd: RawFd) -> FdKind {
     }
 }
 
+#[cfg(unix)]
 fn socket_family(fd: RawFd) -> libc::c_int {
     // SAFETY: `libc::sockaddr_storage` is a plain C struct of integers, so an all-zero
     // bit pattern is a valid value.
@@ -444,6 +502,7 @@ fn socket_family(fd: RawFd) -> libc::c_int {
     }
 }
 
+#[cfg(unix)]
 fn set_nonblocking(fd: RawFd) -> io::Result<()> {
     // SAFETY: `F_GETFL` only reads descriptor flags and reports a bad descriptor through
     // its return value.
@@ -462,6 +521,7 @@ fn set_nonblocking(fd: RawFd) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 #[op2(fast)]
 fn op_net_from_fd(fd: i32) -> Result<u32, JsErrorBox> {
     let stream = match fd_kind(fd) {
@@ -496,13 +556,29 @@ fn op_net_from_fd(fd: i32) -> Result<u32, JsErrorBox> {
     Ok(insert_connection(stream))
 }
 
+#[cfg(unix)]
 fn invalid_fd_type(kind: FdKind) -> JsErrorBox {
     JsErrorBox::new("Error", format!("ERR_INVALID_FD_TYPE\0{}", kind.name()))
+}
+
+#[cfg(windows)]
+#[op2(fast)]
+fn op_net_from_fd(_fd: i32) -> Result<u32, JsErrorBox> {
+    Err(JsErrorBox::new(
+        "Error",
+        "ENOTSUP\0socket handles are not supported on Windows yet",
+    ))
 }
 
 fn read_cancelled() -> &'static Mutex<HashSet<u32>> {
     static CANCELLED: OnceLock<Mutex<HashSet<u32>>> = OnceLock::new();
     CANCELLED.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+#[cfg(windows)]
+fn shutdown_reads() -> &'static Mutex<HashSet<u32>> {
+    static SHUTDOWN: OnceLock<Mutex<HashSet<u32>>> = OnceLock::new();
+    SHUTDOWN.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
 #[op2(fast)]
@@ -536,9 +612,22 @@ async fn op_net_read(id: u32) -> Result<Box<[u8]>, JsErrorBox> {
         .lock()
         .expect("net read cancelled")
         .remove(&id);
-    let read = outcome
-        .ok_or_else(|| cancelled("read aborted"))?
-        .map_err(io_error)?;
+    let read = match outcome {
+        Some(result) => result.map_err(io_error)?,
+        None => {
+            // A Windows pipe shutdown cancels the pending read; report EOF so
+            // the JS pump sees `end` rather than an error.
+            #[cfg(windows)]
+            if shutdown_reads()
+                .lock()
+                .expect("net shutdown reads")
+                .remove(&id)
+            {
+                return Ok(Box::new([]));
+            }
+            return Err(cancelled("read aborted"));
+        }
+    };
     buffer.truncate(read);
     Ok(buffer.into_boxed_slice())
 }
@@ -556,7 +645,7 @@ async fn op_net_write(id: u32, #[buffer(copy)] data: Vec<u8>) -> Result<u32, JsE
 
 #[op2(async(lazy), fast)]
 async fn op_net_shutdown(id: u32) -> Result<(), JsErrorBox> {
-    shutdown(id, libc::SHUT_WR)
+    shutdown(id, 1)
 }
 
 #[op2(fast)]
@@ -564,7 +653,7 @@ fn op_net_close(id: u32) {
     let Some(connection) = table().lock().expect("connection table").remove(&id) else {
         return;
     };
-    let _ = connection.stream.shutdown(libc::SHUT_RDWR);
+    let _ = connection.stream.shutdown(2);
 }
 
 #[op2]
@@ -600,7 +689,21 @@ fn op_net_set_keep_alive(id: u32, enable: bool, delay_seconds: u32) -> Result<()
 }
 
 fn shutdown(id: u32, how: i32) -> Result<(), JsErrorBox> {
-    stream_of(id)?.shutdown(how).map_err(io_error)
+    let stream = stream_of(id)?;
+    #[cfg(windows)]
+    if matches!(&*stream, Transport::Pipe(_)) {
+        // Named pipes have no half-close. Cancel the pending read (it wakes on
+        // READ_CANCELS), then drop the table entry so the handle closes and the
+        // peer sees EOF. The read op maps this particular cancellation to EOF.
+        shutdown_reads()
+            .lock()
+            .expect("net shutdown reads")
+            .insert(id);
+        let _ = READ_CANCELS.cancel(id);
+        table().lock().expect("connection table").remove(&id);
+        return Ok(());
+    }
+    stream.shutdown(how).map_err(io_error)
 }
 
 #[derive(Debug)]
@@ -648,8 +751,12 @@ pub fn take_stream(id: u32) -> Result<TcpStream, TakeStreamError> {
             return Err(TakeStreamError::Busy);
         }
     };
-    let Transport::Tcp(stream) = transport else {
-        return Err(TakeStreamError::NotTcp);
+    let stream = match transport {
+        Transport::Tcp(stream) => stream,
+        #[cfg(unix)]
+        Transport::Stream(_) | Transport::Pipe(_) => return Err(TakeStreamError::NotTcp),
+        #[cfg(windows)]
+        Transport::Pipe(_) => return Err(TakeStreamError::NotTcp),
     };
     let stream = stream.into_std().map_err(TakeStreamError::Io)?;
     TcpStream::from_std(stream).map_err(TakeStreamError::Io)
@@ -669,23 +776,36 @@ enum Listener {
         listener: tokio::net::TcpListener,
         local: String,
     },
+    #[cfg(unix)]
     Unix {
         listener: tokio::net::UnixListener,
         local: String,
         path: Option<String>,
+    },
+    #[cfg(windows)]
+    Pipe {
+        server: tokio::sync::Mutex<NamedPipeServer>,
+        name: String,
     },
 }
 
 impl Listener {
     fn local(&self) -> &str {
         match self {
-            Self::Tcp { local, .. } | Self::Unix { local, .. } => local,
+            Self::Tcp { local, .. } => local,
+            #[cfg(unix)]
+            Self::Unix { local, .. } => local,
+            #[cfg(windows)]
+            Self::Pipe { name, .. } => name,
         }
     }
     const fn kind(&self) -> &'static str {
         match self {
             Self::Tcp { .. } => "tcp",
+            #[cfg(unix)]
             Self::Unix { .. } => "unix",
+            #[cfg(windows)]
+            Self::Pipe { .. } => "unix",
         }
     }
 
@@ -696,9 +816,20 @@ impl Listener {
                 let _ = stream.set_nodelay(true);
                 Ok(insert_connection(Transport::Tcp(stream)))
             }
+            #[cfg(unix)]
             Self::Unix { listener, .. } => {
                 let (stream, _) = listener.accept().await.map_err(io_error)?;
                 Ok(insert_connection(Transport::Stream(stream)))
+            }
+            #[cfg(windows)]
+            Self::Pipe { server, name } => {
+                let mut server = server.lock().await;
+                server.connect().await.map_err(io_error)?;
+                let next = ServerOptions::new().create(name).map_err(io_error)?;
+                let connected = std::mem::replace(&mut *server, next);
+                Ok(insert_connection(Transport::Pipe(pipe_transport(
+                    connected,
+                ))))
             }
         }
     }
@@ -734,6 +865,13 @@ async fn op_net_listen(
     Ok(id)
 }
 
+#[cfg(windows)]
+async fn bind_reuse_port(host: &str, port: u16) -> io::Result<tokio::net::TcpListener> {
+    // Winsock has no SO_REUSEPORT equivalent; plain bind matches Node's fallback.
+    tokio::net::TcpListener::bind((host, port)).await
+}
+
+#[cfg(unix)]
 async fn bind_reuse_port(host: &str, port: u16) -> io::Result<tokio::net::TcpListener> {
     use tokio::net::TcpSocket;
 
@@ -755,6 +893,7 @@ async fn bind_reuse_port(host: &str, port: u16) -> io::Result<tokio::net::TcpLis
         .unwrap_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "no address to bind")))
 }
 
+#[cfg(unix)]
 #[op2(async(lazy), fast)]
 async fn op_net_listen_unix(#[string] path: String) -> Result<u32, JsErrorBox> {
     let listener = tokio::net::UnixListener::bind(&path).map_err(io_error)?;
@@ -770,6 +909,7 @@ async fn op_net_listen_unix(#[string] path: String) -> Result<u32, JsErrorBox> {
     Ok(id)
 }
 
+#[cfg(unix)]
 #[op2(fast)]
 fn op_net_listen_fd(fd: i32) -> Result<u32, JsErrorBox> {
     let kind = fd_kind(fd);
@@ -814,6 +954,30 @@ fn op_net_listen_fd(fd: i32) -> Result<u32, JsErrorBox> {
     Ok(id)
 }
 
+#[cfg(windows)]
+#[op2(async(lazy), fast)]
+async fn op_net_listen_unix(#[string] path: String) -> Result<u32, JsErrorBox> {
+    let server = ServerOptions::new().create(&path).map_err(io_error)?;
+    let id = LISTENERS.next();
+    listeners().lock().expect("listener table").insert(
+        id,
+        Arc::new(Listener::Pipe {
+            server: tokio::sync::Mutex::new(server),
+            name: path,
+        }),
+    );
+    Ok(id)
+}
+
+#[cfg(windows)]
+#[op2(fast)]
+fn op_net_listen_fd(_fd: i32) -> Result<u32, JsErrorBox> {
+    Err(JsErrorBox::new(
+        "Error",
+        "ENOTSUP\0socket handles are not supported on Windows yet",
+    ))
+}
+
 #[op2(async(lazy), fast)]
 async fn op_net_accept(id: u32) -> Result<u32, JsErrorBox> {
     let listener = listeners()
@@ -835,12 +999,15 @@ async fn op_net_accept(id: u32) -> Result<u32, JsErrorBox> {
 fn op_net_close_listener(id: u32) {
     let listener = listeners().lock().expect("listener table").remove(&id);
     let _ = ACCEPT_CANCELS.cancel(id);
+    #[cfg(unix)]
     if let Some(Listener::Unix {
         path: Some(path), ..
     }) = listener.as_deref()
     {
         let _ = std::fs::remove_file(path);
     }
+    #[cfg(windows)]
+    let _ = listener;
 }
 
 #[op2]

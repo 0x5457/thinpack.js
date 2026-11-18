@@ -18,13 +18,18 @@
   const setup = () => {
     if (state !== null) return state;
 
+    const port = Number(process.env.NODE_CHANNEL_PORT);
     const fd = Number(process.env.NODE_CHANNEL_FD);
-    if (!Number.isInteger(fd) || fd < 0) {
+    let id;
+    if (Number.isInteger(port) && port > 0) {
+      delete process.env.NODE_CHANNEL_PORT;
+      id = Deno.core.ops.op_cluster_channel_adopt_port(port);
+    } else if (Number.isInteger(fd) && fd >= 0) {
+      delete process.env.NODE_CHANNEL_FD;
+      id = Deno.core.ops.op_cluster_channel_adopt(fd);
+    } else {
       throw ipcError("ERR_IPC_DISCONNECTED", "no IPC channel for this cluster worker");
     }
-    delete process.env.NODE_CHANNEL_FD;
-
-    const id = Deno.core.ops.op_cluster_channel_adopt(fd);
     state = {
       id,
       connected: true,

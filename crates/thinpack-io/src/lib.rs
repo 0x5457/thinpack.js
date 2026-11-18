@@ -38,9 +38,9 @@ pub(crate) async fn op_thinpack_io_read_stdin() -> Result<Box<[u8]>, io::Error> 
 
 #[op2(fast)]
 pub(crate) fn op_thinpack_io_isatty(#[smi] fd: i32) -> bool {
-    // SAFETY: `isatty` takes the descriptor by value and dereferences nothing,
-    // so every `i32` is a valid argument.
-    unsafe { libc::isatty(fd) == 1 }
+    // `uv_guess_handle` is deno_core's libuv-compatible cross-platform check;
+    // on Windows it recognizes console handles as well as files and pipes.
+    deno_core::uv_compat::uv_guess_handle(fd) == deno_core::uv_compat::uv_handle_type::UV_TTY
 }
 
 #[must_use]

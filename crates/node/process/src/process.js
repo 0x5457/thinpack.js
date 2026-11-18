@@ -433,10 +433,14 @@
       if (previous === undefined) return { user, system };
       return { user: user - previous.user, system: system - previous.system };
     },
-    getuid: () => uid,
-    getgid: () => gid,
-    geteuid: () => euid,
-    getegid: () => egid,
+    ...(platform === "win32"
+      ? {}
+      : {
+        getuid: () => uid,
+        getgid: () => gid,
+        geteuid: () => euid,
+        getegid: () => egid,
+      }),
     umask: (mask) => {
       if (mask === undefined) return ops.op_process_umask(-1);
       const value = typeof mask === "string" ? Number.parseInt(mask, 8) : mask;
