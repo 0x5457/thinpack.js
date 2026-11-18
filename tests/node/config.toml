@@ -317,7 +317,10 @@ ignore = "asserts V8's private-field error message; QuickJS reports a different 
 
 [tests."parallel/test-events-add-abort-listener.mjs"]
 module = "events"
-ignore = "uses node:test, which thinpack does not implement"
+ignore = "uses node:test; this upstream test has not been revalidated"
+
+[tests."parallel/test-node-test.mjs"]
+module = "test"
 
 [tests."parallel/test-events-customevent.js"]
 module = "events"
@@ -381,7 +384,7 @@ ignore = "requires Node's internal test binding"
 
 [tests."parallel/test-os-constants-signals.js"]
 module = "os"
-ignore = "uses node:test, which thinpack does not implement"
+ignore = "thinpack's os.constants.signals is mutable"
 
 [tests."parallel/test-os-eol.js"]
 module = "os"
@@ -598,7 +601,7 @@ module = "buffer"
 
 [tests."parallel/test-buffer-resizable.js"]
 module = "buffer"
-ignore = "uses node:test, which thinpack does not implement"
+ignore = "uses node:test; this upstream test has not been revalidated"
 
 [tests."parallel/test-buffer-safe-unsafe.js"]
 module = "buffer"
@@ -680,23 +683,23 @@ module = "buffer"
 
 [tests."parallel/test-url-domain-ascii-unicode.js"]
 module = "url"
-ignore = "uses node:test, which thinpack does not implement"
+ignore = "uses node:test; this upstream test has not been revalidated"
 
 [tests."parallel/test-url-fileurltopath.js"]
 module = "url"
-ignore = "uses node:test, which thinpack does not implement"
+ignore = "uses node:test; this upstream test has not been revalidated"
 
 [tests."parallel/test-url-format-invalid-input.js"]
 module = "url"
-ignore = "uses node:test, which thinpack does not implement"
+ignore = "uses node:test; this upstream test has not been revalidated"
 
 [tests."parallel/test-url-format-whatwg.js"]
 module = "url"
-ignore = "uses node:test, which thinpack does not implement"
+ignore = "uses node:test; this upstream test has not been revalidated"
 
 [tests."parallel/test-url-format.js"]
 module = "url"
-ignore = "uses node:test, which thinpack does not implement"
+ignore = "uses node:test; this upstream test has not been revalidated"
 
 [tests."parallel/test-url-invalid-file-url-path-input.js"]
 module = "url"
@@ -711,7 +714,7 @@ ignore = "Node suppresses deprecation warnings raised inside node_modules; thinp
 
 [tests."parallel/test-url-parse-format.js"]
 module = "url"
-ignore = "uses node:test, which thinpack does not implement"
+ignore = "uses node:test; this upstream test has not been revalidated"
 
 [tests."parallel/test-url-parse-invalid-input.js"]
 module = "url"
@@ -820,11 +823,11 @@ ignore = "requires Node's internal test binding"
 
 [tests."parallel/test-util-isDeepStrictEqual.js"]
 module = "util"
-ignore = "uses node:test, which thinpack does not implement"
+ignore = "uses node:test; this upstream test has not been revalidated"
 
 [tests."parallel/test-util-isPartialDeepStrictEqual.js"]
 module = "util"
-ignore = "uses node:test, which thinpack does not implement"
+ignore = "uses node:test; this upstream test has not been revalidated"
 
 [tests."parallel/test-util-parse-env.js"]
 module = "util"
@@ -847,22 +850,22 @@ ignore = "requires Node's internal util module"
 
 [tests."parallel/test-util-stripvtcontrolcharacters.js"]
 module = "util"
-ignore = "uses node:test, which thinpack does not implement"
+ignore = "uses node:test; this upstream test has not been revalidated"
 
 [tests."parallel/test-util-styletext-hex.js"]
 module = "util"
-ignore = "uses node:test, which thinpack does not implement"
+ignore = "uses node:test; this upstream test has not been revalidated"
 
 [tests."parallel/test-util-styletext.js"]
 module = "util"
 
 [tests."parallel/test-util-text-decoder.js"]
 module = "util"
-ignore = "uses node:test, which thinpack does not implement"
+ignore = "uses node:test; this upstream test has not been revalidated"
 
 [tests."parallel/test-util-throttle-timing.js"]
 module = "util"
-ignore = "uses node:test, which thinpack does not implement"
+ignore = "uses node:test; this upstream test has not been revalidated"
 
 [tests."parallel/test-util-throttle.js"]
 module = "util"
@@ -1160,7 +1163,7 @@ ignore = "scheduler ordering differs from Node"
 
 [tests."parallel/test-timers-promises.js"]
 module = "timers"
-ignore = "uses node:test, which thinpack does not implement"
+ignore = "uses node:test; this upstream test has not been revalidated"
 
 [tests."parallel/test-timers-refresh-in-callback.js"]
 module = "timers"

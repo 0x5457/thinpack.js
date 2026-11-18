@@ -1,0 +1,13 @@
+[package]
+name = "thinpack-node-test"
+description = "test (adapted from Node.js and Deno) for thinpack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thinpack-js.workspace = true
+deno_core.workspace = true
+
+[lints]
+workspace = true

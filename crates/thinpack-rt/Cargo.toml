@@ -64,6 +64,7 @@ thinpack-node-buffer = { workspace = true, optional = true }
 thinpack-node-util = { workspace = true, optional = true }
 thinpack-node-url = { workspace = true, optional = true }
 thinpack-node-sea = { workspace = true, optional = true }
+thinpack-node-test = { workspace = true, optional = true }
 thinpack-node-sqlite = { workspace = true, optional = true }
 thinpack-node-ffi = { workspace = true, optional = true }
 tokio.workspace = true
@@ -75,7 +76,7 @@ toml = "1.2"
 
 # BEGIN GENERATED FEATURES
 [features]
-default = ["backend-quickjs", "node-assert", "node-async-hooks", "node-buffer", "node-child-process", "node-cluster", "node-console", "node-constants", "node-crypto", "node-diagnostics-channel", "node-dns", "node-events", "node-ffi", "node-fs", "node-http", "node-http2", "node-https", "node-inspector", "node-module", "node-net", "node-os", "node-path", "node-perf-hooks", "node-process", "node-punycode", "node-querystring", "node-readline", "node-sea", "node-sqlite", "node-stream", "node-string-decoder", "node-timers", "node-tls", "node-tty", "node-url", "node-util", "node-v8", "node-vm", "node-worker-threads", "node-zlib"]
+default = ["backend-quickjs", "node-assert", "node-async-hooks", "node-buffer", "node-child-process", "node-cluster", "node-console", "node-constants", "node-crypto", "node-diagnostics-channel", "node-dns", "node-events", "node-ffi", "node-fs", "node-http", "node-http2", "node-https", "node-inspector", "node-module", "node-net", "node-os", "node-path", "node-perf-hooks", "node-process", "node-punycode", "node-querystring", "node-readline", "node-sea", "node-sqlite", "node-stream", "node-string-decoder", "node-test", "node-timers", "node-tls", "node-tty", "node-url", "node-util", "node-v8", "node-vm", "node-worker-threads", "node-zlib"]
 backend-quickjs = ["thinpack-core/backend-quickjs"]
 backend-v8 = ["thinpack-core/backend-v8"]
 node-assert = ["dep:thinpack-node-assert", "node-util"]
@@ -108,6 +109,7 @@ node-sea = ["dep:thinpack-node-sea", "node-buffer"]
 node-sqlite = ["dep:thinpack-node-sqlite"]
 node-stream = ["dep:thinpack-node-stream", "node-buffer", "node-events", "node-string-decoder", "node-util"]
 node-string-decoder = ["dep:thinpack-node-string-decoder", "node-buffer"]
+node-test = ["dep:thinpack-node-test", "node-async-hooks"]
 node-timers = ["dep:thinpack-node-timers"]
 node-tls = ["dep:thinpack-node-tls", "node-stream", "node-net", "node-events"]
 node-tty = ["dep:thinpack-node-tty", "node-process"]

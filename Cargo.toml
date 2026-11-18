@@ -27,6 +27,7 @@ members = [
     "crates/node/util",
     "crates/node/url",
     "crates/node/sea",
+    "crates/node/test",
     "crates/node/ffi",
     "xtask",
 ]
@@ -124,6 +125,7 @@ thinpack-node-buffer = { path = "crates/node/buffer" }
 thinpack-node-util = { path = "crates/node/util" }
 thinpack-node-url = { path = "crates/node/url" }
 thinpack-node-sea = { path = "crates/node/sea" }
+thinpack-node-test = { path = "crates/node/test" }
 thinpack-node-ffi = { path = "crates/node/ffi" }
 thinpack-node-sqlite = { path = "crates/node/sqlite" }
 

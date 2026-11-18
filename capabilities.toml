@@ -181,6 +181,10 @@ ambient = true
 builtins = ["sea"]
 deps = ["buffer"]
 
+[modules.test]
+builtins = ["test"]
+deps = ["async_hooks"]
+
 [modules.sqlite]
 builtins = ["sqlite"]
 deps = []
