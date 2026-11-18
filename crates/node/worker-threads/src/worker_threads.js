@@ -255,8 +255,11 @@
     workerData,
     parentPort,
     SHARE_ENV: Symbol("SHARE_ENV"),
-    markAsUncloneable() {
-      throw notImplemented("markAsUncloneable");
+    markAsUncloneable(value) {
+      if (value === null || (typeof value !== "object" && typeof value !== "function")) {
+        throw new TypeError("The argument 'value' must be an object");
+      }
+      globalThis.__thinpack_uncloneable.add(value);
     },
     getEnvironmentData() {
       throw notImplemented("getEnvironmentData");

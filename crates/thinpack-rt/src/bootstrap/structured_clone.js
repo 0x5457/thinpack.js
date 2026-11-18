@@ -5,6 +5,11 @@
     return error;
   };
 
+  // `worker_threads.markAsUncloneable` marks an object so cloning it throws; the set lives on
+  // globalThis because the worker_threads module owns the marking and this bootstrap owns the
+  // cloning, and neither can reach the other's scope.
+  const uncloneable = (globalThis.__thinpack_uncloneable ??= new WeakSet());
+
   const cloneValue = (value, seen) => {
     if (value === null || typeof value !== "object") {
       if (typeof value === "function" || typeof value === "symbol") {
@@ -13,6 +18,7 @@
       return value;
     }
     if (seen.has(value)) return seen.get(value);
+    if (uncloneable.has(value)) throw dataCloneError("Value could not be cloned");
 
     if (value instanceof Date) return new Date(value.getTime());
     if (value instanceof RegExp) return new RegExp(value.source, value.flags);
