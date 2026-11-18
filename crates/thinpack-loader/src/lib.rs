@@ -59,9 +59,9 @@ pub fn esm_loader(fs: ModuleFs, builtins: BuiltinSources) -> Rc<dyn ModuleLoader
 
 #[must_use]
 pub fn init(main: Main, fs: ModuleFs) -> Extension {
-    const JS: &[ExtensionFileSource] = &[ExtensionFileSource::new(
+    const JS: &[ExtensionFileSource] = &[ExtensionFileSource::new_compressed(
         "thinpack:loader",
-        deno_core::ascii_str_include!("module.js"),
+        thinpack_js::js!("module.js"),
     )];
 
     Extension {

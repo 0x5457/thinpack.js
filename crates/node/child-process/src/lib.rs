@@ -6,9 +6,9 @@ mod ops;
 
 #[must_use]
 pub fn init() -> Extension {
-    const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new(
+    const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new_compressed(
         "node:child_process",
-        deno_core::ascii_str_include!("child_process.js"),
+        thinpack_js::js!("child_process.js"),
     )];
 
     Extension {

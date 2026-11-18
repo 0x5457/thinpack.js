@@ -4,9 +4,9 @@ use deno_core::{Extension, ExtensionFileSource};
 
 #[must_use]
 pub fn init() -> Extension {
-    const STARTUP: &[ExtensionFileSource] = &[ExtensionFileSource::new(
+    const STARTUP: &[ExtensionFileSource] = &[ExtensionFileSource::new_compressed(
         "thinpack:node/console",
-        deno_core::ascii_str_include!("console.js"),
+        thinpack_js::js!("console.js"),
     )];
     const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new(
         "node:console",

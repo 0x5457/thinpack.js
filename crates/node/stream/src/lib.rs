@@ -2,151 +2,142 @@ use std::borrow::Cow;
 
 use deno_core::{Extension, ExtensionFileSource};
 
-const STARTUP: &[ExtensionFileSource] = &[ExtensionFileSource::new(
+const STARTUP: &[ExtensionFileSource] = &[ExtensionFileSource::new_compressed(
     "thinpack:node-stream-globals",
-    deno_core::ascii_str_include!("stream_globals.js"),
+    thinpack_js::js!("stream_globals.js"),
 )];
 
 const BUILTINS: &[ExtensionFileSource] = &[
-    ExtensionFileSource::new(
-        "node:stream",
-        deno_core::ascii_str_include!("node-stream.js"),
-    ),
-    ExtensionFileSource::new(
-        "node:stream/consumers",
-        deno_core::ascii_str_include!("consumers.js"),
-    ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed("node:stream", thinpack_js::js!("node-stream.js")),
+    ExtensionFileSource::new_compressed("node:stream/consumers", thinpack_js::js!("consumers.js")),
+    ExtensionFileSource::new_compressed(
         "node:stream/promises",
-        deno_core::ascii_str_include!("node-stream-promises.js"),
+        thinpack_js::js!("node-stream-promises.js"),
     ),
-    ExtensionFileSource::new(
-        "node:stream/web",
-        deno_core::ascii_str_include!("node-stream-web.js"),
-    ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed("node:stream/web", thinpack_js::js!("node-stream-web.js")),
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/streams/legacy",
-        deno_core::ascii_str_include!("internal/legacy.js"),
+        thinpack_js::js!("internal/legacy.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/streams/readable",
-        deno_core::ascii_str_include!("internal/readable.js"),
+        thinpack_js::js!("internal/readable.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/streams/writable",
-        deno_core::ascii_str_include!("internal/writable.js"),
+        thinpack_js::js!("internal/writable.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/streams/duplex",
-        deno_core::ascii_str_include!("internal/duplex.js"),
+        thinpack_js::js!("internal/duplex.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/streams/transform",
-        deno_core::ascii_str_include!("internal/transform.js"),
+        thinpack_js::js!("internal/transform.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/streams/passthrough",
-        deno_core::ascii_str_include!("internal/passthrough.js"),
+        thinpack_js::js!("internal/passthrough.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/streams/pipeline",
-        deno_core::ascii_str_include!("internal/pipeline.js"),
+        thinpack_js::js!("internal/pipeline.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/streams/destroy",
-        deno_core::ascii_str_include!("internal/destroy.js"),
+        thinpack_js::js!("internal/destroy.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/streams/duplexify",
-        deno_core::ascii_str_include!("internal/duplexify.js"),
+        thinpack_js::js!("internal/duplexify.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/streams/from",
-        deno_core::ascii_str_include!("internal/from.js"),
+        thinpack_js::js!("internal/from.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/streams/compose",
-        deno_core::ascii_str_include!("internal/compose.js"),
+        thinpack_js::js!("internal/compose.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/streams/operators",
-        deno_core::ascii_str_include!("internal/operators.js"),
+        thinpack_js::js!("internal/operators.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/streams/end-of-stream",
-        deno_core::ascii_str_include!("internal/end-of-stream.js"),
+        thinpack_js::js!("internal/end-of-stream.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/streams/state",
-        deno_core::ascii_str_include!("internal/state.js"),
+        thinpack_js::js!("internal/state.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/streams/lazy_transform",
-        deno_core::ascii_str_include!("internal/lazy_transform.js"),
+        thinpack_js::js!("internal/lazy_transform.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/streams/duplexpair",
-        deno_core::ascii_str_include!("internal/duplexpair.js"),
+        thinpack_js::js!("internal/duplexpair.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/binding/stream_wrap",
-        deno_core::ascii_str_include!("binding_stream_wrap.js"),
+        thinpack_js::js!("binding_stream_wrap.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/worker/io",
-        deno_core::ascii_str_include!("internal/worker_io.js"),
+        thinpack_js::js!("internal/worker_io.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/webstreams/readablestream",
-        deno_core::ascii_str_include!("internal/webstreams/readablestream.js"),
+        thinpack_js::js!("internal/webstreams/readablestream.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/webstreams/writablestream",
-        deno_core::ascii_str_include!("internal/webstreams/writablestream.js"),
+        thinpack_js::js!("internal/webstreams/writablestream.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/webstreams/transformstream",
-        deno_core::ascii_str_include!("internal/webstreams/transformstream.js"),
+        thinpack_js::js!("internal/webstreams/transformstream.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/webstreams/queuingstrategies",
-        deno_core::ascii_str_include!("internal/webstreams/queuingstrategies.js"),
+        thinpack_js::js!("internal/webstreams/queuingstrategies.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/webstreams/adapters",
-        deno_core::ascii_str_include!("internal/webstreams/adapters.js"),
+        thinpack_js::js!("internal/webstreams/adapters.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/webstreams/util",
-        deno_core::ascii_str_include!("internal/webstreams/util.js"),
+        thinpack_js::js!("internal/webstreams/util.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/webstreams/transfer",
-        deno_core::ascii_str_include!("internal/webstreams/transfer.js"),
+        thinpack_js::js!("internal/webstreams/transfer.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/webstreams/compression",
-        deno_core::ascii_str_include!("internal/webstreams/compression.js"),
+        thinpack_js::js!("internal/webstreams/compression.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/webstreams/encoding",
-        deno_core::ascii_str_include!("internal/webstreams/encoding.js"),
+        thinpack_js::js!("internal/webstreams/encoding.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/streams/add-abort-signal",
-        deno_core::ascii_str_include!("internal/add-abort-signal.js"),
+        thinpack_js::js!("internal/add-abort-signal.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/async_context_frame",
-        deno_core::ascii_str_include!("async_context_frame.js"),
+        thinpack_js::js!("async_context_frame.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/binding/uv",
-        deno_core::ascii_str_include!("binding_uv.js"),
+        thinpack_js::js!("binding_uv.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/binding/messaging",
-        deno_core::ascii_str_include!("binding_messaging.js"),
+        thinpack_js::js!("binding_messaging.js"),
     ),
 ];
 

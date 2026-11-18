@@ -4,9 +4,9 @@ use deno_core::{Extension, ExtensionFileSource};
 
 #[must_use]
 pub fn init() -> Extension {
-    const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new(
+    const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new_compressed(
         "node:querystring",
-        deno_core::ascii_str_include!("node-querystring.js"),
+        thinpack_js::js!("node-querystring.js"),
     )];
 
     Extension {

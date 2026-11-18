@@ -8,23 +8,23 @@ use crate::ops::OPS;
 
 #[must_use]
 pub fn init() -> Extension {
-    const STARTUP: &[ExtensionFileSource] = &[ExtensionFileSource::new(
+    const STARTUP: &[ExtensionFileSource] = &[ExtensionFileSource::new_compressed(
         "thinpack:node/url",
-        deno_core::ascii_str_include!("whatwg_url.js"),
+        thinpack_js::js!("whatwg_url.js"),
     )];
     const BUILTINS: &[ExtensionFileSource] = &[
-        ExtensionFileSource::new("node:url", deno_core::ascii_str_include!("node-url.js")),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed("node:url", thinpack_js::js!("node-url.js")),
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/url_binding",
-            deno_core::ascii_str_include!("url_binding.js"),
+            thinpack_js::js!("url_binding.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/binding/url_pattern",
-            deno_core::ascii_str_include!("url_pattern.js"),
+            thinpack_js::js!("url_pattern.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/binding/encoding_binding",
-            deno_core::ascii_str_include!("encoding_binding.js"),
+            thinpack_js::js!("encoding_binding.js"),
         ),
     ];
 

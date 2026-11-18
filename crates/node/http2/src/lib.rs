@@ -6,9 +6,9 @@ use deno_core::{Extension, ExtensionFileSource};
 
 #[must_use]
 pub fn init() -> Extension {
-    const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new(
+    const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new_compressed(
         "node:http2",
-        deno_core::ascii_str_include!("http2.js"),
+        thinpack_js::js!("http2.js"),
     )];
 
     Extension {

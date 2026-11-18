@@ -4,9 +4,9 @@ use deno_core::{Extension, ExtensionFileSource};
 
 #[must_use]
 pub fn init() -> Extension {
-    const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new(
+    const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new_compressed(
         "node:ffi",
-        deno_core::ascii_str_include!("ffi.js"),
+        thinpack_js::js!("ffi.js"),
     )];
 
     Extension {

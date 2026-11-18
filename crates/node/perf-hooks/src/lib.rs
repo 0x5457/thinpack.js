@@ -8,13 +8,13 @@ use crate::ops::OPS;
 
 #[must_use]
 pub fn init() -> Extension {
-    const STARTUP: &[ExtensionFileSource] = &[ExtensionFileSource::new(
+    const STARTUP: &[ExtensionFileSource] = &[ExtensionFileSource::new_compressed(
         "thinpack:node-perf-globals",
-        deno_core::ascii_str_include!("perf_globals.js"),
+        thinpack_js::js!("perf_globals.js"),
     )];
-    const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new(
+    const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new_compressed(
         "node:perf_hooks",
-        deno_core::ascii_str_include!("perf_hooks.js"),
+        thinpack_js::js!("perf_hooks.js"),
     )];
 
     Extension {

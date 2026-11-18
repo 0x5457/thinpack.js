@@ -8,13 +8,13 @@ use crate::ops::OPS;
 
 #[must_use]
 pub fn init() -> Extension {
-    const STARTUP: &[ExtensionFileSource] = &[ExtensionFileSource::new(
+    const STARTUP: &[ExtensionFileSource] = &[ExtensionFileSource::new_compressed(
         "thinpack:node/process",
-        deno_core::ascii_str_include!("process.js"),
+        thinpack_js::js!("process.js"),
     )];
-    const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new(
+    const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new_compressed(
         "node:process",
-        deno_core::ascii_str_include!("process_module.js"),
+        thinpack_js::js!("process_module.js"),
     )];
 
     Extension {

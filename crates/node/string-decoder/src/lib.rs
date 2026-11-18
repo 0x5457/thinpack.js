@@ -5,13 +5,13 @@ use deno_core::{Extension, ExtensionFileSource};
 #[must_use]
 pub fn init() -> Extension {
     const BUILTINS: &[ExtensionFileSource] = &[
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:string_decoder",
-            deno_core::ascii_str_include!("node-string-decoder.js"),
+            thinpack_js::js!("node-string-decoder.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/binding/string_decoder",
-            deno_core::ascii_str_include!("binding_string_decoder.js"),
+            thinpack_js::js!("binding_string_decoder.js"),
         ),
     ];
 

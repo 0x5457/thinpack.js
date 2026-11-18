@@ -6,163 +6,157 @@ use deno_core::{Extension, ExtensionFileSource};
 
 use crate::ops::OPS;
 
-const STARTUP: &[ExtensionFileSource] = &[ExtensionFileSource::new(
+const STARTUP: &[ExtensionFileSource] = &[ExtensionFileSource::new_compressed(
     "thinpack:node-internals",
-    deno_core::ascii_str_include!("primordials.js"),
+    thinpack_js::js!("primordials.js"),
 )];
 
 const BUILTINS: &[ExtensionFileSource] = &[
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/assert",
-        deno_core::ascii_str_include!("assert.js"),
+        thinpack_js::js!("assert.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/binding/config",
-        deno_core::ascii_str_include!("binding_config.js"),
+        thinpack_js::js!("binding_config.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/binding/constants",
-        deno_core::ascii_str_include!("binding_constants.js"),
+        thinpack_js::js!("binding_constants.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/binding/buffer",
-        deno_core::ascii_str_include!("binding_buffer.js"),
+        thinpack_js::js!("binding_buffer.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/binding/types",
-        deno_core::ascii_str_include!("binding_types.js"),
+        thinpack_js::js!("binding_types.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/binding/util",
-        deno_core::ascii_str_include!("binding_util.js"),
+        thinpack_js::js!("binding_util.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/constants",
-        deno_core::ascii_str_include!("constants.js"),
+        thinpack_js::js!("constants.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/encoding",
-        deno_core::ascii_str_include!("encoding.js"),
+        thinpack_js::js!("encoding.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/worker/js_transferable",
-        deno_core::ascii_str_include!("worker_js_transferable.js"),
+        thinpack_js::js!("worker_js_transferable.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/errors",
-        deno_core::ascii_str_include!("errors.js"),
+        thinpack_js::js!("errors.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/options",
-        deno_core::ascii_str_include!("options.js"),
+        thinpack_js::js!("options.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/streams/utils",
-        deno_core::ascii_str_include!("streams_utils.js"),
+        thinpack_js::js!("streams_utils.js"),
     ),
-    ExtensionFileSource::new(
-        "node:thinpack/internal/util",
-        deno_core::ascii_str_include!("util.js"),
-    ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed("node:thinpack/internal/util", thinpack_js::js!("util.js")),
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/util/colors",
-        deno_core::ascii_str_include!("util_colors.js"),
+        thinpack_js::js!("util_colors.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/util/debuglog",
-        deno_core::ascii_str_include!("util_debuglog.js"),
+        thinpack_js::js!("util_debuglog.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/util/comparisons",
-        deno_core::ascii_str_include!("comparisons.js"),
+        thinpack_js::js!("comparisons.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/util/inspect",
-        deno_core::ascii_str_include!("util_inspect.js"),
+        thinpack_js::js!("util_inspect.js"),
     ),
-    ExtensionFileSource::new(
-        "node:thinpack/internal/url",
-        deno_core::ascii_str_include!("url.js"),
-    ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed("node:thinpack/internal/url", thinpack_js::js!("url.js")),
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/net/address",
-        deno_core::ascii_str_include!("net_address.js"),
+        thinpack_js::js!("net_address.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/validators",
-        deno_core::ascii_str_include!("validators.js"),
+        thinpack_js::js!("validators.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/abort_controller",
-        deno_core::ascii_str_include!("abort_controller_module.js"),
+        thinpack_js::js!("abort_controller_module.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/async_hooks",
-        deno_core::ascii_str_include!("async_hooks.js"),
+        thinpack_js::js!("async_hooks.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/process/task_queues",
-        deno_core::ascii_str_include!("process_task_queues.js"),
+        thinpack_js::js!("process_task_queues.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/events/abort_listener",
-        deno_core::ascii_str_include!("events_abort_listener.js"),
+        thinpack_js::js!("events_abort_listener.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/event_target",
-        deno_core::ascii_str_include!("event_target.js"),
+        thinpack_js::js!("event_target.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/fixed_queue",
-        deno_core::ascii_str_include!("fixed_queue.js"),
+        thinpack_js::js!("fixed_queue.js"),
     ),
     #[cfg(feature = "glob")]
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/deps/minimatch/index",
-        deno_core::ascii_str_include!("minimatch.js"),
+        thinpack_js::js!("minimatch.js"),
     ),
     #[cfg(feature = "glob")]
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/deps/minimatch/ast",
-        deno_core::ascii_str_include!("minimatch_ast.js"),
+        thinpack_js::js!("minimatch_ast.js"),
     ),
     #[cfg(feature = "glob")]
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/deps/minimatch/brace-expressions",
-        deno_core::ascii_str_include!("minimatch_brace_expressions.js"),
+        thinpack_js::js!("minimatch_brace_expressions.js"),
     ),
     #[cfg(feature = "glob")]
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/deps/minimatch/escape",
-        deno_core::ascii_str_include!("minimatch_escape.js"),
+        thinpack_js::js!("minimatch_escape.js"),
     ),
     #[cfg(feature = "glob")]
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/deps/minimatch/unescape",
-        deno_core::ascii_str_include!("minimatch_unescape.js"),
+        thinpack_js::js!("minimatch_unescape.js"),
     ),
     #[cfg(feature = "glob")]
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/deps/minimatch/assert-valid-pattern",
-        deno_core::ascii_str_include!("minimatch_assert_valid_pattern.js"),
+        thinpack_js::js!("minimatch_assert_valid_pattern.js"),
     ),
     #[cfg(feature = "glob")]
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/deps/brace-expansion",
-        deno_core::ascii_str_include!("brace_expansion.js"),
+        thinpack_js::js!("brace_expansion.js"),
     ),
     #[cfg(feature = "glob")]
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/deps/balanced-match",
-        deno_core::ascii_str_include!("balanced_match.js"),
+        thinpack_js::js!("balanced_match.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/querystring",
-        deno_core::ascii_str_include!("querystring.js"),
+        thinpack_js::js!("querystring.js"),
     ),
-    ExtensionFileSource::new(
+    ExtensionFileSource::new_compressed(
         "node:thinpack/internal/util/types",
-        deno_core::ascii_str_include!("util_types.js"),
+        thinpack_js::js!("util_types.js"),
     ),
 ];
 

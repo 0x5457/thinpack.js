@@ -10,31 +10,31 @@ use crate::ops::OPS;
 pub fn init() -> Extension {
     // Runs before user code: a process spawned by a cluster primary installs its IPC channel
     // and `process.send` here, exactly where Node sets up the child side of the channel.
-    const STARTUP: &[ExtensionFileSource] = &[ExtensionFileSource::new(
+    const STARTUP: &[ExtensionFileSource] = &[ExtensionFileSource::new_compressed(
         "thinpack:node/cluster-bootstrap",
-        deno_core::ascii_str_include!("cluster_bootstrap.js"),
+        thinpack_js::js!("cluster_bootstrap.js"),
     )];
     const BUILTINS: &[ExtensionFileSource] = &[
-        ExtensionFileSource::new("node:cluster", deno_core::ascii_str_include!("cluster.js")),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed("node:cluster", thinpack_js::js!("cluster.js")),
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/cluster/primary",
-            deno_core::ascii_str_include!("primary.js"),
+            thinpack_js::js!("primary.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/cluster/child",
-            deno_core::ascii_str_include!("child.js"),
+            thinpack_js::js!("child.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/cluster/worker",
-            deno_core::ascii_str_include!("worker.js"),
+            thinpack_js::js!("worker.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/cluster/channel",
-            deno_core::ascii_str_include!("channel.js"),
+            thinpack_js::js!("channel.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/cluster/worker_process",
-            deno_core::ascii_str_include!("worker_process.js"),
+            thinpack_js::js!("worker_process.js"),
         ),
     ];
 

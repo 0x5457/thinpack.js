@@ -5,17 +5,17 @@ use deno_core::{Extension, ExtensionFileSource};
 #[must_use]
 pub fn init() -> Extension {
     const BUILTINS: &[ExtensionFileSource] = &[
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:diagnostics_channel",
-            deno_core::ascii_str_include!("node-diagnostics-channel.js"),
+            thinpack_js::js!("node-diagnostics-channel.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/binding/diagnostics_channel",
-            deno_core::ascii_str_include!("binding_diagnostics_channel.js"),
+            thinpack_js::js!("binding_diagnostics_channel.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/binding/errors",
-            deno_core::ascii_str_include!("binding_errors.js"),
+            thinpack_js::js!("binding_errors.js"),
         ),
     ];
 

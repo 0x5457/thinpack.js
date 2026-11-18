@@ -5,43 +5,37 @@ use deno_core::{Extension, ExtensionFileSource};
 #[must_use]
 pub fn init() -> Extension {
     const STARTUP: &[ExtensionFileSource] = &[
-        ExtensionFileSource::new(
-            "thinpack:node/buffer",
-            deno_core::ascii_str_include!("buffer.js"),
-        ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed("thinpack:node/buffer", thinpack_js::js!("buffer.js")),
+        ExtensionFileSource::new_compressed(
             "thinpack:node/buffer-globals",
-            deno_core::ascii_str_include!("buffer_globals.js"),
+            thinpack_js::js!("buffer_globals.js"),
         ),
     ];
     const BUILTINS: &[ExtensionFileSource] = &[
-        ExtensionFileSource::new(
-            "node:buffer",
-            deno_core::ascii_str_include!("node-buffer.js"),
-        ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed("node:buffer", thinpack_js::js!("node-buffer.js")),
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/buffer",
-            deno_core::ascii_str_include!("node-internal-buffer.js"),
+            thinpack_js::js!("node-internal-buffer.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/blob",
-            deno_core::ascii_str_include!("node-internal-blob.js"),
+            thinpack_js::js!("node-internal-blob.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/file",
-            deno_core::ascii_str_include!("node-internal-file.js"),
+            thinpack_js::js!("node-internal-file.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/binding/blob",
-            deno_core::ascii_str_include!("binding_blob.js"),
+            thinpack_js::js!("binding_blob.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/webidl",
-            deno_core::ascii_str_include!("node-internal-webidl.js"),
+            thinpack_js::js!("node-internal-webidl.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/v8/startup_snapshot",
-            deno_core::ascii_str_include!("startup_snapshot.js"),
+            thinpack_js::js!("startup_snapshot.js"),
         ),
     ];
 

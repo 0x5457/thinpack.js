@@ -4,9 +4,9 @@ use deno_core::{Extension, ExtensionFileSource};
 
 #[must_use]
 pub fn init() -> Extension {
-    const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new(
+    const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new_compressed(
         "node:inspector",
-        deno_core::ascii_str_include!("inspector.js"),
+        thinpack_js::js!("inspector.js"),
     )];
 
     Extension {

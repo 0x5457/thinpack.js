@@ -8,9 +8,9 @@ pub use ops::{TakeStreamError, take_stream};
 
 #[must_use]
 pub fn init() -> Extension {
-    const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new(
+    const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new_compressed(
         "node:net",
-        deno_core::ascii_str_include!("net.js"),
+        thinpack_js::js!("net.js"),
     )];
 
     Extension {

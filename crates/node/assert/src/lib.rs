@@ -5,29 +5,26 @@ use deno_core::{Extension, ExtensionFileSource};
 #[must_use]
 pub fn init() -> Extension {
     const BUILTINS: &[ExtensionFileSource] = &[
-        ExtensionFileSource::new(
-            "node:assert",
-            deno_core::ascii_str_include!("node-assert.js"),
-        ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed("node:assert", thinpack_js::js!("node-assert.js")),
+        ExtensionFileSource::new_compressed(
             "node:assert/strict",
-            deno_core::ascii_str_include!("node-assert-strict.js"),
+            thinpack_js::js!("node-assert-strict.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/assert/assertion_error",
-            deno_core::ascii_str_include!("node-internal-assertion-error.js"),
+            thinpack_js::js!("node-internal-assertion-error.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/assert/utils",
-            deno_core::ascii_str_include!("node-internal-assert-utils.js"),
+            thinpack_js::js!("node-internal-assert-utils.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/assert/myers_diff",
-            deno_core::ascii_str_include!("node-internal-myers-diff.js"),
+            thinpack_js::js!("node-internal-myers-diff.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/errors/error_source",
-            deno_core::ascii_str_include!("error_source.js"),
+            thinpack_js::js!("error_source.js"),
         ),
     ];
 

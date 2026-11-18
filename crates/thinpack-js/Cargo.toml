@@ -1,0 +1,15 @@
+[package]
+name = "thinpack-js"
+description = "compile-time brotli compression for the JavaScript embedded in the runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+brotli = "9"
+
+[lints]
+workspace = true

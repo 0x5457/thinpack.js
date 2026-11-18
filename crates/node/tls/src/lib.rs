@@ -8,9 +8,9 @@ use deno_core::{Extension, ExtensionFileSource};
 
 #[must_use]
 pub fn init() -> Extension {
-    const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new(
+    const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new_compressed(
         "node:tls",
-        deno_core::ascii_str_include!("tls.js"),
+        thinpack_js::js!("tls.js"),
     )];
 
     Extension {

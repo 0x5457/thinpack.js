@@ -5,13 +5,10 @@ use deno_core::{Extension, ExtensionFileSource};
 #[must_use]
 pub fn init() -> Extension {
     const BUILTINS: &[ExtensionFileSource] = &[
-        ExtensionFileSource::new(
-            "node:events",
-            deno_core::ascii_str_include!("node-events.js"),
-        ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed("node:events", thinpack_js::js!("node-events.js")),
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/events/symbols",
-            deno_core::ascii_str_include!("events_symbols.js"),
+            thinpack_js::js!("events_symbols.js"),
         ),
     ];
 

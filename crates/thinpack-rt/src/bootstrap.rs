@@ -4,33 +4,33 @@ use deno_core::{Extension, ExtensionFileSource};
 
 pub(crate) fn init() -> Extension {
     const JS: &[ExtensionFileSource] = &[
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "thinpack:node-dom-exception",
-            deno_core::ascii_str_include!("bootstrap/dom_exception.js"),
+            thinpack_js::js!("bootstrap/dom_exception.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "thinpack:node-structured-clone",
-            deno_core::ascii_str_include!("bootstrap/structured_clone.js"),
+            thinpack_js::js!("bootstrap/structured_clone.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "thinpack:node-globals",
-            deno_core::ascii_str_include!("bootstrap/node_globals.js"),
+            thinpack_js::js!("bootstrap/node_globals.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "thinpack:node-event-globals",
-            deno_core::ascii_str_include!("bootstrap/event_globals.js"),
+            thinpack_js::js!("bootstrap/event_globals.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "thinpack:node-encoding-globals",
-            deno_core::ascii_str_include!("bootstrap/encoding_globals.js"),
+            thinpack_js::js!("bootstrap/encoding_globals.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "thinpack:node-intl-fallback",
-            deno_core::ascii_str_include!("bootstrap/intl_fallback.js"),
+            thinpack_js::js!("bootstrap/intl_fallback.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "thinpack:node-abort",
-            deno_core::ascii_str_include!("bootstrap/abort_controller.js"),
+            thinpack_js::js!("bootstrap/abort_controller.js"),
         ),
     ];
 

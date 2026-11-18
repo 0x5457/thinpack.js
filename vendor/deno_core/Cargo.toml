@@ -107,6 +107,9 @@ version = "1.0.57"
 [dependencies.base64]
 version = "0.22.1"
 
+[dependencies.brotli-decompressor]
+version = "6"
+
 [dependencies.bit-set]
 version = "0.8.0"
 

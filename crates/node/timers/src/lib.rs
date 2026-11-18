@@ -4,9 +4,9 @@ use deno_core::{Extension, ExtensionFileSource};
 
 #[must_use]
 pub fn init() -> Extension {
-    const STARTUP: &[ExtensionFileSource] = &[ExtensionFileSource::new(
+    const STARTUP: &[ExtensionFileSource] = &[ExtensionFileSource::new_compressed(
         "thinpack:node/timers",
-        deno_core::ascii_str_include!("timers.js"),
+        thinpack_js::js!("timers.js"),
     )];
     const BUILTINS: &[ExtensionFileSource] = &[
         ExtensionFileSource::new(
@@ -23,9 +23,9 @@ pub fn init() -> Extension {
                  };\n"
             ),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:timers/promises",
-            deno_core::ascii_str_include!("promises.js"),
+            thinpack_js::js!("promises.js"),
         ),
     ];
 

@@ -5,10 +5,10 @@ use deno_core::{Extension, ExtensionFileSource};
 #[must_use]
 pub fn init() -> Extension {
     const BUILTINS: &[ExtensionFileSource] = &[
-        ExtensionFileSource::new("node:http", deno_core::ascii_str_include!("http.js")),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed("node:http", thinpack_js::js!("http.js")),
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/websocket",
-            deno_core::ascii_str_include!("websocket.js"),
+            thinpack_js::js!("websocket.js"),
         ),
     ];
 

@@ -18,6 +18,7 @@ path = "tests/node.rs"
 harness = false
 
 [dependencies]
+thinpack-js.workspace = true
 deno_core.workspace = true
 thinpack-core.workspace = true
 thinpack-caps.workspace = true

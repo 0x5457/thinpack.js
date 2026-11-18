@@ -213,7 +213,7 @@ fn extensions(main: Main, fs: ModuleFs) -> Result<RuntimeParts, Box<dyn std::err
     extensions.extend(registry::extensions());
     #[cfg(feature = "node-ffi")]
     extensions.push(thinpack_node_ffi::engine());
-    let builtins = BuiltinSources::collect(&extensions)?;
+    let builtins = BuiltinSources::collect(&mut extensions)?;
     let loader = thinpack_loader::esm_loader(fs, builtins.clone());
     Ok((extensions, builtins, loader))
 }

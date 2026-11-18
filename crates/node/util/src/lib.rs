@@ -5,10 +5,10 @@ use deno_core::{Extension, ExtensionFileSource};
 #[must_use]
 pub fn init() -> Extension {
     const BUILTINS: &[ExtensionFileSource] = &[
-        ExtensionFileSource::new("node:util", deno_core::ascii_str_include!("node-util.js")),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed("node:util", thinpack_js::js!("node-util.js")),
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/util/inspect/impl",
-            deno_core::ascii_str_include!("node-internal-util-inspect.js"),
+            thinpack_js::js!("node-internal-util-inspect.js"),
         ),
         ExtensionFileSource::new(
             "node:util/types",
@@ -16,49 +16,49 @@ pub fn init() -> Extension {
                 "module.exports = require('node:thinpack/internal/util/types');\n"
             ),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/mime",
-            deno_core::ascii_str_include!("mime.js"),
+            thinpack_js::js!("mime.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/util/parse_args/parse_args",
-            deno_core::ascii_str_include!("parse_args.js"),
+            thinpack_js::js!("parse_args.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/util/parse_args/utils",
-            deno_core::ascii_str_include!("parse_args_utils.js"),
+            thinpack_js::js!("parse_args_utils.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/util/throttle",
-            deno_core::ascii_str_include!("throttle.js"),
+            thinpack_js::js!("throttle.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/util/debounce",
-            deno_core::ascii_str_include!("debounce.js"),
+            thinpack_js::js!("debounce.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/util/diff",
-            deno_core::ascii_str_include!("util_diff.js"),
+            thinpack_js::js!("util_diff.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/util/trace_sigint",
-            deno_core::ascii_str_include!("util_trace_sigint.js"),
+            thinpack_js::js!("util_trace_sigint.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/bootstrap/realm",
-            deno_core::ascii_str_include!("bootstrap_realm.js"),
+            thinpack_js::js!("bootstrap_realm.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/timers",
-            deno_core::ascii_str_include!("internal_timers.js"),
+            thinpack_js::js!("internal_timers.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/watchdog",
-            deno_core::ascii_str_include!("watchdog.js"),
+            thinpack_js::js!("watchdog.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/binding/timers",
-            deno_core::ascii_str_include!("binding_timers.js"),
+            thinpack_js::js!("binding_timers.js"),
         ),
     ];
 

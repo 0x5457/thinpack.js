@@ -5,13 +5,10 @@ use deno_core::{Extension, ExtensionFileSource};
 #[must_use]
 pub fn init() -> Extension {
     const BUILTINS: &[ExtensionFileSource] = &[
-        ExtensionFileSource::new(
-            "node:readline",
-            deno_core::ascii_str_include!("readline.js"),
-        ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed("node:readline", thinpack_js::js!("readline.js")),
+        ExtensionFileSource::new_compressed(
             "node:readline/promises",
-            deno_core::ascii_str_include!("readline_promises.js"),
+            thinpack_js::js!("readline_promises.js"),
         ),
     ];
 

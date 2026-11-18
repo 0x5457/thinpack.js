@@ -16,74 +16,74 @@ use crate::ops::OPS;
 #[must_use]
 pub fn init() -> Extension {
     const BUILTINS: &[ExtensionFileSource] = &[
-        ExtensionFileSource::new("node:fs", deno_core::ascii_str_include!("node-fs.js")),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed("node:fs", thinpack_js::js!("node-fs.js")),
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/fs/utils",
-            deno_core::ascii_str_include!("node-internal-fs-utils.js"),
+            thinpack_js::js!("node-internal-fs-utils.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:fs/promises",
-            deno_core::ascii_str_include!("node-fs-promises.js"),
+            thinpack_js::js!("node-fs-promises.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/fs/promises",
-            deno_core::ascii_str_include!("node-internal-fs-promises.js"),
+            thinpack_js::js!("node-internal-fs-promises.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/fs/dir",
-            deno_core::ascii_str_include!("node-internal-fs-dir.js"),
+            thinpack_js::js!("node-internal-fs-dir.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/fs/read/context",
-            deno_core::ascii_str_include!("node-internal-fs-read-context.js"),
+            thinpack_js::js!("node-internal-fs-read-context.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/fs/cp/cp",
-            deno_core::ascii_str_include!("node-internal-fs-cp.js"),
+            thinpack_js::js!("node-internal-fs-cp.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/fs/cp/cp-sync",
-            deno_core::ascii_str_include!("node-internal-fs-cp-sync.js"),
+            thinpack_js::js!("node-internal-fs-cp-sync.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/fs/streams",
-            deno_core::ascii_str_include!("node-internal-fs-streams.js"),
+            thinpack_js::js!("node-internal-fs-streams.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/binding/fs_dir",
-            deno_core::ascii_str_include!("binding_fs_dir.js"),
+            thinpack_js::js!("binding_fs_dir.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/binding/fs",
-            deno_core::ascii_str_include!("binding_fs.js"),
+            thinpack_js::js!("binding_fs.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/fs/watchers",
-            deno_core::ascii_str_include!("fs_watchers.js"),
+            thinpack_js::js!("fs_watchers.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/fs/recursive_watch",
-            deno_core::ascii_str_include!("fs_recursive_watch.js"),
+            thinpack_js::js!("fs_recursive_watch.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/fs/rimraf",
-            deno_core::ascii_str_include!("fs_rimraf.js"),
+            thinpack_js::js!("fs_rimraf.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/process/permission",
-            deno_core::ascii_str_include!("permission.js"),
+            thinpack_js::js!("permission.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/readline/interface",
-            deno_core::ascii_str_include!("readline_interface.js"),
+            thinpack_js::js!("readline_interface.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/fs/glob",
-            deno_core::ascii_str_include!("glob.js"),
+            thinpack_js::js!("glob.js"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/streams/fast-utf8-stream",
-            deno_core::ascii_str_include!("fast-utf8-stream.js"),
+            thinpack_js::js!("fast-utf8-stream.js"),
         ),
     ];
 

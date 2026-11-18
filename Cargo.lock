@@ -668,6 +668,7 @@ dependencies = [
  "bit-set",
  "bit-vec",
  "boxed_error",
+ "brotli-decompressor 6.3.1",
  "bytes",
  "cooked-waker",
  "deno_error",
@@ -3103,6 +3104,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "thinpack-js"
+version = "0.1.0"
+dependencies = [
+ "brotli 9.1.1",
+]
+
+[[package]]
 name = "thinpack-loader"
 version = "0.1.0"
 dependencies = [
@@ -3111,6 +3119,7 @@ dependencies = [
  "percent-encoding",
  "thinpack-caps",
  "thinpack-core",
+ "thinpack-js",
  "thinpack-resolve",
  "thinpack-vfs",
  "url",
@@ -3121,6 +3130,7 @@ name = "thinpack-node-assert"
 version = "0.1.0"
 dependencies = [
  "deno_core",
+ "thinpack-js",
 ]
 
 [[package]]
@@ -3128,6 +3138,7 @@ name = "thinpack-node-async-hooks"
 version = "0.1.0"
 dependencies = [
  "deno_core",
+ "thinpack-js",
 ]
 
 [[package]]
@@ -3135,6 +3146,7 @@ name = "thinpack-node-buffer"
 version = "0.1.0"
 dependencies = [
  "deno_core",
+ "thinpack-js",
 ]
 
 [[package]]
@@ -3145,6 +3157,7 @@ dependencies = [
  "deno_error",
  "libc",
  "thinpack-core",
+ "thinpack-js",
  "tokio",
  "windows-sys 0.59.0",
 ]
@@ -3157,6 +3170,7 @@ dependencies = [
  "deno_error",
  "libc",
  "thinpack-core",
+ "thinpack-js",
  "tokio",
  "windows-sys 0.59.0",
 ]
@@ -3166,6 +3180,7 @@ name = "thinpack-node-console"
 version = "0.1.0"
 dependencies = [
  "deno_core",
+ "thinpack-js",
 ]
 
 [[package]]
@@ -3173,6 +3188,7 @@ name = "thinpack-node-constants"
 version = "0.1.0"
 dependencies = [
  "deno_core",
+ "thinpack-js",
 ]
 
 [[package]]
@@ -3189,6 +3205,7 @@ dependencies = [
  "md-5",
  "ring",
  "scrypt",
+ "thinpack-js",
 ]
 
 [[package]]
@@ -3196,6 +3213,7 @@ name = "thinpack-node-diagnostics-channel"
 version = "0.1.0"
 dependencies = [
  "deno_core",
+ "thinpack-js",
 ]
 
 [[package]]
@@ -3205,6 +3223,7 @@ dependencies = [
  "deno_core",
  "deno_error",
  "hickory-resolver",
+ "thinpack-js",
  "tokio",
 ]
 
@@ -3213,6 +3232,7 @@ name = "thinpack-node-events"
 version = "0.1.0"
 dependencies = [
  "deno_core",
+ "thinpack-js",
 ]
 
 [[package]]
@@ -3221,6 +3241,7 @@ version = "0.1.0"
 dependencies = [
  "deno_core",
  "deno_ffi",
+ "thinpack-js",
 ]
 
 [[package]]
@@ -3232,6 +3253,7 @@ dependencies = [
  "libc",
  "notify",
  "thinpack-core",
+ "thinpack-js",
  "thinpack-node-internals",
  "tokio",
  "windows-sys 0.59.0",
@@ -3242,6 +3264,7 @@ name = "thinpack-node-http"
 version = "0.1.0"
 dependencies = [
  "deno_core",
+ "thinpack-js",
 ]
 
 [[package]]
@@ -3254,6 +3277,7 @@ dependencies = [
  "h2",
  "http",
  "thinpack-core",
+ "thinpack-js",
  "thinpack-node-net",
  "thinpack-node-tls",
  "tokio",
@@ -3264,6 +3288,7 @@ name = "thinpack-node-https"
 version = "0.1.0"
 dependencies = [
  "deno_core",
+ "thinpack-js",
 ]
 
 [[package]]
@@ -3271,6 +3296,7 @@ name = "thinpack-node-inspector"
 version = "0.1.0"
 dependencies = [
  "deno_core",
+ "thinpack-js",
 ]
 
 [[package]]
@@ -3278,6 +3304,7 @@ name = "thinpack-node-internals"
 version = "0.1.0"
 dependencies = [
  "deno_core",
+ "thinpack-js",
 ]
 
 [[package]]
@@ -3285,6 +3312,7 @@ name = "thinpack-node-module"
 version = "0.1.0"
 dependencies = [
  "deno_core",
+ "thinpack-js",
 ]
 
 [[package]]
@@ -3296,6 +3324,7 @@ dependencies = [
  "libc",
  "socket2 0.5.10",
  "thinpack-core",
+ "thinpack-js",
  "tokio",
 ]
 
@@ -3308,6 +3337,7 @@ dependencies = [
  "dirs",
  "netif",
  "sysinfo",
+ "thinpack-js",
 ]
 
 [[package]]
@@ -3315,6 +3345,7 @@ name = "thinpack-node-path"
 version = "0.1.0"
 dependencies = [
  "deno_core",
+ "thinpack-js",
  "thinpack-node-internals",
 ]
 
@@ -3323,6 +3354,7 @@ name = "thinpack-node-perf-hooks"
 version = "0.1.0"
 dependencies = [
  "deno_core",
+ "thinpack-js",
 ]
 
 [[package]]
@@ -3332,6 +3364,7 @@ dependencies = [
  "deno_core",
  "deno_error",
  "libc",
+ "thinpack-js",
  "windows-sys 0.59.0",
 ]
 
@@ -3340,6 +3373,7 @@ name = "thinpack-node-querystring"
 version = "0.1.0"
 dependencies = [
  "deno_core",
+ "thinpack-js",
 ]
 
 [[package]]
@@ -3347,6 +3381,7 @@ name = "thinpack-node-readline"
 version = "0.1.0"
 dependencies = [
  "deno_core",
+ "thinpack-js",
 ]
 
 [[package]]
@@ -3355,6 +3390,7 @@ version = "0.1.0"
 dependencies = [
  "deno_core",
  "thinpack-core",
+ "thinpack-js",
 ]
 
 [[package]]
@@ -3364,6 +3400,7 @@ dependencies = [
  "deno_core",
  "deno_error",
  "rusqlite",
+ "thinpack-js",
 ]
 
 [[package]]
@@ -3371,6 +3408,7 @@ name = "thinpack-node-stream"
 version = "0.1.0"
 dependencies = [
  "deno_core",
+ "thinpack-js",
 ]
 
 [[package]]
@@ -3378,6 +3416,7 @@ name = "thinpack-node-string-decoder"
 version = "0.1.0"
 dependencies = [
  "deno_core",
+ "thinpack-js",
 ]
 
 [[package]]
@@ -3385,6 +3424,7 @@ name = "thinpack-node-timers"
 version = "0.1.0"
 dependencies = [
  "deno_core",
+ "thinpack-js",
 ]
 
 [[package]]
@@ -3397,6 +3437,7 @@ dependencies = [
  "rustls-native-certs",
  "rustls-pemfile",
  "thinpack-core",
+ "thinpack-js",
  "thinpack-node-net",
  "tokio",
  "tokio-rustls",
@@ -3407,6 +3448,7 @@ name = "thinpack-node-tty"
 version = "0.1.0"
 dependencies = [
  "deno_core",
+ "thinpack-js",
 ]
 
 [[package]]
@@ -3414,6 +3456,7 @@ name = "thinpack-node-url"
 version = "0.1.0"
 dependencies = [
  "deno_core",
+ "thinpack-js",
  "url",
 ]
 
@@ -3422,6 +3465,7 @@ name = "thinpack-node-util"
 version = "0.1.0"
 dependencies = [
  "deno_core",
+ "thinpack-js",
 ]
 
 [[package]]
@@ -3429,6 +3473,7 @@ name = "thinpack-node-v8"
 version = "0.1.0"
 dependencies = [
  "deno_core",
+ "thinpack-js",
 ]
 
 [[package]]
@@ -3436,6 +3481,7 @@ name = "thinpack-node-vm"
 version = "0.1.0"
 dependencies = [
  "deno_core",
+ "thinpack-js",
 ]
 
 [[package]]
@@ -3445,6 +3491,7 @@ dependencies = [
  "deno_core",
  "deno_error",
  "thinpack-core",
+ "thinpack-js",
 ]
 
 [[package]]
@@ -3455,6 +3502,7 @@ dependencies = [
  "deno_core",
  "deno_error",
  "flate2",
+ "thinpack-js",
  "zstd",
 ]
 
@@ -3479,6 +3527,7 @@ dependencies = [
  "thinpack-caps",
  "thinpack-core",
  "thinpack-io",
+ "thinpack-js",
  "thinpack-loader",
  "thinpack-node-assert",
  "thinpack-node-async-hooks",

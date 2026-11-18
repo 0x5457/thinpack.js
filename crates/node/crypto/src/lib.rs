@@ -13,13 +13,13 @@ use deno_core::{Extension, ExtensionFileSource};
 
 #[must_use]
 pub fn init() -> Extension {
-    const STARTUP: &[ExtensionFileSource] = &[ExtensionFileSource::new(
+    const STARTUP: &[ExtensionFileSource] = &[ExtensionFileSource::new_compressed(
         "thinpack:node-crypto-globals",
-        deno_core::ascii_str_include!("crypto_globals.js"),
+        thinpack_js::js!("crypto_globals.js"),
     )];
-    const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new(
+    const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new_compressed(
         "node:crypto",
-        deno_core::ascii_str_include!("crypto.js"),
+        thinpack_js::js!("crypto.js"),
     )];
 
     Extension {

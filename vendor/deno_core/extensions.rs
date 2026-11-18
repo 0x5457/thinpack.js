@@ -38,6 +38,10 @@ pub enum ExtensionFileSourceCode {
 
     /// Source code may be computed at runtime.
     Computed(Arc<str>),
+
+    /// Source code is brotli-compressed in the binary and decompressed the first
+    /// time the module loads (`thinpack_js::js!` produces the bytes).
+    Compressed(&'static [u8]),
 }
 
 #[allow(deprecated, reason = "needed to match on deprecated variants")]
@@ -45,6 +49,7 @@ impl std::fmt::Debug for ExtensionFileSourceCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match *self {
             Self::IncludedInBinary(..) => write!(f, "IncludedInBinary(..)"),
+            Self::Compressed(..) => write!(f, "Compressed(..)"),
             Self::LoadedFromFsDuringSnapshot(path) => {
                 write!(f, "LoadedFromFsDuringSnapshot({path})")
             }
@@ -77,6 +82,16 @@ impl ExtensionFileSource {
         Self {
             specifier,
             code: ExtensionFileSourceCode::IncludedInBinary(code),
+            _unconstructable_use_new: PhantomData,
+        }
+    }
+
+    /// Source code stored brotli-compressed in the binary; `compressed` is the
+    /// output of `thinpack_js::js!`. The module decompresses when it first loads.
+    pub const fn new_compressed(specifier: &'static str, compressed: &'static [u8]) -> Self {
+        Self {
+            specifier,
+            code: ExtensionFileSourceCode::Compressed(compressed),
             _unconstructable_use_new: PhantomData,
         }
     }
@@ -120,6 +135,7 @@ impl ExtensionFileSource {
         match &self.code {
             ExtensionFileSourceCode::IncludedInBinary(_)
             | ExtensionFileSourceCode::LoadedFromMemoryDuringSnapshot(_)
+            | ExtensionFileSourceCode::Compressed(_)
             | ExtensionFileSourceCode::Computed(_) => true,
             ExtensionFileSourceCode::LoadedFromFsDuringSnapshot(_) => false,
         }
@@ -162,8 +178,26 @@ impl ExtensionFileSource {
                 );
                 Ok(ModuleCodeString::from(code.clone()))
             }
+            ExtensionFileSourceCode::Compressed(compressed) => {
+                let code = decompress(compressed)?;
+                debug_assert!(
+                    code.is_ascii(),
+                    "Extension code must be 7-bit ASCII: {} (found {})",
+                    self.specifier,
+                    Self::find_non_ascii(&code)
+                );
+                Ok(code.into_module_code())
+            }
         }
     }
+}
+
+/// Decodes a source embedded by `ExtensionFileSource::new_compressed`.
+fn decompress(compressed: &[u8]) -> Result<String, std::io::Error> {
+    let mut bytes = Vec::with_capacity(compressed.len() * 4);
+    brotli_decompressor::BrotliDecompress(&mut std::io::Cursor::new(compressed), &mut bytes)?;
+    String::from_utf8(bytes)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }
 
 pub type OpFnRef = v8::FunctionCallback;

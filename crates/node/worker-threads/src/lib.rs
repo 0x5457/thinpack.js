@@ -6,13 +6,13 @@ use deno_core::{Extension, ExtensionFileSource};
 
 #[must_use]
 pub fn init() -> Extension {
-    const STARTUP: &[ExtensionFileSource] = &[ExtensionFileSource::new(
+    const STARTUP: &[ExtensionFileSource] = &[ExtensionFileSource::new_compressed(
         "thinpack:node-worker-globals",
-        deno_core::ascii_str_include!("worker_globals.js"),
+        thinpack_js::js!("worker_globals.js"),
     )];
-    const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new(
+    const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new_compressed(
         "node:worker_threads",
-        deno_core::ascii_str_include!("worker_threads.js"),
+        thinpack_js::js!("worker_threads.js"),
     )];
 
     Extension {

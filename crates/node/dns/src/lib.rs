@@ -7,7 +7,7 @@ use deno_core::{Extension, ExtensionFileSource};
 #[must_use]
 pub fn init() -> Extension {
     const BUILTINS: &[ExtensionFileSource] = &[
-        ExtensionFileSource::new("node:dns", deno_core::ascii_str_include!("dns.js")),
+        ExtensionFileSource::new_compressed("node:dns", thinpack_js::js!("dns.js")),
         ExtensionFileSource::new(
             "node:dns/promises",
             deno_core::ascii_str!("module.exports = require('node:dns').promises;\n"),

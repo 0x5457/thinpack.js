@@ -47,9 +47,9 @@ use crate::ops::Handles;
 
 #[must_use]
 pub fn init() -> Extension {
-    const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new(
+    const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new_compressed(
         "node:sqlite",
-        deno_core::ascii_str_include!("sqlite.js"),
+        thinpack_js::js!("sqlite.js"),
     )];
 
     Extension {

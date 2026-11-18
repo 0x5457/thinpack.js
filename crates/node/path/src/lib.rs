@@ -8,7 +8,7 @@ use thinpack_node_internals as _;
 #[must_use]
 pub fn init() -> Extension {
     const BUILTINS: &[ExtensionFileSource] = &[
-        ExtensionFileSource::new("node:path", deno_core::ascii_str_include!("node-path.js")),
+        ExtensionFileSource::new_compressed("node:path", thinpack_js::js!("node-path.js")),
         ExtensionFileSource::new(
             "node:path/posix",
             deno_core::ascii_str!("module.exports = require('node:path').posix;\n"),
@@ -17,9 +17,9 @@ pub fn init() -> Extension {
             "node:path/win32",
             deno_core::ascii_str!("module.exports = require('node:path').win32;\n"),
         ),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/path/glob",
-            deno_core::ascii_str_include!("glob_pattern.js"),
+            thinpack_js::js!("glob_pattern.js"),
         ),
     ];
 

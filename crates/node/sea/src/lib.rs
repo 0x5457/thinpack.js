@@ -9,10 +9,10 @@ use crate::ops::OPS;
 #[must_use]
 pub fn init() -> Extension {
     const BUILTINS: &[ExtensionFileSource] = &[
-        ExtensionFileSource::new("node:sea", deno_core::ascii_str_include!("node-sea.js")),
-        ExtensionFileSource::new(
+        ExtensionFileSource::new_compressed("node:sea", thinpack_js::js!("node-sea.js")),
+        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/binding/sea",
-            deno_core::ascii_str_include!("binding_sea.js"),
+            thinpack_js::js!("binding_sea.js"),
         ),
     ];
 

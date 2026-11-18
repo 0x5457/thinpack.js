@@ -4,6 +4,7 @@ exclude = ["vendor/deno_core", "vendor/deno_ffi"]
 members = [
     "crates/thinpack-core",
     "crates/thinpack-caps",
+    "crates/thinpack-js",
     "crates/thinpack-resolve",
     "crates/thinpack-loader",
     "crates/thinpack-io",
@@ -78,6 +79,7 @@ redundant_pub_crate = "allow"
 deno_error = "0.7.1"
 thinpack-core = { path = "crates/thinpack-core", default-features = false }
 thinpack-caps = { path = "crates/thinpack-caps" }
+thinpack-js = { path = "crates/thinpack-js" }
 thinpack-resolve = { path = "crates/thinpack-resolve" }
 thinpack-loader = { path = "crates/thinpack-loader" }
 thinpack-io = { path = "crates/thinpack-io" }
