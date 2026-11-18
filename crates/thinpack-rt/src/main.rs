@@ -80,13 +80,27 @@ fn main() -> ExitCode {
     };
 
     match command {
-        Command::Run(main) => match runtime::run(main, ModuleFs::Host, Assets::host(), None) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => {
-                eprintln!("{error}");
-                ExitCode::FAILURE
+        Command::Run(main) => {
+            // Host paths from argv become absolute; packed entries are virtual
+            // `/app/...` paths and must keep their root on Windows too.
+            let main = match main {
+                Main::File(path) => match std::path::absolute(path) {
+                    Ok(path) => Main::File(path),
+                    Err(error) => {
+                        eprintln!("{error}");
+                        return ExitCode::FAILURE;
+                    }
+                },
+                Main::Eval(source) => Main::Eval(source),
+            };
+            match runtime::run(main, ModuleFs::Host, Assets::host(), None) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("{error}");
+                    ExitCode::FAILURE
+                }
             }
-        },
+        }
         Command::WarmCache => {
             eprintln!("--warm-cache works on a packed executable");
             ExitCode::from(2)

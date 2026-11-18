@@ -107,7 +107,8 @@ pub fn uv_error_message(err: c_int) -> Option<&'static CStr> {
 }
 
 /// Map a `std::io::Error` to the closest libuv error code.
-pub(crate) fn io_error_to_uv(err: &std::io::Error) -> c_int {
+// thinpack patch: shared with the node_* crates for libuv-style error codes.
+pub fn io_error_to_uv(err: &std::io::Error) -> c_int {
     use std::io::ErrorKind;
     // On Windows, several Win32 error codes don't get a stable ErrorKind
     // mapping from std (they all end up as `Uncategorized`). Handle the

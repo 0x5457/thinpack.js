@@ -24,3 +24,12 @@ tokio = { version = "1", features = ["full"] }
 [lib]
 name = "deno_ffi"
 path = "lib.rs"
+
+# thinpack patch: dlfcn.rs uses windows_sys on Windows, but the published
+# manifest does not declare it.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_System_Diagnostics_Debug",
+] }

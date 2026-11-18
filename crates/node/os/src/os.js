@@ -1,4 +1,10 @@
 (() => {
+  const homedir = () => {
+    const environment = process.platform === "win32"
+      ? process.env.USERPROFILE
+      : process.env.HOME;
+    return environment || Deno.core.ops.op_os_homedir();
+  };
   const constants = require("node:thinpack/internal/constants").os;
 
   const system = Deno.core.ops.op_os_system_info().split("\0");
@@ -14,19 +20,23 @@
   const os = {
     arch: () => process.arch,
     platform: () => process.platform,
-    type: () => (process.platform === "linux" ? "Linux" : process.platform),
+    type: () => {
+      if (process.platform === "win32") return "Windows_NT";
+      return process.platform === "linux" ? "Linux" : process.platform;
+    },
     release: () => release,
     version: () => version,
     hostname: () => hostname,
-    homedir: () => process.env.HOME || "/",
+    homedir: () => homedir(),
     tmpdir: () => {
       let path = process.env.TMPDIR || process.env.TMP || process.env.TEMP;
       if (path && path.length > 1) {
         while (path.endsWith("/")) path = path.slice(0, -1);
       }
-      return path || "/tmp";
+      return path || Deno.core.ops.op_os_tmpdir();
     },
-    endianness: () => "LE",
+    endianness: () =>
+      new Uint8Array(new Uint16Array([1]).buffer)[0] === 1 ? "LE" : "BE",
     cpus: () => {
       const fields = Deno.core.ops.op_os_cpus().split("\0");
       const cpus = [];
@@ -53,7 +63,7 @@
       uid: process.getuid(),
       gid: process.getgid(),
       username: process.env.USER || "unknown",
-      homedir: process.env.HOME || "/",
+      homedir: homedir(),
       shell: process.env.SHELL || "/bin/sh",
     }),
     networkInterfaces: () => {
@@ -85,7 +95,7 @@
   };
 
   Object.defineProperty(os, "EOL", {
-    value: "\n",
+    value: process.platform === "win32" ? "\r\n" : "\n",
     writable: false,
     configurable: true,
     enumerable: true,

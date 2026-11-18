@@ -30,10 +30,34 @@
     }
     return pathname.includes("%") ? decodeURIComponent(pathname) : pathname;
   };
-  const fileURLToPath = (path, options = { __proto__: null }) => {
-    if (options?.windows === true) {
-      throw new Error("url.fileURLToPath() does not implement Windows paths");
+  const getPathFromURLWin32 = (fileURL) => {
+    const hostname = fileURL.hostname;
+    let pathname = fileURL.pathname;
+    for (let index = 0; index < pathname.length; index += 1) {
+      if (pathname[index] === "%") {
+        const third = pathname.codePointAt(index + 2) | 0x20;
+        if ((pathname[index + 1] === "2" && third === 102) ||
+            (pathname[index + 1] === "5" && third === 99)) {
+          throw new ERR_INVALID_FILE_URL_PATH(
+            "must not include encoded \\ or / characters",
+            fileURL,
+          );
+        }
+      }
     }
+    pathname = pathname.replace(/\//g, "\\");
+    if (pathname.includes("%")) pathname = decodeURIComponent(pathname);
+    if (hostname !== "") {
+      return `\\\\${hostname}${pathname}`;
+    }
+    const letter = pathname.codePointAt(1) | 0x20;
+    const separator = pathname[2];
+    if (letter < 0x61 || letter > 0x7a || separator !== ":") {
+      throw new ERR_INVALID_FILE_URL_PATH("must be absolute", fileURL);
+    }
+    return pathname.slice(1);
+  };
+  const fileURLToPath = (path, options = { __proto__: null }) => {
     let fileURL = path;
     if (typeof fileURL === "string") {
       fileURL = new URL(fileURL);
@@ -43,7 +67,8 @@
     if (fileURL.protocol !== "file:") {
       throw new ERR_INVALID_URL_SCHEME("file");
     }
-    return getPathFromURLPosix(fileURL);
+    const windows = options?.windows === true || process.platform === "win32";
+    return windows ? getPathFromURLWin32(fileURL) : getPathFromURLPosix(fileURL);
   };
   const pathToFileURL = (filepath) => {
     const { resolve } = require("node:path");

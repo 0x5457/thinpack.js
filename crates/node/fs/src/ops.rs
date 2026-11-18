@@ -1,19 +1,29 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+#[cfg(unix)]
 use std::ffi::CString;
-use std::fs::{DirBuilder, File, Metadata, OpenOptions, Permissions};
+#[cfg(unix)]
+use std::fs::Permissions;
+use std::fs::{DirBuilder, File, FileTimes, Metadata, OpenOptions};
 use std::io::{self, Read, Write};
 use std::mem::ManuallyDrop;
+#[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
+#[cfg(unix)]
 use std::os::unix::fs::{
     DirBuilderExt, FileExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt,
 };
+#[cfg(windows)]
+use std::os::windows::io::{AsRawHandle, FromRawHandle};
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+#[cfg(windows)]
+type RawFd = i32;
 
 use crate::virtual_mount::{self, VirtualMount};
 
@@ -64,11 +74,15 @@ pub(crate) const OPS: &[OpDecl] = &[
     op_fs_watch_close(),
 ];
 
-const O_ACCMODE: i32 = libc::O_ACCMODE;
-const O_CREAT: i32 = libc::O_CREAT;
-const O_EXCL: i32 = libc::O_EXCL;
-const O_TRUNC: i32 = libc::O_TRUNC;
-const O_APPEND: i32 = libc::O_APPEND;
+// Node's fs constants are the POSIX/Linux values on every platform (see
+// `thinpack-node-internals/src/constants.js`), so translate the flags with the
+// matching numbers instead of the host libc's.
+const O_ACCMODE: i32 = 3;
+const O_CREAT: i32 = 64;
+const O_EXCL: i32 = 128;
+const O_TRUNC: i32 = 512;
+const O_APPEND: i32 = 1024;
+#[cfg(unix)]
 const TRANSLATED_FLAGS: i32 = O_ACCMODE | O_CREAT | O_EXCL | O_TRUNC | O_APPEND;
 const COPYFILE_EXCL: u32 = 1;
 const COPYFILE_FICLONE_FORCE: u32 = 4;
@@ -76,16 +90,25 @@ const UV_DIRENT_UNKNOWN: u32 = 0;
 const UV_DIRENT_FILE: u32 = 1;
 const UV_DIRENT_DIR: u32 = 2;
 const UV_DIRENT_LINK: u32 = 3;
+#[cfg(unix)]
 const UV_DIRENT_FIFO: u32 = 4;
+#[cfg(unix)]
 const UV_DIRENT_SOCKET: u32 = 5;
+#[cfg(unix)]
 const UV_DIRENT_CHAR: u32 = 6;
+#[cfg(unix)]
 const UV_DIRENT_BLOCK: u32 = 7;
-const EIO: i32 = libc::EIO;
-const EROFS: i32 = libc::EROFS;
-const EEXIST: i32 = libc::EEXIST;
-const EINVAL: i32 = libc::EINVAL;
-const EFBIG: i32 = libc::EFBIG;
-const ENOTSUP: i32 = libc::ENOTSUP;
+const EIO: i32 = 5;
+const EROFS: i32 = 30;
+const EEXIST: i32 = 17;
+const EINVAL: i32 = 22;
+const EFBIG: i32 = 27;
+const ENOTSUP: i32 = 95;
+const EISDIR: i32 = 21;
+const ENOENT: i32 = 2;
+const ENOSPC: i32 = 28;
+const W_OK: u32 = 2;
+const X_OK: u32 = 1;
 const MAX_UTF8_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024 - 1;
 
 #[expect(
@@ -93,28 +116,33 @@ const MAX_UTF8_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024 - 1;
     reason = "fs_error is used directly as the adapter for Result::map_err at every fallible call site; taking a reference would force a closure at each of them"
 )]
 fn fs_error(error: io::Error) -> JsErrorBox {
-    let errno = error.raw_os_error().unwrap_or_else(|| {
-        if error.kind() == io::ErrorKind::InvalidInput {
-            EINVAL
-        } else {
-            EIO
-        }
-    });
-    JsErrorBox::new("FsError", (-errno).to_string())
+    // Deno's uv_compat translates both POSIX errno and Win32 error codes to the
+    // negative libuv codes Node's fs binding reports.
+    let errno = deno_core::uv_compat::io_error_to_uv(&error);
+    JsErrorBox::new("FsError", errno.to_string())
 }
 
 fn errno_error(errno: i32) -> JsErrorBox {
-    fs_error(io::Error::from_raw_os_error(errno))
+    JsErrorBox::new("FsError", (-errno).to_string())
 }
 
 fn mount(state: &OpState) -> Option<&VirtualMount> {
     state.try_borrow::<VirtualMount>()
 }
 
+#[cfg(unix)]
 fn borrowed(fd: RawFd) -> ManuallyDrop<File> {
     // SAFETY: `fd` is an open descriptor owned by the caller. `ManuallyDrop` keeps this
     // wrapper from closing it, so ownership stays with the caller.
     ManuallyDrop::new(unsafe { File::from_raw_fd(fd) })
+}
+
+#[cfg(windows)]
+fn borrowed(fd: RawFd) -> ManuallyDrop<File> {
+    // SAFETY: `fd` is an open CRT descriptor owned by the caller. `_get_osfhandle` maps it
+    // to the underlying handle; `ManuallyDrop` keeps the handle open.
+    let handle = unsafe { libc::get_osfhandle(fd) };
+    ManuallyDrop::new(unsafe { File::from_raw_handle(handle as _) })
 }
 
 fn open(path: &str, flags: i32, mode: u32) -> io::Result<File> {
@@ -130,10 +158,37 @@ fn open(path: &str, flags: i32, mode: u32) -> io::Result<File> {
     if flags & O_EXCL != 0 {
         options.create_new(true);
     }
-    options
-        .mode(mode)
-        .custom_flags(flags & !TRANSLATED_FLAGS)
-        .open(path)
+    #[cfg(unix)]
+    {
+        options.mode(mode).custom_flags(flags & !TRANSLATED_FLAGS);
+    }
+    #[cfg(windows)]
+    {
+        let _ = mode;
+    }
+    options.open(path)
+}
+
+fn read_at(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<usize> {
+    #[cfg(unix)]
+    {
+        FileExt::read_at(file, buffer, offset)
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::FileExt::seek_read(file, buffer, offset)
+    }
+}
+
+fn write_at(file: &File, buffer: &[u8], offset: u64) -> io::Result<usize> {
+    #[cfg(unix)]
+    {
+        FileExt::write_at(file, buffer, offset)
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::FileExt::seek_write(file, buffer, offset)
+    }
 }
 
 fn read_all_utf8(mut file: &File) -> io::Result<String> {
@@ -150,6 +205,7 @@ fn read_all_utf8(mut file: &File) -> io::Result<String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+#[cfg(unix)]
 fn encode_stats(metadata: &Metadata) -> String {
     let mut fields = [
         metadata.dev(),
@@ -180,6 +236,52 @@ fn encode_stats(metadata: &Metadata) -> String {
     fields.join("\0")
 }
 
+#[cfg(windows)]
+fn encode_stats(metadata: &Metadata) -> String {
+    let len = metadata.len();
+    let file_type = metadata.file_type();
+    let mut mode: u64 = if file_type.is_dir() {
+        0o040755
+    } else if file_type.is_symlink() {
+        0o120777
+    } else {
+        0o100644
+    };
+    if metadata.permissions().readonly() {
+        mode &= !0o222;
+    }
+    let (atime, atime_nsec) = unix_time(metadata.accessed());
+    let (mtime, mtime_nsec) = unix_time(metadata.modified());
+    let (ctime, ctime_nsec) = unix_time(metadata.created());
+    // The Windows metadata helpers that expose volume/file ids are unstable;
+    // Node's stats tolerate zero for dev/ino and one link.
+    let fields = [0, mode, 1, 0, 0, 0, 0, 0, len, len / 512];
+    let mut fields: Vec<String> = fields.iter().map(u64::to_string).collect();
+    for (seconds, nanos) in [
+        (atime, atime_nsec),
+        (mtime, mtime_nsec),
+        (ctime, ctime_nsec),
+        (ctime, ctime_nsec),
+    ] {
+        fields.push(seconds.to_string());
+        fields.push(nanos.to_string());
+    }
+    fields.join("\0")
+}
+
+#[cfg(windows)]
+fn unix_time(time: io::Result<SystemTime>) -> (i64, i64) {
+    time.ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map_or((0, 0), |elapsed| {
+            (
+                i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX),
+                i64::from(elapsed.subsec_nanos()),
+            )
+        })
+}
+
+#[cfg(unix)]
 fn dirent_type(file_type: std::fs::FileType) -> u32 {
     if file_type.is_file() {
         UV_DIRENT_FILE
@@ -195,6 +297,19 @@ fn dirent_type(file_type: std::fs::FileType) -> u32 {
         UV_DIRENT_CHAR
     } else if file_type.is_block_device() {
         UV_DIRENT_BLOCK
+    } else {
+        UV_DIRENT_UNKNOWN
+    }
+}
+
+#[cfg(windows)]
+fn dirent_type(file_type: std::fs::FileType) -> u32 {
+    if file_type.is_symlink() {
+        UV_DIRENT_LINK
+    } else if file_type.is_dir() {
+        UV_DIRENT_DIR
+    } else if file_type.is_file() {
+        UV_DIRENT_FILE
     } else {
         UV_DIRENT_UNKNOWN
     }
@@ -219,6 +334,18 @@ const fn file_offset(position: f64) -> u64 {
     position as u64
 }
 
+#[cfg(unix)]
+fn directory_builder(mode: u32) -> DirBuilder {
+    let mut builder = DirBuilder::new();
+    builder.mode(mode);
+    builder
+}
+
+#[cfg(windows)]
+fn directory_builder(_mode: u32) -> DirBuilder {
+    DirBuilder::new()
+}
+
 fn make_directory(path: &str, mode: u32) -> Result<String, JsErrorBox> {
     let target = Path::new(path);
     match std::fs::metadata(target) {
@@ -239,7 +366,7 @@ fn make_directory(path: &str, mode: u32) -> Result<String, JsErrorBox> {
         if directory.as_os_str().is_empty() {
             continue;
         }
-        match DirBuilder::new().mode(mode).create(directory) {
+        match directory_builder(mode).create(directory) {
             Ok(()) => {
                 if first_created.is_none() {
                     first_created = Some(directory);
@@ -295,7 +422,22 @@ fn op_fs_open(
         return mount.open(path).ok_or_else(|| errno_error(EIO));
     }
     let file = open(path, flags, mode).map_err(fs_error)?;
-    Ok(ManuallyDrop::new(file).as_raw_fd())
+    #[cfg(unix)]
+    {
+        Ok(ManuallyDrop::new(file).as_raw_fd())
+    }
+    #[cfg(windows)]
+    {
+        let handle = file.as_raw_handle();
+        // SAFETY: the handle belongs to `file`; `_open_osfhandle` transfers its ownership
+        // to the returned CRT descriptor.
+        let fd = unsafe { libc::open_osfhandle(handle as _, 0) };
+        if fd == -1 {
+            return Err(fs_error(io::Error::last_os_error()));
+        }
+        std::mem::forget(file);
+        Ok(fd)
+    }
 }
 
 #[op2]
@@ -306,9 +448,18 @@ fn op_fs_close(state: &OpState, fd: RawFd) {
         }
         return;
     }
-    // SAFETY: real descriptors are owned by JS between open and close, and this op is the
-    // only owner taking them back.
-    drop(unsafe { File::from_raw_fd(fd) });
+    #[cfg(unix)]
+    {
+        // SAFETY: real descriptors are owned by JS between open and close, and this op is
+        // the only owner taking them back.
+        drop(unsafe { File::from_raw_fd(fd) });
+    }
+    #[cfg(windows)]
+    {
+        // The CRT descriptor owns the handle; `_close` releases both.
+        // SAFETY: the descriptor is owned by JS between open and close.
+        unsafe { libc::close(fd) };
+    }
 }
 
 #[op2]
@@ -328,7 +479,7 @@ fn op_fs_read(
     let read = if position < 0.0 {
         (&*file).read(buffer)
     } else {
-        file.read_at(buffer, file_offset(position))
+        read_at(&file, buffer, file_offset(position))
     };
     read.map(byte_count).map_err(fs_error)
 }
@@ -419,7 +570,7 @@ fn op_fs_write(fd: RawFd, #[buffer] buffer: &[u8], position: f64) -> Result<u32,
     let written = if position < 0.0 {
         (&*file).write(buffer)
     } else {
-        file.write_at(buffer, file_offset(position))
+        write_at(&file, buffer, file_offset(position))
     };
     written.map(byte_count).map_err(fs_error)
 }
@@ -540,8 +691,7 @@ fn op_fs_mkdir(#[string] path: &str, mode: u32, recursive: bool) -> Result<Strin
     if recursive {
         return make_directory(path, mode);
     }
-    DirBuilder::new()
-        .mode(mode)
+    directory_builder(mode)
         .create(path)
         .map(|()| String::new())
         .map_err(fs_error)
@@ -560,7 +710,7 @@ fn op_fs_rm(#[string] path: &str, recursive: bool) -> Result<(), JsErrorBox> {
         Err(error) => return Err(fs_error(error)),
     };
     if metadata.is_dir() && !recursive {
-        return Err(errno_error(libc::EISDIR));
+        return Err(errno_error(EISDIR));
     }
     let result = if metadata.is_dir() {
         std::fs::remove_dir_all(path)
@@ -603,24 +753,49 @@ fn op_fs_copy_file(
         .map_err(fs_error)
 }
 
+#[cfg(unix)]
+fn chmod(path: &str, mode: u32) -> io::Result<()> {
+    std::fs::set_permissions(path, Permissions::from_mode(mode))
+}
+
+#[cfg(windows)]
+fn chmod(path: &str, mode: u32) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt as _;
+
+    // Windows chmod does not follow symlinks; resolve first, like Deno's std_fs.
+    let resolved = host_path(std::fs::canonicalize(path)?);
+    let wide: Vec<u16> = resolved.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY: `wide` is NUL-terminated.
+    if unsafe { libc::wchmod(wide.as_ptr(), mode.cast_signed()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 #[op2(nofast)]
 fn op_fs_chmod(#[string] path: &str, mode: u32) -> Result<(), JsErrorBox> {
-    std::fs::set_permissions(path, Permissions::from_mode(mode)).map_err(fs_error)
+    chmod(path, mode).map_err(fs_error)
+}
+
+fn system_time(seconds: f64) -> Result<SystemTime, JsErrorBox> {
+    let magnitude = Duration::try_from_secs_f64(seconds.abs()).map_err(|_| errno_error(EINVAL))?;
+    let time = if seconds.is_sign_negative() {
+        UNIX_EPOCH.checked_sub(magnitude)
+    } else {
+        UNIX_EPOCH.checked_add(magnitude)
+    };
+    time.ok_or_else(|| errno_error(EINVAL))
+}
+
+fn file_times(atime: f64, mtime: f64) -> Result<FileTimes, JsErrorBox> {
+    Ok(FileTimes::new()
+        .set_accessed(system_time(atime)?)
+        .set_modified(system_time(mtime)?))
 }
 
 #[op2(nofast)]
 fn op_fs_utimes(#[string] path: &str, atime: f64, mtime: f64) -> Result<(), JsErrorBox> {
-    utimens(path, atime, mtime, 0)
-}
-
-fn utimens(path: &str, atime: f64, mtime: f64, flags: libc::c_int) -> Result<(), JsErrorBox> {
-    let path = CString::new(path).map_err(|_| errno_error(EINVAL))?;
-    let times = [timespec(atime), timespec(mtime)];
-    // SAFETY: `path` is NUL-terminated and `times` holds the two values utimensat reads.
-    if unsafe { libc::utimensat(libc::AT_FDCWD, path.as_ptr(), times.as_ptr(), flags) } == -1 {
-        return Err(fs_error(io::Error::last_os_error()));
-    }
-    Ok(())
+    std::fs::set_times(path, file_times(atime, mtime)?).map_err(fs_error)
 }
 
 #[op2]
@@ -633,7 +808,21 @@ fn op_fs_readlink(#[string] path: &str) -> Result<String, JsErrorBox> {
 
 #[op2(nofast)]
 fn op_fs_symlink(#[string] target: &str, #[string] path: &str) -> Result<(), JsErrorBox> {
-    std::os::unix::fs::symlink(target, path).map_err(fs_error)
+    symlink(target, path).map_err(fs_error)
+}
+
+#[cfg(unix)]
+fn symlink(target: &str, path: &str) -> io::Result<()> {
+    std::os::unix::fs::symlink(target, path)
+}
+
+#[cfg(windows)]
+fn symlink(target: &str, path: &str) -> io::Result<()> {
+    if Path::new(target).is_dir() {
+        std::os::windows::fs::symlink_dir(target, path)
+    } else {
+        std::os::windows::fs::symlink_file(target, path)
+    }
 }
 
 #[op2]
@@ -641,7 +830,7 @@ fn op_fs_symlink(#[string] target: &str, #[string] path: &str) -> Result<(), JsE
 fn op_fs_mkdtemp(#[string] prefix: &str) -> Result<String, JsErrorBox> {
     for _ in 0..16 {
         let candidate = format!("{prefix}{}", random_suffix());
-        match DirBuilder::new().mode(0o700).create(&candidate) {
+        match directory_builder(0o700).create(&candidate) {
             Ok(()) => return Ok(candidate),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(fs_error(error)),
@@ -657,22 +846,45 @@ fn op_fs_realpath(state: &OpState, #[string] path: &str) -> Result<String, JsErr
         return Ok(path.to_owned());
     }
     std::fs::canonicalize(path)
+        .map(host_path)
         .map(|resolved: PathBuf| resolved.to_string_lossy().into_owned())
         .map_err(fs_error)
+}
+
+#[cfg(not(windows))]
+const fn host_path(path: PathBuf) -> PathBuf {
+    path
+}
+
+#[cfg(windows)]
+fn host_path(path: PathBuf) -> PathBuf {
+    // `canonicalize` prefixes drive paths with the verbatim marker; Node's
+    // `realpath` returns the plain path.
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\")
+        && !rest.starts_with("UNC\\")
+    {
+        return PathBuf::from(rest);
+    }
+    path
 }
 
 #[op2(nofast)]
 fn op_fs_access(state: &OpState, #[string] path: &str, mode: u32) -> Result<(), JsErrorBox> {
     if let Some(stat) = mount(state).and_then(|mount| mount.stat(path)) {
-        let wants_write =
-            mode & libc::W_OK as u32 != 0 || stat.is_dir && mode & libc::X_OK as u32 != 0;
+        let wants_write = mode & W_OK != 0 || stat.is_dir && mode & X_OK != 0;
         return if wants_write {
             Err(errno_error(EROFS))
         } else {
             Ok(())
         };
     }
-    let path = CString::new(path).map_err(|_| errno_error(libc::EINVAL))?;
+    check_access(path, mode).map_err(fs_error)
+}
+
+#[cfg(unix)]
+fn check_access(path: &str, mode: u32) -> io::Result<()> {
+    let path = CString::new(path).map_err(|_| io::Error::from_raw_os_error(EINVAL))?;
     #[expect(
         clippy::cast_possible_wrap,
         reason = "access(2) takes the R_OK|W_OK|X_OK|F_OK bitmask, which never comes close to i32::MAX"
@@ -680,7 +892,16 @@ fn op_fs_access(state: &OpState, #[string] path: &str, mode: u32) -> Result<(), 
     let mode = mode as libc::c_int;
     // SAFETY: `path` is NUL-terminated; access(2) reads only it and the mode bitmask.
     if unsafe { libc::access(path.as_ptr(), mode) } == -1 {
-        return Err(fs_error(io::Error::last_os_error()));
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn check_access(path: &str, mode: u32) -> io::Result<()> {
+    let metadata = std::fs::metadata(path)?;
+    if mode & W_OK != 0 && metadata.permissions().readonly() {
+        return Err(io::Error::from(io::ErrorKind::PermissionDenied));
     }
     Ok(())
 }
@@ -695,18 +916,21 @@ fn op_fs_link(#[string] existing: &str, #[string] new_path: &str) -> Result<(), 
     std::fs::hard_link(existing, new_path).map_err(fs_error)
 }
 
+#[cfg(unix)]
 #[op2(fast)]
 fn op_fs_chown(#[string] path: &str, #[smi] uid: i32, #[smi] gid: i32) -> Result<(), JsErrorBox> {
     let (uid, gid) = ownership(uid, gid);
     std::os::unix::fs::chown(path, Some(uid), Some(gid)).map_err(fs_error)
 }
 
+#[cfg(unix)]
 #[op2(fast)]
 fn op_fs_lchown(#[string] path: &str, #[smi] uid: i32, #[smi] gid: i32) -> Result<(), JsErrorBox> {
     let (uid, gid) = ownership(uid, gid);
     std::os::unix::fs::lchown(path, Some(uid), Some(gid)).map_err(fs_error)
 }
 
+#[cfg(unix)]
 #[op2(fast)]
 fn op_fs_fchown(#[smi] fd: i32, #[smi] uid: i32, #[smi] gid: i32) -> Result<(), JsErrorBox> {
     let (uid, gid) = ownership(uid, gid);
@@ -718,6 +942,7 @@ fn op_fs_fchown(#[smi] fd: i32, #[smi] uid: i32, #[smi] gid: i32) -> Result<(), 
     Ok(())
 }
 
+#[cfg(unix)]
 /// Node forwards -1 to mean "leave the owner unchanged", which chown(2) spells as `u32::MAX`.
 #[expect(
     clippy::cast_sign_loss,
@@ -727,10 +952,37 @@ const fn ownership(uid: i32, gid: i32) -> (u32, u32) {
     (uid as u32, gid as u32)
 }
 
+#[cfg(windows)]
+#[op2(fast)]
+fn op_fs_chown(
+    #[string] _path: &str,
+    #[smi] _uid: i32,
+    #[smi] _gid: i32,
+) -> Result<(), JsErrorBox> {
+    Err(errno_error(ENOTSUP))
+}
+
+#[cfg(windows)]
+#[op2(fast)]
+fn op_fs_lchown(
+    #[string] _path: &str,
+    #[smi] _uid: i32,
+    #[smi] _gid: i32,
+) -> Result<(), JsErrorBox> {
+    Err(errno_error(ENOTSUP))
+}
+
+#[cfg(windows)]
+#[op2(fast)]
+fn op_fs_fchown(#[smi] _fd: i32, #[smi] _uid: i32, #[smi] _gid: i32) -> Result<(), JsErrorBox> {
+    Err(errno_error(ENOTSUP))
+}
+
+#[cfg(unix)]
 #[op2]
 #[string]
 fn op_fs_statfs(#[string] path: &str) -> Result<String, JsErrorBox> {
-    let path = CString::new(path).map_err(|_| errno_error(libc::EINVAL))?;
+    let path = CString::new(path).map_err(|_| errno_error(EINVAL))?;
     // SAFETY: libc::statvfs is a plain C struct of integers, so all-zero is a valid value.
     let mut stats: libc::statvfs = unsafe { std::mem::zeroed() };
     // SAFETY: `path` is NUL-terminated and `stats` is a writable, correctly sized statvfs.
@@ -755,19 +1007,64 @@ fn op_fs_statfs(#[string] path: &str) -> Result<String, JsErrorBox> {
     .join("\0"))
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "JS timestamps are f64 seconds and timespec stores whole seconds plus nanoseconds; the truncation is the same one utimensat performs"
-)]
-fn timespec(seconds: f64) -> libc::timespec {
-    let whole = seconds.floor();
-    let nanos = ((seconds - whole) * 1e9).round();
-    libc::timespec {
-        tv_sec: whole as libc::time_t,
-        tv_nsec: nanos as libc::c_long,
+#[cfg(windows)]
+#[op2]
+#[string]
+fn op_fs_statfs(#[string] path: &str) -> Result<String, JsErrorBox> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceW;
+
+    // Deno's std_fs uses the filesystem root and GetDiskFreeSpaceW, and retries
+    // once because filters can transiently fail (libuv does the same).
+    let root = Path::new(path)
+        .canonicalize()
+        .map_err(fs_error)?
+        .ancestors()
+        .last()
+        .ok_or_else(|| errno_error(ENOENT))?
+        .to_path_buf();
+    let mut root: Vec<u16> = root.as_os_str().encode_wide().collect();
+    root.push(0);
+    let mut sectors_per_cluster = 0u32;
+    let mut bytes_per_sector = 0u32;
+    let mut available_clusters = 0u32;
+    let mut total_clusters = 0u32;
+    let mut code = 0i32;
+    let mut retries = 0;
+    while code == 0 && retries < 2 {
+        // SAFETY: root is NUL-terminated and every out-pointer is valid.
+        code = unsafe {
+            GetDiskFreeSpaceW(
+                root.as_ptr(),
+                &mut sectors_per_cluster,
+                &mut bytes_per_sector,
+                &mut available_clusters,
+                &mut total_clusters,
+            )
+        };
+        retries += 1;
     }
+    if code == 0 {
+        return Err(fs_error(io::Error::last_os_error()));
+    }
+    let block_size = u64::from(bytes_per_sector) * u64::from(sectors_per_cluster);
+    Ok([
+        0,
+        block_size,
+        block_size,
+        u64::from(total_clusters),
+        u64::from(available_clusters),
+        u64::from(available_clusters),
+        0,
+        0,
+    ]
+    .iter()
+    .map(u64::to_string)
+    .collect::<Vec<String>>()
+    .join("\0"))
 }
 
+#[cfg(unix)]
 #[cfg(target_vendor = "apple")]
 #[expect(
     clippy::cast_possible_truncation,
@@ -777,11 +1074,13 @@ const fn fchmod_mode(mode: u32) -> libc::mode_t {
     mode as libc::mode_t
 }
 
+#[cfg(unix)]
 #[cfg(not(target_vendor = "apple"))]
 const fn fchmod_mode(mode: u32) -> libc::mode_t {
     mode
 }
 
+#[cfg(unix)]
 #[op2(fast)]
 fn op_fs_fchmod(#[smi] fd: i32, #[smi] mode: u32) -> Result<(), JsErrorBox> {
     // SAFETY: fchmod(2) reads only the descriptor and the mode bits.
@@ -791,19 +1090,24 @@ fn op_fs_fchmod(#[smi] fd: i32, #[smi] mode: u32) -> Result<(), JsErrorBox> {
     Ok(())
 }
 
+#[cfg(windows)]
+#[op2(fast)]
+fn op_fs_fchmod(#[smi] fd: i32, #[smi] mode: u32) -> Result<(), JsErrorBox> {
+    let file = borrowed(fd);
+    let mut permissions = file.metadata().map_err(fs_error)?.permissions();
+    permissions.set_readonly(mode & 0o200 == 0);
+    file.set_permissions(permissions).map_err(fs_error)
+}
+
 #[op2(fast)]
 fn op_fs_futimes(#[smi] fd: i32, atime: f64, mtime: f64) -> Result<(), JsErrorBox> {
-    let times = [timespec(atime), timespec(mtime)];
-    // SAFETY: futimens(2) reads only the descriptor and the two-element times array.
-    if unsafe { libc::futimens(fd, times.as_ptr()) } == -1 {
-        return Err(fs_error(io::Error::last_os_error()));
-    }
-    Ok(())
+    let file = borrowed(fd);
+    file.set_times(file_times(atime, mtime)?).map_err(fs_error)
 }
 
 #[op2(fast)]
 fn op_fs_lutimes(#[string] path: &str, atime: f64, mtime: f64) -> Result<(), JsErrorBox> {
-    utimens(path, atime, mtime, libc::AT_SYMLINK_NOFOLLOW)
+    std::fs::set_times_nofollow(path, file_times(atime, mtime)?).map_err(fs_error)
 }
 
 struct Watch {
@@ -887,9 +1191,9 @@ const fn event_kind(kind: notify::EventKind) -> Option<&'static str> {
 fn watcher_error(error: notify::Error) -> JsErrorBox {
     let detail = error.to_string();
     let errno = match error.kind {
-        notify::ErrorKind::PathNotFound => libc::ENOENT,
-        notify::ErrorKind::MaxFilesWatch => libc::ENOSPC,
-        notify::ErrorKind::InvalidConfig(_) | notify::ErrorKind::WatchNotFound => libc::EINVAL,
+        notify::ErrorKind::PathNotFound => ENOENT,
+        notify::ErrorKind::MaxFilesWatch => ENOSPC,
+        notify::ErrorKind::InvalidConfig(_) | notify::ErrorKind::WatchNotFound => EINVAL,
         notify::ErrorKind::Io(error) => return fs_error(error),
         notify::ErrorKind::Generic(_) => return fs_error(io::Error::other(detail)),
     };

@@ -10,7 +10,6 @@ deno_core.workspace = true
 deno_error.workspace = true
 tokio.workspace = true
 hickory-resolver = "0.25"
-libc = "0.2"
 
 [lints]
 workspace = true

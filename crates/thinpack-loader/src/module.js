@@ -124,6 +124,9 @@
 
   const runMain = () => {
     const [kind, id, url, source] = split(ops.op_entry());
+    if (kind === "e") {
+      throw fail(id, url);
+    }
     if (kind === "v") {
       evaluate(id, url, source, false, []);
       const require = makeRequire(id, [id]);

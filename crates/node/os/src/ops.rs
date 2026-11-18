@@ -1,6 +1,4 @@
-use std::collections::HashMap;
-use std::ffi::CStr;
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::IpAddr;
 
 use deno_core::{OpDecl, op2};
 use deno_error::JsErrorBox;
@@ -9,16 +7,18 @@ pub(crate) const OPS: &[OpDecl] = &[
     op_os_system_info(),
     op_os_cpus(),
     op_os_network_interfaces(),
+    op_os_homedir(),
+    op_os_tmpdir(),
 ];
 
+#[cfg(not(windows))]
 fn proc_text(path: &str, fallback: &str) -> String {
     std::fs::read_to_string(path)
         .map_or_else(|_| fallback.to_owned(), |text| text.trim().to_owned())
 }
 
-#[op2]
-#[string]
-pub(crate) fn op_os_system_info() -> String {
+#[cfg(not(windows))]
+fn system_info() -> String {
     let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
     let cpu_count = cpuinfo
         .lines()
@@ -62,98 +62,43 @@ pub(crate) fn op_os_system_info() -> String {
     )
 }
 
-unsafe fn text_of(address: *const libc::sockaddr, family: i32) -> Option<String> {
-    if address.is_null() {
-        return None;
-    }
-    match family {
-        libc::AF_INET => {
-            // SAFETY: `family` is `AF_INET`, so `address` points to a `sockaddr_in`.
-            let address = unsafe { &*address.cast::<libc::sockaddr_in>() };
-            Some(Ipv4Addr::from(address.sin_addr.s_addr.to_ne_bytes()).to_string())
-        }
-        libc::AF_INET6 => {
-            // SAFETY: `family` is `AF_INET6`, so `address` points to a `sockaddr_in6`.
-            let address = unsafe { &*address.cast::<libc::sockaddr_in6>() };
-            Some(Ipv6Addr::from(address.sin6_addr.s6_addr).to_string())
-        }
-        _ => None,
-    }
+#[cfg(windows)]
+fn system_info() -> String {
+    use sysinfo::{MemoryRefreshKind, RefreshKind, System};
+
+    let cpu_count = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    let system = System::new_with_specifics(
+        RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()),
+    );
+    let total = system.total_memory();
+    let available = system.available_memory();
+    let uptime = System::uptime();
+    let release = System::os_version().unwrap_or_default();
+    let version = System::long_os_version().unwrap_or_default();
+    let hostname = System::host_name().unwrap_or_default();
+    // Windows has no load average; Node reports zeros there as well.
+    [
+        cpu_count.to_string(),
+        total.to_string(),
+        available.to_string(),
+        release,
+        version,
+        hostname,
+        uptime.to_string(),
+        "0".to_owned(),
+        "0".to_owned(),
+        "0".to_owned(),
+    ]
+    .join("\0")
 }
 
-unsafe fn prefix_of(netmask: *const libc::sockaddr, family: i32) -> u32 {
-    if netmask.is_null() {
-        return 0;
-    }
-    match family {
-        libc::AF_INET => {
-            // SAFETY: `family` is `AF_INET`, so `netmask` points to a `sockaddr_in`.
-            let mask = unsafe { &*netmask.cast::<libc::sockaddr_in>() };
-            u32::from_be(mask.sin_addr.s_addr).count_ones()
-        }
-        libc::AF_INET6 => {
-            // SAFETY: `family` is `AF_INET6`, so `netmask` points to a `sockaddr_in6`.
-            let mask = unsafe { &*netmask.cast::<libc::sockaddr_in6>() };
-            mask.sin6_addr
-                .s6_addr
-                .iter()
-                .map(|byte| byte.count_ones())
-                .sum()
-        }
-        _ => 0,
-    }
+#[op2]
+#[string]
+pub(crate) fn op_os_system_info() -> String {
+    system_info()
 }
 
-#[cfg(target_os = "linux")]
-unsafe fn mac_of(address: *const libc::sockaddr) -> Option<String> {
-    if address.is_null() {
-        return None;
-    }
-    // SAFETY: the caller passes the address of an `AF_PACKET` entry, i.e. a `sockaddr_ll`.
-    let link = unsafe { &*address.cast::<libc::sockaddr_ll>() };
-    if link.sll_halen != 6 {
-        return None;
-    }
-    let bytes: Vec<String> = link.sll_addr[..6]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    Some(bytes.join(":"))
-}
-
-#[cfg(target_vendor = "apple")]
-unsafe fn mac_of(address: *const libc::sockaddr) -> Option<String> {
-    if address.is_null() {
-        return None;
-    }
-    // SAFETY: the caller passes the address of an `AF_LINK` entry, i.e. a `sockaddr_dl`.
-    let link = unsafe { &*address.cast::<libc::sockaddr_dl>() };
-    if link.sdl_alen != 6 {
-        return None;
-    }
-    let start = usize::from(link.sdl_nlen);
-    let bytes = link.sdl_data.get(start..start + 6)?;
-    Some(
-        bytes
-            .iter()
-            .map(|byte| format!("{:02x}", byte.cast_unsigned()))
-            .collect::<Vec<_>>()
-            .join(":"),
-    )
-}
-
-#[cfg(target_os = "linux")]
-const LINK_FAMILY: libc::c_int = libc::AF_PACKET;
-#[cfg(target_vendor = "apple")]
-const LINK_FAMILY: libc::c_int = libc::AF_LINK;
-#[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
-const LINK_FAMILY: libc::c_int = -1;
-
-#[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
-unsafe fn mac_of(_address: *const libc::sockaddr) -> Option<String> {
-    None
-}
-
+#[cfg(not(windows))]
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -163,9 +108,8 @@ const fn rounded_mhz(mhz: f64) -> u64 {
     mhz.round() as u64
 }
 
-#[op2]
-#[string]
-pub(crate) fn op_os_cpus() -> String {
+#[cfg(not(windows))]
+fn cpus() -> String {
     const USER_HZ: u64 = 100;
     const MILLISECONDS: u64 = 1000;
 
@@ -229,96 +173,74 @@ pub(crate) fn op_os_cpus() -> String {
     fields.join("\0")
 }
 
+#[cfg(windows)]
+fn cpus() -> String {
+    use sysinfo::{CpuRefreshKind, RefreshKind, System};
+
+    let system = System::new_with_specifics(
+        RefreshKind::nothing().with_cpu(CpuRefreshKind::nothing().with_frequency()),
+    );
+    let cpus = system.cpus();
+    let model = cpus.first().map_or("unknown", sysinfo::Cpu::brand);
+    let speed = cpus.first().map_or(0, sysinfo::Cpu::frequency);
+    let count = cpus.len().max(1);
+    let mut fields = Vec::with_capacity(count * 7);
+    for _ in 0..count {
+        fields.push(model.to_owned());
+        fields.push(speed.to_string());
+        for _ in 0..5 {
+            fields.push("0".to_owned());
+        }
+    }
+    fields.join("\0")
+}
+
+#[op2]
+#[string]
+pub(crate) fn op_os_cpus() -> String {
+    cpus()
+}
+
 #[op2]
 #[string]
 pub(crate) fn op_os_network_interfaces() -> Result<String, JsErrorBox> {
-    let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
-    // SAFETY: `getifaddrs` only writes the head of the list it allocates through the pointer.
-    if unsafe { libc::getifaddrs(&raw mut head) } != 0 {
-        let errno = std::io::Error::last_os_error()
-            .raw_os_error()
-            .map_or(5, |errno| -errno);
-        return Err(JsErrorBox::new("Error", errno.to_string()));
+    let interfaces = netif::up().map_err(|error| {
+        let errno = error.raw_os_error().unwrap_or(5);
+        JsErrorBox::new("Error", (-errno).to_string())
+    })?;
+    let mut entries = Vec::new();
+    for interface in interfaces {
+        let address = interface.address();
+        let family = match address {
+            IpAddr::V4(_) => "IPv4",
+            IpAddr::V6(_) => "IPv6",
+        };
+        let (cidr, prefix) = interface.cidr();
+        let mac = interface
+            .mac()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<Vec<String>>()
+            .join(":");
+        entries.push(format!(
+            "{}\0{address}\0{}\0{family}\0{mac}\0{}\0{cidr}/{prefix}\0{}",
+            interface.name(),
+            interface.netmask(),
+            u8::from(address.is_loopback()),
+            interface.scope_id().unwrap_or(0),
+        ));
     }
-
-    let mut macs: HashMap<String, String> = HashMap::new();
-    let mut entries: Vec<String> = Vec::new();
-
-    let mut current = head;
-    while !current.is_null() {
-        // SAFETY: `current` is a non-null node of the list owned by `head`.
-        let entry = unsafe { &*current };
-        // SAFETY: `ifa_name` points to a NUL-terminated string inside the same node.
-        let name = unsafe { CStr::from_ptr(entry.ifa_name) }
-            .to_string_lossy()
-            .into_owned();
-        if !entry.ifa_addr.is_null() {
-            // SAFETY: `ifa_addr` is non-null and starts with the common `sockaddr` header.
-            let family = i32::from(unsafe { (*entry.ifa_addr).sa_family });
-            let mac = if family == LINK_FAMILY {
-                // SAFETY: a `LINK_FAMILY` entry carries a link-layer address in `ifa_addr`.
-                unsafe { mac_of(entry.ifa_addr) }
-            } else {
-                None
-            };
-            if let Some(mac) = mac {
-                macs.insert(name, mac);
-            }
-        }
-        current = entry.ifa_next;
-    }
-
-    current = head;
-    while !current.is_null() {
-        // SAFETY: `current` is a non-null node of the list owned by `head`.
-        let entry = unsafe { &*current };
-        // SAFETY: `ifa_name` points to a NUL-terminated string inside the same node.
-        let name = unsafe { CStr::from_ptr(entry.ifa_name) }
-            .to_string_lossy()
-            .into_owned();
-        if !entry.ifa_addr.is_null() {
-            // SAFETY: `ifa_addr` is non-null and starts with the common `sockaddr` header.
-            let family = i32::from(unsafe { (*entry.ifa_addr).sa_family });
-            if family == libc::AF_INET || family == libc::AF_INET6 {
-                // SAFETY: `family` reports the layout of `ifa_addr`.
-                let address = unsafe { text_of(entry.ifa_addr, family) }.unwrap_or_default();
-                // SAFETY: `ifa_netmask` is either null or a `sockaddr` of the same family.
-                let netmask = unsafe { text_of(entry.ifa_netmask, family) }.unwrap_or_else(|| {
-                    if family == libc::AF_INET {
-                        "0.0.0.0".to_owned()
-                    } else {
-                        "::".to_owned()
-                    }
-                });
-                // SAFETY: `ifa_netmask` is either null or a `sockaddr` of the same family.
-                let prefix = unsafe { prefix_of(entry.ifa_netmask, family) };
-                let internal = name == "lo"
-                    || address.parse::<Ipv4Addr>().is_ok_and(|ip| ip.is_loopback())
-                    || address.parse::<Ipv6Addr>().is_ok_and(|ip| ip.is_loopback());
-                let scope = if family == libc::AF_INET6 {
-                    // SAFETY: an `AF_INET6` entry carries a `sockaddr_in6` in `ifa_addr`.
-                    unsafe { (*entry.ifa_addr.cast::<libc::sockaddr_in6>()).sin6_scope_id }
-                } else {
-                    0
-                };
-                let mac = macs
-                    .get(&name)
-                    .cloned()
-                    .unwrap_or_else(|| "00:00:00:00:00:00".to_owned());
-                entries.push(format!(
-                    "{name}\0{address}\0{netmask}\0{}\0{mac}\0{}\0{address}/{prefix}\0{scope}",
-                    if family == libc::AF_INET {
-                        "IPv4"
-                    } else {
-                        "IPv6"
-                    },
-                    u8::from(internal),
-                ));
-            }
-        }
-        current = entry.ifa_next;
-    }
-    // SAFETY: `head` is the list allocated by the successful `getifaddrs` call above.
-    unsafe { libc::freeifaddrs(head) };
     Ok(entries.join("\n"))
+}
+
+#[op2]
+#[string]
+pub(crate) fn op_os_homedir() -> String {
+    dirs::home_dir().map_or_else(String::new, |path| path.to_string_lossy().into_owned())
+}
+
+#[op2]
+#[string]
+pub(crate) fn op_os_tmpdir() -> String {
+    std::env::temp_dir().to_string_lossy().into_owned()
 }

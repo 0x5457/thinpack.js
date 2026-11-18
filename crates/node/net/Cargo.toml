@@ -9,7 +9,10 @@ license.workspace = true
 deno_core.workspace = true
 thinpack-core = { workspace = true }
 deno_error.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["net"] }
+socket2 = "0.5"
+
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [lints]

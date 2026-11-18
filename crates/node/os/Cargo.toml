@@ -1,6 +1,6 @@
 [package]
 name = "thinpack-node-os"
-description = "os module for thinpack (Linux /proc based)"
+description = "os module for thinpack (system info, cpus, network interfaces)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,7 +8,11 @@ license.workspace = true
 [dependencies]
 deno_core.workspace = true
 deno_error.workspace = true
-libc = "0.2"
+dirs = "6"
+netif = "0.1.6"
 
 [lints]
 workspace = true
+
+[target.'cfg(windows)'.dependencies]
+sysinfo = { version = "0.35", default-features = false, features = ["system"] }

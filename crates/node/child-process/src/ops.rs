@@ -209,6 +209,7 @@ fn op_child_pid(id: u32) -> Result<u32, JsErrorBox> {
     child_pid(id)
 }
 
+#[cfg(unix)]
 #[op2(fast)]
 fn op_child_kill(id: u32, signal: i32) -> Result<(), JsErrorBox> {
     let pid = child_pid(id)?;
@@ -218,6 +219,38 @@ fn op_child_kill(id: u32, signal: i32) -> Result<(), JsErrorBox> {
         return Err(spawn_error(std::io::Error::last_os_error()));
     }
     Ok(())
+}
+
+#[cfg(windows)]
+#[op2(fast)]
+fn op_child_kill(id: u32, signal: i32) -> Result<(), JsErrorBox> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, TerminateProcess,
+    };
+
+    let pid = child_pid(id)?;
+    let access = if signal == 0 {
+        PROCESS_QUERY_LIMITED_INFORMATION
+    } else {
+        PROCESS_TERMINATE
+    };
+    // SAFETY: plain Win32 call; the returned handle is closed before returning.
+    let process = unsafe { OpenProcess(access, 0, pid) };
+    if process.is_null() {
+        return Err(spawn_error(std::io::Error::last_os_error()));
+    }
+    let result = if signal == 0 {
+        Ok(())
+    // SAFETY: `process` is the handle opened above.
+    } else if unsafe { TerminateProcess(process, 1) } == 0 {
+        Err(spawn_error(std::io::Error::last_os_error()))
+    } else {
+        Ok(())
+    };
+    // SAFETY: `process` is a valid handle opened by `OpenProcess`.
+    unsafe { CloseHandle(process) };
+    result
 }
 
 #[op2]

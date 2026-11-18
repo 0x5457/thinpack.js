@@ -120,8 +120,79 @@ jobs:
           cache: false
       - uses: Swatinem/rust-cache@v2
 
-      # The runtime and the Node builtins are Unix-only today (raw libc
-      # sockets, fork/socketpair, termios). This job covers the engine-free
-      # host side: analysis, resolution, the payload format and the CLI.
+      # The runtime itself is covered by the windows-runtime job below; this
+      # job keeps a fast, engine-free check of the host tooling: analysis,
+      # resolution, the payload format and the CLI.
       - run: cargo test -p thinpack-analyze -p thinpack-resolve -p thinpack-pack
       - run: cargo build -p thinpack-cli --release
+
+  windows-runtime:
+    name: Runtime (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          rustflags: ""
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+
+      # Template used by the smokes: ambient modules plus fs/os/dns/
+      # child_process/net/cluster. The full default runtime is built below.
+      - run: >-
+          cargo build -p thinpack-rt -p thinpack-cli --no-default-features
+          --features thinpack-rt/backend-quickjs,thinpack-rt/node-process,thinpack-rt/node-console,thinpack-rt/node-timers,thinpack-rt/node-buffer,thinpack-rt/node-url,thinpack-rt/node-querystring,thinpack-rt/node-util,thinpack-rt/node-fs,thinpack-rt/node-dns,thinpack-rt/node-child-process,thinpack-rt/node-os,thinpack-rt/node-net,thinpack-rt/node-cluster
+
+      - name: Pack and run hello.exe
+        shell: bash
+        run: |
+          target/debug/thinpack pack examples/hello.js -o hello.exe --template target/debug/thinpack-rt.exe
+          ./hello.exe > smoke.out
+          cat smoke.out
+          grep -q "answer: 42" smoke.out
+          grep -q "microtask completed" smoke.out
+
+      - name: Pack and run hello-fs.exe
+        shell: bash
+        run: |
+          target/debug/thinpack pack examples/hello-fs.js -o hello-fs.exe --template target/debug/thinpack-rt.exe
+          ./hello-fs.exe > fs.out
+          cat fs.out
+          grep -q "hello from fs" fs.out
+          grep -q "isFile: true" fs.out
+          grep -q "mtimeMs: 2000000" fs.out
+
+      - name: Pack and run hello-os.exe
+        shell: bash
+        run: |
+          target/debug/thinpack pack examples/hello-os.js -o hello-os.exe --template target/debug/thinpack-rt.exe
+          ./hello-os.exe > os.out
+          cat os.out
+          grep -q "platform: win32" os.out
+          grep -q "cpus: true" os.out
+          grep -q "totalmem: true" os.out
+          grep -q "interfaces: true" os.out
+
+      - name: Pack and run hello-pipe.exe
+        shell: bash
+        run: |
+          target/debug/thinpack pack examples/hello-pipe.js -o hello-pipe.exe --template target/debug/thinpack-rt.exe
+          ./hello-pipe.exe > pipe.out || true
+          cat pipe.out
+          grep -q "pipe ok" pipe.out
+
+      - name: Pack and run hello-cluster.exe
+        shell: bash
+        run: |
+          target/debug/thinpack pack examples/hello-cluster.js -o hello-cluster.exe --template target/debug/thinpack-rt.exe
+          ./hello-cluster.exe > cluster.out || true
+          cat cluster.out
+          grep -q "primary: worker online" cluster.out
+
+      - name: Full runtime (all builtins)
+        run: cargo build -p thinpack-rt
+
+      - name: Workspace tests
+        run: cargo test --workspace --no-fail-fast
