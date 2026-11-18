@@ -178,6 +178,7 @@ cargo test -p thinpack-rt --test node   # Node.js compatibility suite
 cargo xtask gen --check                 # are generated files stale?
 cargo xtask lint                        # fmt + clippy, the commit gate
 cargo xtask size                        # build, strip, measure, record
+cargo xtask dist                        # build, verify and archive a release
 ```
 
 The compatibility suite ports Node.js' own tests unchanged and records known skips in
