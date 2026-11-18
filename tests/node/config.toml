@@ -1335,3 +1335,33 @@ ignore = "requires Node's internal test binding"
 
 [tests."parallel/test-ttywrap-stack.js"]
 module = "tty"
+
+# --- thinpack runtime regressions ---
+
+[tests."parallel/test-thinpack-messageport-peer-close.js"]
+module = "worker_threads"
+timeout_ms = 5000
+
+[tests."parallel/test-thinpack-http2-reset-stream.js"]
+module = "http2"
+timeout_ms = 5000
+
+[tests."parallel/test-thinpack-http-keepalive-trailers.js"]
+module = "http"
+timeout_ms = 5000
+
+[tests."parallel/test-thinpack-net-unix-stdio-pipe-destroy.js"]
+module = "net"
+timeout_ms = 5000
+stdin_pipe = true
+
+[tests."parallel/test-thinpack-child-process-spawn-sync-large-io.js"]
+module = "child_process"
+timeout_ms = 10000
+
+[tests."parallel/test-thinpack-textdecoder-streaming-utf8.js"]
+module = "util"
+
+[tests."parallel/test-thinpack-cjs-reexport-alias-cycle.mjs"]
+module = "module"
+timeout_ms = 5000
