@@ -87,7 +87,9 @@ impl std::error::Error for Error {}
 /// parse, export-map and I/O errors reported by the walked `package.json`
 /// manifests.
 pub fn resolve(specifier: &str, parent: &Path, fs: &impl FileSystem) -> Result<Resolved, Error> {
-    resolve_with(specifier, parent, fs, false)
+    let path = resolve_with(specifier, parent, fs, false)?;
+    let format = format_of(&path, fs)?;
+    Ok(Resolved { path, format })
 }
 
 /// # Errors
@@ -99,7 +101,51 @@ pub fn resolve_import(
     parent: &Path,
     fs: &impl FileSystem,
 ) -> Result<Resolved, Error> {
-    resolve_with(specifier, parent, fs, true)
+    let path = resolve_with(specifier, parent, fs, true)?;
+    let format = format_of(&path, fs)?;
+    Ok(Resolved { path, format })
+}
+
+/// # Errors
+///
+/// Returns the same errors as [`resolve`] except the module format: the
+/// `package.json` ancestor walk that classifies a generic `.js` file is
+/// skipped, for callers that only need the location. Native addons are still
+/// rejected.
+pub fn resolve_path(
+    specifier: &str,
+    parent: &Path,
+    fs: &impl FileSystem,
+) -> Result<PathBuf, Error> {
+    let path = resolve_with(specifier, parent, fs, false)?;
+    reject_native_addon(&path)?;
+    Ok(path)
+}
+
+/// # Errors
+///
+/// Returns the same errors as [`resolve_path`], resolved with `import`
+/// conditions taking precedence over `require`.
+pub fn resolve_import_path(
+    specifier: &str,
+    parent: &Path,
+    fs: &impl FileSystem,
+) -> Result<PathBuf, Error> {
+    let path = resolve_with(specifier, parent, fs, true)?;
+    reject_native_addon(&path)?;
+    Ok(path)
+}
+
+fn reject_native_addon(path: &Path) -> Result<(), Error> {
+    if path
+        .extension()
+        .is_some_and(|extension| extension == "node")
+    {
+        return Err(Error::Unsupported {
+            path: path.to_path_buf(),
+        });
+    }
+    Ok(())
 }
 
 fn resolve_with(
@@ -107,7 +153,7 @@ fn resolve_with(
     parent: &Path,
     fs: &impl FileSystem,
     prefer_import: bool,
-) -> Result<Resolved, Error> {
+) -> Result<PathBuf, Error> {
     if specifier.starts_with('#') {
         return resolve_package_import(specifier, parent, fs, prefer_import);
     }
@@ -132,7 +178,7 @@ fn resolve_package_import(
     parent: &Path,
     fs: &impl FileSystem,
     prefer_import: bool,
-) -> Result<Resolved, Error> {
+) -> Result<PathBuf, Error> {
     let mut directory = parent.parent().unwrap_or_else(|| Path::new("/"));
     loop {
         let manifest_path = directory.join("package.json");
@@ -162,7 +208,7 @@ fn load_package(
     parent: &Path,
     fs: &impl FileSystem,
     prefer_import: bool,
-) -> Result<Resolved, Error> {
+) -> Result<PathBuf, Error> {
     let (name, subpath) = split_package(specifier);
     let base = parent.parent().unwrap_or_else(|| Path::new("/"));
     let directory = find_package(name, base, fs).ok_or(Error::NotFound)?;
@@ -176,7 +222,7 @@ fn load_package(
                 }
             })?;
         let path = directory.join(target);
-        return load_file(&path, fs)?.ok_or(Error::NotFound);
+        return load_file(&path, fs).ok_or(Error::NotFound);
     }
 
     if subpath.is_empty() {
@@ -185,7 +231,7 @@ fn load_package(
         {
             return Ok(resolved);
         }
-        return load_index(&directory, fs)?.ok_or(Error::NotFound);
+        return load_index(&directory, fs).ok_or(Error::NotFound);
     }
 
     load_path(&directory.join(subpath), fs)
@@ -215,12 +261,12 @@ fn split_package(specifier: &str) -> (&str, &str) {
     )
 }
 
-fn load_path(path: &Path, fs: &impl FileSystem) -> Result<Resolved, Error> {
+fn load_path(path: &Path, fs: &impl FileSystem) -> Result<PathBuf, Error> {
     load_file_or_directory(path, fs)?.ok_or(Error::NotFound)
 }
 
-fn load_file_or_directory(path: &Path, fs: &impl FileSystem) -> Result<Option<Resolved>, Error> {
-    if let Some(resolved) = load_file(path, fs)? {
+fn load_file_or_directory(path: &Path, fs: &impl FileSystem) -> Result<Option<PathBuf>, Error> {
+    if let Some(resolved) = load_file(path, fs) {
         return Ok(Some(resolved));
     }
     if fs.is_dir(path) {
@@ -229,45 +275,38 @@ fn load_file_or_directory(path: &Path, fs: &impl FileSystem) -> Result<Option<Re
     Ok(None)
 }
 
-fn load_file(path: &Path, fs: &impl FileSystem) -> Result<Option<Resolved>, Error> {
+fn load_file(path: &Path, fs: &impl FileSystem) -> Option<PathBuf> {
     if fs.is_file(path) {
-        return resolved(path, fs).map(Some);
+        return Some(normalize(path));
     }
 
     for extension in ["js", "json", "cjs", "mjs"] {
         let candidate = append_extension(path, extension);
         if fs.is_file(&candidate) {
-            return resolved(&candidate, fs).map(Some);
+            return Some(normalize(&candidate));
         }
     }
-    Ok(None)
+    None
 }
 
-fn load_directory(directory: &Path, fs: &impl FileSystem) -> Result<Option<Resolved>, Error> {
+fn load_directory(directory: &Path, fs: &impl FileSystem) -> Result<Option<PathBuf>, Error> {
     let manifest = Manifest::read(&directory.join("package.json"), fs)?;
     if let Some(main) = &manifest.main
         && let Some(resolved) = load_file_or_directory(&directory.join(main), fs)?
     {
         return Ok(Some(resolved));
     }
-    load_index(directory, fs)
+    Ok(load_index(directory, fs))
 }
 
-fn load_index(directory: &Path, fs: &impl FileSystem) -> Result<Option<Resolved>, Error> {
+fn load_index(directory: &Path, fs: &impl FileSystem) -> Option<PathBuf> {
     for name in ["index.js", "index.json"] {
         let path = directory.join(name);
         if fs.is_file(&path) {
-            return resolved(&path, fs).map(Some);
+            return Some(normalize(&path));
         }
     }
-    Ok(None)
-}
-
-fn resolved(path: &Path, fs: &impl FileSystem) -> Result<Resolved, Error> {
-    Ok(Resolved {
-        path: normalize(path),
-        format: format_of(path, fs)?,
-    })
+    None
 }
 
 /// # Errors

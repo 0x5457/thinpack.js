@@ -8,6 +8,7 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use deno_core::error::CoreErrorKind;
 use deno_core::v8;
 use deno_core::{ModuleSpecifier, OpDecl, OpState, op2};
 use deno_error::JsErrorBox;
@@ -134,7 +135,17 @@ fn op_require_esm<'s>(
 ) -> Result<v8::Local<'s, v8::Value>, JsErrorBox> {
     deno_core::require_esm(scope, specifier)
         .map(|namespace| v8::Local::<v8::Object>::new(scope, namespace).into())
-        .map_err(|error| JsErrorBox::generic(error.to_string()))
+        .map_err(|error| {
+            // The engine reports top-level await as a plain generic error with
+            // no code; tag it with the standard `code\0detail` prefix so the
+            // loader can recognise it without matching the message prose.
+            match error.0.as_ref() {
+                CoreErrorKind::TLA => {
+                    JsErrorBox::new("Error", format!("ERR_REQUIRE_ASYNC_MODULE\0{error}"))
+                }
+                _ => JsErrorBox::generic(error.to_string()),
+            }
+        })
 }
 
 #[op2]

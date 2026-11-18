@@ -1,4 +1,5 @@
 // Vendored from npm minimatch@10.2.6 dist/commonjs/ast.js (MIT).
+// Patched: upstream require("../...") / require("minimatch/...") rewrites -> require("node:thinpack/internal/deps/...").
 
 "use strict";
 // parse a single path portion

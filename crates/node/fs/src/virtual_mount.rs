@@ -6,7 +6,7 @@ use thinpack_core::{VirtualEntry, VirtualFilesRef, VirtualStat};
 
 const FIRST_VIRTUAL_FD: i32 = 1 << 30;
 const S_IFREG: u64 = 0o100_000;
-const S_IFDIR: u64 = 0o044_000;
+const S_IFDIR: u64 = 0o040_000;
 
 pub struct VirtualMount {
     files: VirtualFilesRef,
@@ -127,7 +127,9 @@ pub(crate) fn encode_stat(stat: &VirtualStat) -> String {
         stat.len.div_ceil(512),
     ];
     let mut encoded: Vec<String> = fields.iter().map(u64::to_string).collect();
-    for _ in 0..3 {
+    // Four time pairs (atime, mtime, ctime, birthtime) — the JS `Stats` decoder
+    // reads 18 fields, with birthtime at offsets 16/17.
+    for _ in 0..4 {
         encoded.push("0".to_owned());
         encoded.push("0".to_owned());
     }

@@ -184,6 +184,11 @@ fn client_config(
 ) -> Result<Arc<ClientConfig>, JsErrorBox> {
     let mut roots = RootCertStore::empty();
     if ca_pem.trim().is_empty() {
+        // System trust stores routinely hold entries rustls cannot consume (legacy
+        // signatures, stray files); loading them is best-effort, mirroring Node's
+        // use of the platform store, where one bad entry must not disable TLS.
+        // A user-supplied `ca`, by contrast, must parse or the connect fails loudly
+        // below.
         let native = rustls_native_certs::load_native_certs();
         for certificate in native.certs {
             let _ = roots.add(certificate);

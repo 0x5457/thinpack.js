@@ -83,6 +83,9 @@ unsafe extern "C" fn scalar_call(
     match outcome {
         Some(Ok(())) => {}
         Some(Err(())) => callbacks::result_error(context, "the JavaScript function failed"),
+        // Unreachable through the public entry points — they all run inside a
+        // statement, which installs the callback frame `with_frame` needs. Kept
+        // as the loud failure if a future entry point forgets it.
         None => callbacks::result_error(
             context,
             "the JavaScript function cannot be invoked outside a statement",

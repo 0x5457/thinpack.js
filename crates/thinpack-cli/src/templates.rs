@@ -5,6 +5,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use thinpack_caps::Module;
+
 use crate::options::{DEFAULT_BACKEND, Options};
 
 /// Templates are built the way `cargo xtask size --profile small` measures them
@@ -39,10 +41,10 @@ pub(crate) struct TemplateInfo {
 }
 
 impl TemplateInfo {
-    pub(crate) fn missing<'a>(&self, required: &'a [String]) -> Vec<&'a str> {
+    pub(crate) fn missing(&self, required: &[&'static Module]) -> Vec<&'static str> {
         required
             .iter()
-            .map(String::as_str)
+            .map(|module| module.name)
             .filter(|name| !self.capabilities.iter().any(|have| have == *name))
             .collect()
     }
@@ -138,12 +140,17 @@ impl Cache {
     }
     pub(crate) fn find(
         &self,
-        required: &[String],
+        required: &[&'static Module],
         backend: Option<&str>,
     ) -> Result<Option<PathBuf>, Box<dyn Error>> {
         let mut candidates = Vec::new();
         let mut backends = BTreeSet::new();
         for entry in self.walk()? {
+            // The cache keeps entries from older CLI versions, whose templates
+            // predate the current manifest format and cannot serve this pack.
+            if entry.version != env!("CARGO_PKG_VERSION") {
+                continue;
+            }
             if backend.is_some_and(|wanted| wanted != entry.backend) {
                 continue;
             }
@@ -153,7 +160,7 @@ impl Cache {
             }
             if required
                 .iter()
-                .all(|name| entry.capabilities.contains(name.as_str()))
+                .all(|module| entry.capabilities.contains(module.name))
             {
                 backends.insert(entry.backend.clone());
                 candidates.push((entry.capabilities.len(), binary));
@@ -228,7 +235,7 @@ struct CachedTemplate {
 impl Cache {
     pub(crate) fn rebuild(
         &self,
-        required: &[String],
+        required: &[&'static Module],
         backend: &str,
         source: Option<&Path>,
     ) -> Result<PathBuf, Box<dyn Error>> {
@@ -251,9 +258,7 @@ impl Cache {
         }
 
         let mut features = vec![format!("backend-{backend}")];
-        for name in required {
-            let module =
-                thinpack_caps::module(name).ok_or_else(|| format!("unknown module `{name}`"))?;
+        for module in required {
             features.push(module.feature.to_owned());
         }
         features.sort();
@@ -305,7 +310,7 @@ fn sibling_template() -> Option<PathBuf> {
 }
 pub(crate) fn resolve_template(
     options: &Options,
-    required: &[String],
+    required: &[&'static Module],
 ) -> Result<PathBuf, Box<dyn Error>> {
     if options.template.is_some() && options.rebuild {
         return Err("--template and --rebuild are mutually exclusive".into());
@@ -347,7 +352,11 @@ pub(crate) fn resolve_template(
     Err(format!(
         "no cached template covers these capabilities: {}\n\
          pass --template <thinpack-rt>, or --rebuild to build one with cargo",
-        required.join(", ")
+        required
+            .iter()
+            .map(|module| module.name)
+            .collect::<Vec<_>>()
+            .join(", ")
     )
     .into())
 }

@@ -6,7 +6,8 @@
   const ONLY_ENUMERABLE = 2;
   const SKIP_SYMBOLS = 8;
   const kPending = 0;
-  const kRejected = 1;
+  const kFulfilled = 1;
+  const kRejected = 2;
 
   const getOwnNonIndexProperties = (object, filter) =>
     op_binding_get_own_non_index_properties(object, filter);
@@ -25,8 +26,10 @@
     }
     return "";
   };
+  // `Deno.core.getPromiseDetails` returns the engine's real promise state
+  // (0 pending, 1 fulfilled, 2 rejected) and settlement value.
   const getPromiseDetails = (value) =>
-    types.isPromise(value) ? [kPending] : undefined;
+    types.isPromise(value) ? Deno.core.getPromiseDetails(value) : undefined;
   const getProxyDetails = () => undefined;
   const getExternalValue = () => undefined;
   const previewEntries = (value, withIsKeyValue) => {
@@ -38,11 +41,6 @@
       isKeyValue = true;
     } else if (types.isSet(value)) {
       entries = [...value];
-    } else if (types.isWeakMap(value)) {
-      entries = [];
-      isKeyValue = true;
-    } else if (types.isWeakSet(value)) {
-      entries = [];
     } else if (types.isMapIterator(value)) {
       entries = [];
       isKeyValue = true;
@@ -83,7 +81,7 @@
   module.exports = {
     getSharedArrayBufferGrowable,
     markPromiseAsHandled: () => false,
-    constants: { ALL_PROPERTIES, ONLY_ENUMERABLE, SKIP_SYMBOLS, kPending, kRejected },
+    constants: { ALL_PROPERTIES, ONLY_ENUMERABLE, SKIP_SYMBOLS, kPending, kFulfilled, kRejected },
     getCallSites,
     getConstructorName,
     getExternalValue,

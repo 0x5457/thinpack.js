@@ -72,17 +72,6 @@
     return [names, types];
   };
 
-  const readAll = (fd) => {
-    const chunks = [];
-    for (;;) {
-      const buffer = Buffer.allocUnsafe(65536);
-      const read = ops.op_fs_read(fd, buffer, -1);
-      if (read === 0) break;
-      chunks.push(read === buffer.length ? buffer : buffer.subarray(0, read));
-    }
-    return chunks.length === 0 ? Buffer.alloc(0) : Buffer.concat(chunks);
-  };
-
   const writeAll = (fd, data) => {
     const buffer = Buffer.isBuffer(data)
       ? data
@@ -328,6 +317,9 @@
     },
 
     rmSync(path, maxRetries, recursive, retryDelay) {
+      // `maxRetries`/`retryDelay` are accepted for signature parity but not honored:
+      // the retryable rm failures Node loops over (EBUSY, EMFILE, ENFILE, ENOSPC)
+      // surface directly instead.
       call("rm", path, undefined, () => ops.op_fs_rm(toPath(path), Boolean(recursive)));
     },
 
@@ -470,7 +462,9 @@
       try {
         return lstatSync(path).isDirectory() ? 1 : 0;
       } catch (error) {
-        return -error.errno;
+        // `UVException.errno` is already the signed libuv value, matching
+        // Node's negative return convention.
+        return error.errno;
       }
     },
 
@@ -491,6 +485,9 @@
       }
 
       run() {
+        // The copy runs to completion inside this microtask, so `fs.cp` on a
+        // directory blocks the event loop; an async directory-copy op is not
+        // implemented.
         queueMicrotask(() => {
           try {
             require("node:fs").cpSync(this.options.src, this.options.dest, this.options);
@@ -503,14 +500,6 @@
     },
     handleToFd() {
       throw notImplemented("fs.createReadStream with a Windows handle");
-    },
-
-    opendir() {
-      throw notImplemented("fs.opendir");
-    },
-
-    opendirSync() {
-      throw notImplemented("fs.opendirSync");
     },
 
     statfs(path, bigint, req) {

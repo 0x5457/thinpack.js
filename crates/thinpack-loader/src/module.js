@@ -36,7 +36,12 @@
     cache[id] = module;
 
     if (json) {
-      module.exports = JSON.parse(source);
+      try {
+        module.exports = JSON.parse(source);
+      } catch (failure) {
+        delete cache[id];
+        throw failure;
+      }
       module.loaded = true;
       return module.exports;
     }
@@ -88,9 +93,12 @@
     try {
       namespace = ops.op_require_esm(url);
     } catch (error) {
-      if (String(error && error.message).includes("Top-level await")) {
+      // The op tags top-level await with the standard `code\0detail` prefix
+      // (the engine exposes no error code of its own for it).
+      const code = String(error.message).split("\0")[0];
+      if (code === "ERR_REQUIRE_ASYNC_MODULE") {
         throw fail(
-          "ERR_REQUIRE_ASYNC_MODULE",
+          code,
           "require() cannot be used on an ES module with top-level await: " + filename,
         );
       }

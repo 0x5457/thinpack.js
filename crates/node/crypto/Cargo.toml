@@ -9,6 +9,7 @@ license.workspace = true
 thinpack-js.workspace = true
 deno_core.workspace = true
 deno_error.workspace = true
+tokio.workspace = true
 ring = "0.17"
 md-5 = "0.10"
 aes = "0.8"

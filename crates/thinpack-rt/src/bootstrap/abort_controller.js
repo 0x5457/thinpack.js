@@ -41,7 +41,7 @@
       if (typeof this.onabort === "function") this.onabort(event);
       for (const entry of listeners) {
         entry.listener.call(this, event);
-        }
+      }
     }
 
     static abort(reason) {

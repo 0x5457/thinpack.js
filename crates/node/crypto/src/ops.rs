@@ -3,7 +3,7 @@ use aes::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit, StreamCipher};
 use aes_gcm::aead::consts::U12;
 use aes_gcm::aead::{AeadInPlace, generic_array::GenericArray};
 use aes_gcm::{AesGcm, KeyInit as GcmKeyInit};
-use deno_core::{OpDecl, op2};
+use deno_core::{JsBuffer, OpDecl, op2};
 use deno_error::JsErrorBox;
 use md5::{Digest as _, Md5};
 use ring::digest;
@@ -19,8 +19,11 @@ pub(crate) const OPS: &[OpDecl] = &[
     op_crypto_sign(),
     op_crypto_cipher(),
     op_crypto_pbkdf2(),
+    op_crypto_pbkdf2_async(),
     op_crypto_scrypt(),
+    op_crypto_scrypt_async(),
     op_crypto_hkdf(),
+    op_crypto_hkdf_async(),
 ];
 
 fn crypto_error(message: &str) -> JsErrorBox {
@@ -363,14 +366,18 @@ fn ctr_apply(key: &[u8], iv: &[u8], data: &[u8]) -> Result<Box<[u8]>, JsErrorBox
     Ok(output.into_boxed_slice())
 }
 
-#[op2]
-#[buffer]
-fn op_crypto_pbkdf2(
-    #[string] digest_name: &str,
-    #[buffer] password: &[u8],
-    #[buffer] salt: &[u8],
-    #[smi] iterations: u32,
-    #[smi] keylen: u32,
+/// `spawn_blocking` only fails when the task panics; surface it as an
+/// engine-level error instead of `JoinError`, which has no JS representation.
+fn join_error(error: &tokio::task::JoinError) -> JsErrorBox {
+    JsErrorBox::new("Error", format!("ERR_CRYPTO_INTERNAL\0{error}"))
+}
+
+fn pbkdf2_derive(
+    digest_name: &str,
+    password: &[u8],
+    salt: &[u8],
+    iterations: u32,
+    keylen: u32,
 ) -> Result<Box<[u8]>, JsErrorBox> {
     use std::num::NonZeroU32;
 
@@ -389,13 +396,43 @@ fn op_crypto_pbkdf2(
 
 #[op2]
 #[buffer]
-fn op_crypto_scrypt(
+fn op_crypto_pbkdf2(
+    #[string] digest_name: &str,
     #[buffer] password: &[u8],
     #[buffer] salt: &[u8],
-    #[smi] log_n: u32,
-    #[smi] r: u32,
-    #[smi] p: u32,
+    #[smi] iterations: u32,
     #[smi] keylen: u32,
+) -> Result<Box<[u8]>, JsErrorBox> {
+    pbkdf2_derive(digest_name, password, salt, iterations, keylen)
+}
+
+/// The async KDF forms must not stall the event loop for the duration of the
+/// derivation, so the shared implementation runs in a blocking task.
+#[op2(async(lazy))]
+#[buffer]
+async fn op_crypto_pbkdf2_async(
+    #[string] digest_name: String,
+    #[buffer] password: JsBuffer,
+    #[buffer] salt: JsBuffer,
+    #[smi] iterations: u32,
+    #[smi] keylen: u32,
+) -> Result<Box<[u8]>, JsErrorBox> {
+    let password = password.to_vec();
+    let salt = salt.to_vec();
+    tokio::task::spawn_blocking(move || {
+        pbkdf2_derive(&digest_name, &password, &salt, iterations, keylen)
+    })
+    .await
+    .map_err(|error| join_error(&error))?
+}
+
+fn scrypt_derive(
+    password: &[u8],
+    salt: &[u8],
+    log_n: u32,
+    r: u32,
+    p: u32,
+    keylen: u32,
 ) -> Result<Box<[u8]>, JsErrorBox> {
     let log_n =
         u8::try_from(log_n).map_err(|_| cipher_error("ERR_CRYPTO_INVALID_SCRYPT_PARAMS"))?;
@@ -407,6 +444,36 @@ fn op_crypto_scrypt(
     Ok(output.into_boxed_slice())
 }
 
+#[op2]
+#[buffer]
+fn op_crypto_scrypt(
+    #[buffer] password: &[u8],
+    #[buffer] salt: &[u8],
+    #[smi] log_n: u32,
+    #[smi] r: u32,
+    #[smi] p: u32,
+    #[smi] keylen: u32,
+) -> Result<Box<[u8]>, JsErrorBox> {
+    scrypt_derive(password, salt, log_n, r, p, keylen)
+}
+
+#[op2(async(lazy))]
+#[buffer]
+async fn op_crypto_scrypt_async(
+    #[buffer] password: JsBuffer,
+    #[buffer] salt: JsBuffer,
+    #[smi] log_n: u32,
+    #[smi] r: u32,
+    #[smi] p: u32,
+    #[smi] keylen: u32,
+) -> Result<Box<[u8]>, JsErrorBox> {
+    let password = password.to_vec();
+    let salt = salt.to_vec();
+    tokio::task::spawn_blocking(move || scrypt_derive(&password, &salt, log_n, r, p, keylen))
+        .await
+        .map_err(|error| join_error(&error))?
+}
+
 struct HkdfLength(usize);
 
 impl ring::hkdf::KeyType for HkdfLength {
@@ -415,14 +482,12 @@ impl ring::hkdf::KeyType for HkdfLength {
     }
 }
 
-#[op2]
-#[buffer]
-fn op_crypto_hkdf(
-    #[string] digest_name: &str,
-    #[buffer] ikm: &[u8],
-    #[buffer] salt: &[u8],
-    #[buffer] info: &[u8],
-    #[smi] keylen: u32,
+fn hkdf_expand(
+    digest_name: &str,
+    ikm: &[u8],
+    salt: &[u8],
+    info: &[u8],
+    keylen: u32,
 ) -> Result<Box<[u8]>, JsErrorBox> {
     let algorithm = match digest_name.to_ascii_lowercase().as_str() {
         "sha1" | "sha-1" => ring::hkdf::HKDF_SHA1_FOR_LEGACY_USE_ONLY,
@@ -438,4 +503,33 @@ fn op_crypto_hkdf(
         .and_then(|okm| okm.fill(&mut output))
         .map_err(|_| crypto_error("hkdf"))?;
     Ok(output.into_boxed_slice())
+}
+
+#[op2]
+#[buffer]
+fn op_crypto_hkdf(
+    #[string] digest_name: &str,
+    #[buffer] ikm: &[u8],
+    #[buffer] salt: &[u8],
+    #[buffer] info: &[u8],
+    #[smi] keylen: u32,
+) -> Result<Box<[u8]>, JsErrorBox> {
+    hkdf_expand(digest_name, ikm, salt, info, keylen)
+}
+
+#[op2(async(lazy))]
+#[buffer]
+async fn op_crypto_hkdf_async(
+    #[string] digest_name: String,
+    #[buffer] ikm: JsBuffer,
+    #[buffer] salt: JsBuffer,
+    #[buffer] info: JsBuffer,
+    #[smi] keylen: u32,
+) -> Result<Box<[u8]>, JsErrorBox> {
+    let ikm = ikm.to_vec();
+    let salt = salt.to_vec();
+    let info = info.to_vec();
+    tokio::task::spawn_blocking(move || hkdf_expand(&digest_name, &ikm, &salt, &info, keylen))
+        .await
+        .map_err(|error| join_error(&error))?
 }

@@ -283,6 +283,8 @@ fn check_optional_dependency(manifest: &str, krate: &str) -> Result<(), String> 
 }
 
 fn render_table(modules: &[Module]) -> String {
+    // `optional_deps` stays in the manifest: xtask validates it and documents
+    // the lazy dependencies, but no generated consumer reads it back.
     let mut source = String::from(
         r"#[derive(Debug)]
 pub struct Module {
@@ -290,7 +292,6 @@ pub struct Module {
     pub feature: &'static str,
     pub builtins: &'static [&'static str],
     pub deps: &'static [&'static str],
-    pub optional_deps: &'static [&'static str],
     pub ambient: bool,
     pub optional: bool,
 }
@@ -310,11 +311,6 @@ pub const MODULES: &[Module] = &[
             string_slice(&module.builtins)
         );
         let _ = writeln!(source, "        deps: &{},", string_slice(&module.deps));
-        let _ = writeln!(
-            source,
-            "        optional_deps: &{},",
-            string_slice(&module.optional_deps)
-        );
         let _ = writeln!(source, "        ambient: {},", module.ambient);
         let _ = writeln!(source, "        optional: {},", module.optional);
         source.push_str("    },\n");

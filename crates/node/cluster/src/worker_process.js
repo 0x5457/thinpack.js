@@ -62,6 +62,7 @@
     #id;
     #closed = false;
     #waiting = null;
+    #connect;
 
     constructor(id, pid, silent) {
       super();
@@ -84,6 +85,10 @@
         this.stderr = null;
       }
 
+      // The channel handshake runs after the worker connects; on unix it resolves at once.
+      // Channel reads and writes wait on it, while `cluster.fork` keeps its synchronous
+      // return because construction never blocks.
+      this.#connect = Deno.core.ops.op_cluster_channel_accept(this.#id);
       this.#read();
       this.#wait();
     }
@@ -165,10 +170,26 @@
     }
 
     #write(frame) {
-      return Deno.core.ops.op_cluster_channel_write(this.#id, frame);
+      return this.#connect.then(() =>
+        Deno.core.ops.op_cluster_channel_write(this.#id, frame));
     }
 
     async #read() {
+      try {
+        await this.#connect;
+      } catch (error) {
+        // The worker never completed the channel handshake; report the failure instead of
+        // a silent channel that can never read.
+        this.emit("error", opError(error));
+        this.#finish();
+        return;
+      }
+      if (!this.connected) {
+        // `disconnect()` won the race with the handshake; finish the teardown now that
+        // the channel exists, so its entry is dropped and `disconnect` still fires.
+        this.#finish();
+        return;
+      }
       while (!this.#closed) {
         let frame;
         try {

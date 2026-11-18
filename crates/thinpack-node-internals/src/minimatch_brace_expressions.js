@@ -1,4 +1,5 @@
 // Vendored from npm minimatch@10.2.6 dist/commonjs/brace-expressions.js (MIT).
+// Patched: upstream require("../...") / require("minimatch/...") rewrites -> require("node:thinpack/internal/deps/...").
 
 "use strict";
 // translate the various posix character classes into unicode properties

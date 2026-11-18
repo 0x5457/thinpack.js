@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
+use std::sync::{Arc, OnceLock};
 
 use thinpack_core::{Assets, BACKEND, BuiltinSources, Runtime};
 use thinpack_loader::{Main, ModuleFs};
@@ -9,7 +10,13 @@ use thinpack_vfs::Vfs;
 
 use crate::{bootstrap, registry};
 
-pub(crate) fn run_packed(pack: &Pack) -> ExitCode {
+/// The payload of a packed executable, shared with worker threads. Workers
+/// boot on `std::thread`s while the main thread's `Vfs` is an `Rc`, so each
+/// worker rebuilds its own `Vfs` and assets from this `Send` copy instead.
+static PACK: OnceLock<Arc<Pack>> = OnceLock::new();
+
+pub(crate) fn run_packed(pack: Pack) -> ExitCode {
+    let pack = Arc::new(pack);
     let enabled: Vec<&str> = registry::enabled();
     let template = &pack.manifest.template;
     let own_hash = thinpack_caps::capabilities_hash(&enabled);
@@ -49,19 +56,15 @@ pub(crate) fn run_packed(pack: &Pack) -> ExitCode {
     }
 
     let input = Main::File(PathBuf::from(&pack.manifest.entry));
-    let mut assets = Assets::packed();
-    for key in pack.asset_keys() {
-        if let Some(contents) = pack.asset(key) {
-            assets.insert(key.to_owned(), contents.to_vec());
-        }
-    }
-    let vfs = match Vfs::from_pack(pack) {
-        Ok(vfs) => Rc::new(vfs),
+    let (vfs, assets) = match packed_parts(&pack) {
+        Ok(parts) => parts,
         Err(error) => {
             eprintln!("{error}");
             return ExitCode::FAILURE;
         }
     };
+    PACK.set(Arc::clone(&pack))
+        .expect("the packed payload is installed once");
     let virtual_files: thinpack_core::VirtualFilesRef = vfs.clone();
     match run(
         input,
@@ -219,8 +222,15 @@ fn extensions(main: Main, fs: ModuleFs) -> Result<RuntimeParts, Box<dyn std::err
 }
 
 fn run_worker(spec: thinpack_core::worker::WorkerSpec) -> Result<(), thinpack_core::Error> {
-    let fs = ModuleFs::Host;
     let entry = spec.script.clone();
+    let (fs, assets, files) = match PACK.get().map(|pack| packed_parts(pack)) {
+        Some(Ok((vfs, assets))) => {
+            let files: thinpack_core::VirtualFilesRef = vfs.clone();
+            (ModuleFs::Virtual(vfs), assets, Some(files))
+        }
+        Some(Err(error)) => return Err(thinpack_core::Error::new(error.to_string())),
+        None => (ModuleFs::Host, Assets::host(), None),
+    };
     let esm = thinpack_loader::is_esm(&entry, &fs);
     let (extensions, builtins, loader) = extensions(Main::File(entry.clone()), fs)
         .map_err(|error| thinpack_core::Error::new(error.to_string()))?;
@@ -233,7 +243,29 @@ fn run_worker(spec: thinpack_core::worker::WorkerSpec) -> Result<(), thinpack_co
         .block_on(async move {
             let mut runtime = Runtime::new(extensions, builtins, loader)?;
             runtime.install_worker_context(spec.context());
-            runtime.install_assets(Assets::host());
+            runtime.install_assets(assets);
+            if let Some(files) = files {
+                #[cfg(feature = "node-fs")]
+                runtime.put_state(thinpack_node_fs::VirtualMount::new(files));
+                #[cfg(not(feature = "node-fs"))]
+                let _ = files;
+            }
             execute(&mut runtime, Some((entry, esm))).await
         })
+}
+
+/// Rebuilds the per-runtime virtual fs and assets from the payload. Asset
+/// slices outside the blob are corruption, so they fail like the file records
+/// in `Vfs::from_pack` instead of being skipped.
+fn packed_parts(pack: &Pack) -> Result<(Rc<Vfs>, Assets), thinpack_pack::Error> {
+    let mut assets = Assets::packed();
+    for key in pack.asset_keys() {
+        let Some(contents) = pack.asset(key) else {
+            return Err(thinpack_pack::Error::Invalid(format!(
+                "{key}: missing from the payload blob"
+            )));
+        };
+        assets.insert(key.to_owned(), contents.to_vec());
+    }
+    Ok((Rc::new(Vfs::from_pack(pack)?), assets))
 }

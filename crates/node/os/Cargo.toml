@@ -15,5 +15,5 @@ netif = "0.1.6"
 [lints]
 workspace = true
 
-[target.'cfg(windows)'.dependencies]
+[target.'cfg(not(target_os = "linux"))'.dependencies]
 sysinfo = { version = "0.35", default-features = false, features = ["system"] }

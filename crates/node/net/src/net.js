@@ -222,6 +222,11 @@
         this.#timeout = null;
       }
       if (this.#id !== 0) {
+        // Cancel the pending read first, mirroring `_thinpackReleaseSocket`:
+        // `op_net_close` only shuts the fd down (a no-op on a pipe-backed fd),
+        // so a blocked read would keep the transport alive and the event loop
+        // could never drain.
+        Deno.core.ops.op_net_cancel_read(this.#id);
         Deno.core.ops.op_net_close(this.#id);
         this.#id = 0;
       } else if (this.#attempt !== 0) {
@@ -289,11 +294,42 @@
     return socket.connect(...args);
   };
 
+  const isIPv4 = (value) =>
+    /^(\d{1,3}\.){3}\d{1,3}$/.test(value) &&
+    value.split(".").every((part) => Number(part) <= 255);
+
+  const isIPv6 = (value) => {
+    if (typeof value !== "string") return false;
+    // Node accepts a zone identifier (`fe80::1%eth0`) whose characters may be
+    // alphanumeric or `-`, `.`, `:`; it is not part of the address itself.
+    const zone = value.indexOf("%");
+    if (zone !== -1) {
+      if (!/^[0-9A-Za-z\-.:]+$/.test(value.slice(zone + 1))) return false;
+      value = value.slice(0, zone);
+    }
+    // A trailing dotted quad (`::ffff:127.0.0.1`) stands for the last two groups;
+    // substitute plain groups so a single count rule covers both spellings.
+    let text = value;
+    const lastColon = value.lastIndexOf(":");
+    if (lastColon !== -1 && value.indexOf(".", lastColon) !== -1) {
+      const tail = value.slice(lastColon + 1);
+      if (!isIPv4(tail)) return false;
+      text = `${value.slice(0, lastColon + 1)}0:0`;
+    }
+    // `::` may compress at most one run of zero groups.
+    const sections = text.split("::");
+    if (sections.length > 2) return false;
+    const head = sections[0] === "" ? [] : sections[0].split(":");
+    const tail = sections.length === 2 && sections[1] !== "" ? sections[1].split(":") : [];
+    const groups = [...head, ...tail];
+    if (!groups.every((group) => /^[0-9a-fA-F]{1,4}$/.test(group))) return false;
+    return sections.length === 2 ? groups.length <= 7 : groups.length === 8;
+  };
+
   const isIP = (value) => {
     if (typeof value !== "string") return 0;
-    if (/^(\d{1,3}\.){3}\d{1,3}$/.test(value) &&
-        value.split(".").every((part) => Number(part) <= 255)) return 4;
-    return value.includes(":") ? 6 : 0;
+    if (isIPv4(value)) return 4;
+    return isIPv6(value) ? 6 : 0;
   };
 
   class Server extends require("node:events").EventEmitter {
@@ -527,7 +563,7 @@
     connect,
     createConnection: connect,
     isIP,
-    isIPv4: (value) => isIP(value) === 4,
-    isIPv6: (value) => isIP(value) === 6,
+    isIPv4,
+    isIPv6,
   };
 })();

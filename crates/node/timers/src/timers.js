@@ -58,6 +58,10 @@
 
   const setTimeout = create(false);
   const setInterval = create(true);
+  // Deviation from Node: immediates share the single timer queue as 0 ms timers
+  // instead of running in a separate check phase after I/O, so ordering versus
+  // `setTimeout(., 1)` and I/O callbacks differs, and the returned handle is a
+  // timer without the `hasRef` shape of Node's `Immediate`.
   const setImmediate = (callback, ...args) => setTimeout(callback, 0, ...args);
 
   const clearTimer = (timer) => {

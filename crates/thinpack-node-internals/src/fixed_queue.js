@@ -1,5 +1,7 @@
 // Vendored from Node.js v26.13.1 lib/internal/fixed_queue.js (MIT, https://github.com/nodejs/node).
-// Patched: require("internal/...") -> require("node:thinpack/internal/...").
+// Patched: require("internal/...") -> require("node:thinpack/internal/..."); FixedQueue
+// recycles drained FixedCircularBuffer blocks through a static pool (cap 64), so
+// the timer/task queues do not allocate a block per cycle.
 
 'use strict';
 

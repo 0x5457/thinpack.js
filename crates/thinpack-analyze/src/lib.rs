@@ -13,11 +13,7 @@ use oxc_parser::Parser;
 use oxc_span::SourceType;
 use thinpack_resolve::FileSystem;
 
-mod lines;
-
-pub use lines::{LINE_LIMIT, bound_lines};
-
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Warning {
     pub message: String,
     pub strict: bool,
@@ -39,6 +35,8 @@ impl Analysis {
             self.builtins.entry(builtin).or_default().extend(files);
         }
         self.warnings.extend(other.warnings);
+        self.warnings.sort();
+        self.warnings.dedup();
     }
 }
 
@@ -143,16 +141,30 @@ pub fn analyze(entry: &Path, fs: &impl FileSystem) -> Result<Analysis, Error> {
                 continue;
             }
             if specifier.starts_with("node:") {
+                // A guarded `require` or a `process.getBuiltinModule` probe is
+                // how an app checks for a builtin that may not ship; warn like
+                // an optional dependency instead of failing the pack.
+                if optional {
+                    warnings.push(Warning {
+                        message: format!(
+                            "{}: unknown builtin `{specifier}` may be absent; the app must handle ERR_UNKNOWN_BUILTIN_MODULE",
+                            path.display()
+                        ),
+                        strict: false,
+                    });
+                    continue;
+                }
                 return Err(Error::UnknownBuiltin {
                     specifier,
                     from: path,
                 });
             }
-            let resolved = match if is_import {
-                thinpack_resolve::resolve_import(&specifier, &path, fs)
+            let resolved = if is_import {
+                thinpack_resolve::resolve_import_path(&specifier, &path, fs)
             } else {
-                thinpack_resolve::resolve(&specifier, &path, fs)
-            } {
+                thinpack_resolve::resolve_path(&specifier, &path, fs)
+            };
+            let resolved = match resolved {
                 Ok(resolved) => resolved,
                 Err(error)
                     if optional || thinpack_resolve::declares_optional(&specifier, &path, fs) =>
@@ -174,7 +186,7 @@ pub fn analyze(entry: &Path, fs: &impl FileSystem) -> Result<Analysis, Error> {
                     });
                 }
             };
-            pending.push_back(resolved.path);
+            pending.push_back(resolved);
         }
     }
 
@@ -193,10 +205,21 @@ fn parse_specifiers(
     warnings: &mut Vec<Warning>,
 ) -> Result<Vec<SpecifierEntry>, Error> {
     let allocator = Allocator::default();
-    let source_type = SourceType::from_path(path)
-        .map(|source_type| source_type.with_module(true))
-        .unwrap_or_default();
-    let parsed = Parser::new(&allocator, source, source_type).parse();
+    // `.cjs` parses as CommonJS (top-level `return` and `new.target` are legal)
+    // and `.mjs` as an ES module. A generic `.js` is either, so when the first
+    // attempt — unambiguous for `.js`, ESM for unknown extensions — rejects the
+    // source, retry it as CommonJS; files that are neither still fail.
+    let (source_type, may_retry) = SourceType::from_path(path).map_or_else(
+        |_| (SourceType::default(), true),
+        |source_type| (source_type, source_type.is_unambiguous()),
+    );
+    let mut parsed = Parser::new(&allocator, source, source_type).parse();
+    if may_retry && !parsed.diagnostics.is_empty() {
+        let commonjs = Parser::new(&allocator, source, SourceType::cjs()).parse();
+        if commonjs.diagnostics.is_empty() {
+            parsed = commonjs;
+        }
+    }
     if !parsed.diagnostics.is_empty() {
         let messages: Vec<String> = parsed.diagnostics.iter().map(ToString::to_string).collect();
         return Err(Error::Parse {
@@ -245,17 +268,26 @@ impl SpecifierCollector<'_, '_> {
     }
 
     fn require_call(&mut self, call: &CallExpression<'_>) {
+        // (target, resolves as import, never throws in Node)
         let target = match &call.callee {
             Expression::Identifier(identifier) => match identifier.name.as_str() {
-                "require" => Some("require"),
+                "require" => Some(("require", false, false)),
                 _ => None,
             },
-            Expression::StaticMemberExpression(member) => match member.object {
-                Expression::Identifier(ref object) => {
+            Expression::StaticMemberExpression(member) => match &member.object {
+                Expression::ImportMeta(_) if member.property.name == "resolve" => {
+                    Some(("import.meta.resolve", true, false))
+                }
+                Expression::Identifier(object) => {
                     match (object.name.as_str(), member.property.name.as_str()) {
-                        ("require", "resolve") => Some("require.resolve"),
-                        ("module", "require") => Some("module.require"),
-                        ("process", "getBuiltinModule") => Some("process.getBuiltinModule"),
+                        ("require", "resolve") => Some(("require.resolve", false, false)),
+                        ("module", "require") => Some(("module.require", false, false)),
+                        // `getBuiltinModule` returns `null` for a missing module
+                        // instead of throwing; a failed lookup is a warning,
+                        // not a pack error.
+                        ("process", "getBuiltinModule") => {
+                            Some(("process.getBuiltinModule", false, true))
+                        }
                         _ => None,
                     }
                 }
@@ -263,13 +295,18 @@ impl SpecifierCollector<'_, '_> {
             },
             _ => None,
         };
-        let Some(target) = target else {
+        let Some((target, is_import, optional)) = target else {
             return;
         };
 
         match call.arguments.first() {
             Some(Argument::StringLiteral(literal)) => {
-                self.add_specifier(js_string(literal.value), false);
+                let specifier = js_string(literal.value);
+                if optional {
+                    self.add_optional_specifier(specifier, is_import);
+                } else {
+                    self.add_specifier(specifier, is_import);
+                }
             }
             Some(_) => self.warnings.push(Warning {
                 message: format!(
@@ -432,7 +469,7 @@ mod tests {
             analysis.builtins["events"],
             BTreeSet::from([PathBuf::from("/app/lib/index.js")])
         );
-        assert!(analysis.warnings.is_empty());
+        assert_eq!(analysis.warnings, Vec::new());
     }
 
     #[test]

@@ -11,13 +11,13 @@ pub(crate) const OPS: &[OpDecl] = &[
     op_os_tmpdir(),
 ];
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn proc_text(path: &str, fallback: &str) -> String {
     std::fs::read_to_string(path)
         .map_or_else(|_| fallback.to_owned(), |text| text.trim().to_owned())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn system_info() -> String {
     let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
     let cpu_count = cpuinfo
@@ -62,6 +62,31 @@ fn system_info() -> String {
     )
 }
 
+#[cfg(all(unix, not(target_os = "linux")))]
+fn system_info() -> String {
+    use sysinfo::{MemoryRefreshKind, RefreshKind, System};
+
+    let cpu_count = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    let system = System::new_with_specifics(
+        RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()),
+    );
+    let loads = System::load_average();
+    // `os.release()` is the kernel version on these platforms; sysinfo has no
+    // `uname -v` equivalent for `os.version()`, so the product version stands in.
+    format!(
+        "{cpu_count}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}",
+        system.total_memory(),
+        system.available_memory(),
+        System::kernel_version().unwrap_or_default(),
+        System::long_os_version().unwrap_or_default(),
+        System::host_name().unwrap_or_default(),
+        System::uptime(),
+        loads.one,
+        loads.five,
+        loads.fifteen,
+    )
+}
+
 #[cfg(windows)]
 fn system_info() -> String {
     use sysinfo::{MemoryRefreshKind, RefreshKind, System};
@@ -98,7 +123,7 @@ pub(crate) fn op_os_system_info() -> String {
     system_info()
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -108,7 +133,7 @@ const fn rounded_mhz(mhz: f64) -> u64 {
     mhz.round() as u64
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn cpus() -> String {
     const USER_HZ: u64 = 100;
     const MILLISECONDS: u64 = 1000;
@@ -173,7 +198,10 @@ fn cpus() -> String {
     fields.join("\0")
 }
 
-#[cfg(windows)]
+// Shared by every non-Linux target: per-cpu brand and frequency are real, but
+// per-cpu times are not collected (the Windows build reports zeros the same
+// way).
+#[cfg(not(target_os = "linux"))]
 fn cpus() -> String {
     use sysinfo::{CpuRefreshKind, RefreshKind, System};
 

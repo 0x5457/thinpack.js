@@ -7,7 +7,7 @@ use deno_core::{
 };
 
 use crate::worker::WorkerContext;
-use crate::{Assets, BuiltinSources, Error, Invocation};
+use crate::{Assets, BuiltinSources, Error, Invocation, js_string_literal};
 
 pub struct Runtime {
     inner: JsRuntime,
@@ -110,20 +110,4 @@ impl Runtime {
 fn file_url(path: &Path) -> Result<Url, Error> {
     Url::from_file_path(path)
         .map_err(|()| Error::new(format!("{} is not a valid file path", path.display())))
-}
-
-fn js_string_literal(value: &str) -> String {
-    let mut out = String::with_capacity(value.len() + 2);
-    out.push('"');
-    for character in value.chars() {
-        match character {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            other => out.push(other),
-        }
-    }
-    out.push('"');
-    out
 }

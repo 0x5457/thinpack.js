@@ -1,12 +1,6 @@
-// `op2` collects every attribute on an op fn as an op attribute, so lint attributes
-// cannot be attached to the ops below.
-#![expect(
-    clippy::needless_pass_by_value,
-    reason = "`#[buffer(copy)] Vec<u8>` is the op2 shape that copies a JS buffer; `&[u8]` would make the op borrow V8 memory instead"
-)]
-
 use std::collections::HashMap;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use deno_core::{OpDecl, op2};
@@ -31,6 +25,10 @@ struct Entry {
     stdin: Arc<tokio::sync::Mutex<Option<ChildStdin>>>,
     stdout: Arc<tokio::sync::Mutex<Option<ChildStdout>>>,
     stderr: Arc<tokio::sync::Mutex<Option<ChildStderr>>>,
+    /// Set once `wait` reaps the process. The table entry is dropped once this is set and
+    /// both output pipes are drained (see `reap_if_drained`), so per-request spawners do
+    /// not accumulate a `Child` and its pipe handles forever.
+    exited: AtomicBool,
 }
 
 fn table() -> &'static Mutex<HashMap<u32, Arc<Entry>>> {
@@ -121,6 +119,7 @@ fn op_child_spawn(
             stdin: Arc::new(tokio::sync::Mutex::new(stdin)),
             stdout: Arc::new(tokio::sync::Mutex::new(stdout)),
             stderr: Arc::new(tokio::sync::Mutex::new(stderr)),
+            exited: AtomicBool::new(false),
         }),
     );
     Ok(id)
@@ -136,6 +135,7 @@ async fn op_child_read(id: u32, which: u32) -> Result<Box<[u8]>, JsErrorBox> {
     } else {
         read_pipe(&entry.stderr, &mut buffer).await?
     };
+    reap_if_drained(id, &entry);
     buffer.truncate(count);
     Ok(buffer.into_boxed_slice())
 }
@@ -144,13 +144,17 @@ async fn read_pipe<T: AsyncRead + Unpin>(
     pipe: &tokio::sync::Mutex<Option<T>>,
     buffer: &mut [u8],
 ) -> Result<usize, JsErrorBox> {
-    match pipe.lock().await.as_mut() {
-        Some(pipe) => pipe
-            .read(buffer)
-            .await
-            .map_err(|error| child_error("EIO", error)),
+    let mut guard = pipe.lock().await;
+    let result = match guard.as_mut() {
+        Some(pipe) => pipe.read(buffer).await,
         None => Ok(0),
+    };
+    // EOF and a failed read both mean the pipe can never produce more data, so dropping
+    // it here advances the entry toward being reaped (see `reap_if_drained`).
+    if matches!(result, Ok(0) | Err(_)) {
+        guard.take();
     }
+    result.map_err(|error| child_error("EIO", error))
 }
 
 #[op2(async(lazy), fast)]
@@ -182,15 +186,60 @@ async fn op_child_close_stdin(id: u32) -> Result<(), JsErrorBox> {
     Ok(())
 }
 
+/// Removes the table entry once `wait` has reaped the child and both output pipes are
+/// drained. The JS wrapper always pumps both pipes to EOF, so the last event — the final
+/// pipe read or the wait — reaps the entry and releases the `Child` and its descriptors.
+fn reap_if_drained(id: u32, entry: &Entry) {
+    if !entry.exited.load(Ordering::Acquire) {
+        return;
+    }
+    let Ok(stdout) = entry.stdout.try_lock() else {
+        return;
+    };
+    if stdout.is_some() {
+        return;
+    }
+    let Ok(stderr) = entry.stderr.try_lock() else {
+        return;
+    };
+    if stderr.is_some() {
+        return;
+    }
+    table().lock().expect("child table").remove(&id);
+}
+
 #[op2(async(lazy), fast)]
-async fn op_child_wait(id: u32) -> Result<i32, JsErrorBox> {
+#[string]
+async fn op_child_wait(id: u32) -> Result<String, JsErrorBox> {
     let entry = entry_of(id)?;
-    let mut child = entry.child.lock().await;
-    let status = child
-        .wait()
-        .await
-        .map_err(|error| child_error("ECHILD", error))?;
-    Ok(status.code().unwrap_or(-1))
+    let status = {
+        let mut child = entry.child.lock().await;
+        child
+            .wait()
+            .await
+            .map_err(|error| child_error("ECHILD", error))?
+    };
+    entry.exited.store(true, Ordering::Release);
+    reap_if_drained(id, &entry);
+    Ok(format!(
+        "{}\0{}",
+        status.code().unwrap_or(-1),
+        exit_signal(status)
+    ))
+}
+
+/// The signal number that terminated the child, or 0 for a plain exit.
+#[cfg(unix)]
+fn exit_signal(status: std::process::ExitStatus) -> i32 {
+    use std::os::unix::process::ExitStatusExt as _;
+    status.signal().unwrap_or(0)
+}
+
+#[cfg(windows)]
+fn exit_signal(_status: std::process::ExitStatus) -> i32 {
+    // Windows processes always terminate through their exit code; `TerminateProcess`
+    // surfaces as a code, never as a signal number.
+    0
 }
 
 fn child_pid(id: u32) -> Result<u32, JsErrorBox> {
@@ -263,17 +312,29 @@ fn op_child_spawn_sync(
 ) -> Result<Box<[u8]>, JsErrorBox> {
     let request = Spawn::parse(argv, env, cwd)?;
     let mut child = request.command().spawn().map_err(spawn_error)?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(&input)
-            .map_err(|error| child_error("EPIPE", error))?;
-    }
+    let pid = child.id();
+    let stdin = child.stdin.take();
+    // Writing stdin in-line would deadlock with a child that fills an output pipe while
+    // the parent is still writing, so the input is written from a side thread while the
+    // parent drains the pipes. Dropping the handle inside the thread closes the pipe and
+    // gives the child EOF even when the write fails.
+    let writer =
+        std::thread::spawn(move || stdin.map_or(Ok(()), |mut stdin| stdin.write_all(&input)));
     let output = child
         .wait_with_output()
         .map_err(|error| child_error("ECHILD", error))?;
+    let written = writer.join().expect("the stdin writer thread cannot panic");
+    if let Err(error) = written {
+        return Err(child_error("EPIPE", error));
+    }
+    // The result header is `status` (i32), `signal` (i32), `pid` (u32) and the two output
+    // lengths (u32 each), little-endian; the JS reader decodes the same layout.
     let code = output.status.code().unwrap_or(-1);
-    let mut payload = Vec::with_capacity(12 + output.stdout.len() + output.stderr.len());
+    let signal = exit_signal(output.status);
+    let mut payload = Vec::with_capacity(20 + output.stdout.len() + output.stderr.len());
     payload.extend_from_slice(&code.to_le_bytes());
+    payload.extend_from_slice(&signal.to_le_bytes());
+    payload.extend_from_slice(&pid.to_le_bytes());
     #[expect(
         clippy::cast_possible_truncation,
         reason = "the spawnSync result header encodes both lengths as u32, so a longer output cannot be represented on the wire"

@@ -3,6 +3,7 @@
   const { Buffer } = require("node:buffer");
   const { codes, UVException } = require("node:thinpack/internal/errors");
   const { setInterval } = require("node:timers");
+  const { validateIgnoreOption } = require("node:thinpack/internal/validators");
 
   const kFSWatchStart = Symbol("kFSWatchStart");
   const kFSStatWatcherStart = Symbol("kFSStatWatcherStart");
@@ -16,18 +17,24 @@
     #closed = false;
     #queue = [];
     #waiters = [];
-    #lastKey = "";
-    #lastTime = 0;
+    #ignoreMatcher = null;
 
-    [kFSWatchStart](path, persistent = true, recursive = false, encoding = "utf8") {
+    [kFSWatchStart](path, persistent = true, recursive = false, encoding = "utf8",
+                    ignore, throwIfNoEntry = true) {
       if (recursive) {
         throw new codes.ERR_NOT_IMPLEMENTED("fs.watch with { recursive: true }");
       }
+      validateIgnoreOption(ignore, "options.ignore");
+      this.#ignoreMatcher = createIgnoreMatcher(ignore);
+      this.#encoding = encoding;
       const fs = require("node:fs");
       if (!fs.existsSync(path)) {
+        // Like Node's watcher when the FSEvent handle fails to start, a missing
+        // entry with `throwIfNoEntry: false` leaves the watcher inert instead of
+        // throwing.
+        if (throwIfNoEntry === false) return this;
         throw new UVException({ errno: -2, syscall: "watch", path: String(path) });
       }
-      this.#encoding = encoding;
       this.#id = Deno.core.ops.op_fs_watch_start(String(path));
       this.#timer = setInterval(() => this.#poll(), WATCH_POLL_MS);
       if (!persistent) this.#timer.unref();
@@ -44,6 +51,7 @@
         const filename = this.#encoding === "buffer"
           ? Buffer.from(parts[index + 1])
           : parts[index + 1];
+        if (this.#ignoreMatcher?.(filename)) continue;
         this.emit("change", eventType, filename);
         this.#queue.push({ eventType, filename });
       }
