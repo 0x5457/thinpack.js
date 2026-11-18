@@ -3411,6 +3411,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "thinpack-node-punycode"
+version = "0.1.0"
+dependencies = [
+ "deno_core",
+ "thinpack-js",
+]
+
+[[package]]
 name = "thinpack-node-querystring"
 version = "0.1.0"
 dependencies = [
@@ -3595,6 +3603,7 @@ dependencies = [
  "thinpack-node-path",
  "thinpack-node-perf-hooks",
  "thinpack-node-process",
+ "thinpack-node-punycode",
  "thinpack-node-querystring",
  "thinpack-node-readline",
  "thinpack-node-sea",

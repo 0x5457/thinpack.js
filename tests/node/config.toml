@@ -218,6 +218,11 @@ module = "querystring"
 module = "querystring"
 ignore = "requires vm.runInNewContext, which the vm module does not implement yet"
 
+# --- punycode ---
+
+[tests."parallel/test-punycode.js"]
+module = "punycode"
+
 # --- events ---
 
 [tests."parallel/test-event-capture-rejections.js"]
