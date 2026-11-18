@@ -13,7 +13,7 @@
 set -eu
 
 REPOSITORY="0x5457/thinpack.js"
-API_URL="https://api.github.com/repos/${REPOSITORY}/releases/latest"
+LATEST_URL="https://github.com/${REPOSITORY}/releases/latest"
 RELEASE_URL="https://github.com/${REPOSITORY}/releases/download"
 : "${HOME:?HOME is not set; set THINPACK_INSTALL_DIR to choose a directory}"
 INSTALL_DIR="${THINPACK_INSTALL_DIR:-${HOME}/.local/bin}"
@@ -65,14 +65,27 @@ require_glibc() {
     fi
 }
 
+# The release tag behind `/releases/latest`, read from the redirect rather than the API: the
+# unauthenticated API allows 60 requests per hour per address, which one corporate NAT exhausts.
+latest_tag() {
+    if command -v curl >/dev/null 2>&1; then
+        final=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "${LATEST_URL}")
+    else
+        final=$(wget -qO- "${LATEST_URL}" | grep -o 'releases/tag/v[0-9][0-9.]*' | head -n 1)
+    fi
+    printf '%s\n' "${final##*/}"
+}
+
 release_version() {
     if [ -n "${THINPACK_VERSION:-}" ]; then
         printf '%s\n' "${THINPACK_VERSION#v}"
         return
     fi
-    tag=$(fetch "${API_URL}" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
-    [ -n "${tag}" ] || fail "cannot read the latest release; set THINPACK_VERSION"
-    printf '%s\n' "${tag#v}"
+    tag=$(latest_tag)
+    case "${tag}" in
+        v[0-9]*) printf '%s\n' "${tag#v}" ;;
+        *) fail "cannot read the latest release; set THINPACK_VERSION" ;;
+    esac
 }
 
 # Prints the release location: `.../download/v0.1.0` for a published release.
