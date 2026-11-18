@@ -31,6 +31,22 @@
   const report = (stack) =>
     stack.length === 0 ? "" : "\nRequire stack:\n" + stack.map((entry) => "- " + entry).join("\n");
 
+  // A CommonJS file that contains ESM syntax fails in the compiler, and the
+  // engine's message alone names neither the file nor the format it was read
+  // as. Keep the engine message and add both, plus the two ways to ask for ESM.
+  const compileFailure = (failure, id) => {
+    if (!(failure instanceof SyntaxError)) return failure;
+    const frames = String(failure.stack).split("\n").slice(1);
+    failure.message = `${failure.message} (${id}, loaded as CommonJS)`;
+    failure.stack = [
+      `${failure.name}: ${failure.message}`,
+      `${id} is loaded as CommonJS; if it is an ES module, rename it to .mjs ` +
+        `or add "type": "module" to the nearest package.json.`,
+      ...frames,
+    ].join("\n");
+    return failure;
+  };
+
   const evaluate = (id, url, source, json, stack, isMain = false) => {
     const cached = cache[id];
     if (cached !== undefined) return cached.exports;
@@ -54,7 +70,9 @@
         "(function (exports, require, module, __filename, __dirname) {" + source + "\n})",
         url,
       );
-      if (error) throw error.thrown;
+      if (error) {
+        throw error.isCompileError ? compileFailure(error.thrown, id) : error.thrown;
+      }
 
       factory(
         module.exports,

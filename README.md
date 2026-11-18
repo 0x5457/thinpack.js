@@ -77,6 +77,14 @@ Compiled module bytecode is cached under `<cache-root>/bytecode`, which makes a 
 about 29% faster (pi: 983 ms → 702 ms); `V82JSC_NO_BC_CACHE=1` disables it, and
 `--warm-cache` pre-compiles the payload's modules at deploy time without running app code.
 
+### Module format
+
+Entry and dependency formats follow Node.js: `.mjs` is an ES module, `.cjs` is CommonJS, and a
+`.js` file is CommonJS unless the nearest `package.json` declares `"type": "module"`. A `.js`
+file that contains ESM syntax but is loaded as CommonJS fails to compile, and the runtime names
+the file and detected format, then points at the two ways to ask for ESM: rename it to `.mjs` or
+declare `"type": "module"` in that package.
+
 ## Size
 
 Small profile, stripped, on Linux x86_64. `gzip -9` is the same file after maximum
