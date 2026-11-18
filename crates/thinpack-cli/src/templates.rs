@@ -1,10 +1,34 @@
 use std::collections::BTreeSet;
+use std::env;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::options::{DEFAULT_BACKEND, Options};
+
+/// Templates are built the way `cargo xtask size --profile small` measures them
+/// (`xtask/src/size.rs` holds the same flags): without unwind tables, and on ELF
+/// with packed relative relocations. The same runtime keeps 6% more size and
+/// runs no faster, so size wins by default here.
+const UNWIND_ARGS: &str = "-C force-unwind-tables=no";
+const ELF_LINK_ARGS: &str = "-C force-unwind-tables=no -C link-arg=-Wl,-z,pack-relative-relocs";
+const C_FLAGS: &str = "-fno-asynchronous-unwind-tables -fno-unwind-tables";
+
+const fn rust_flags() -> &'static str {
+    if cfg!(target_os = "linux") {
+        ELF_LINK_ARGS
+    } else {
+        UNWIND_ARGS
+    }
+}
+
+fn appended(existing: Option<String>, extra: &str) -> String {
+    match existing {
+        Some(existing) if !existing.trim().is_empty() => format!("{existing} {extra}"),
+        _ => extra.to_owned(),
+    }
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct TemplateInfo {
@@ -236,9 +260,14 @@ impl Cache {
         features.dedup();
 
         let target_dir = source.join("target/templates");
-        let cargo = std::env::var_os("THINPACK_CARGO").unwrap_or_else(|| "cargo".into());
+        let cargo = env::var_os("THINPACK_CARGO").unwrap_or_else(|| "cargo".into());
         let status = Command::new(&cargo)
             .current_dir(&source)
+            .env(
+                "RUSTFLAGS",
+                appended(env::var("RUSTFLAGS").ok(), rust_flags()),
+            )
+            .env("CFLAGS", appended(env::var("CFLAGS").ok(), C_FLAGS))
             .args([
                 "build",
                 "--locked",
@@ -297,12 +326,14 @@ pub(crate) fn resolve_template(
     }
 
     let cache = Cache::from_env()?;
-    if let Some(found) = cache.find(required, options.backend.as_deref())? {
-        return Ok(found);
-    }
+    // `--rebuild` answers "this app's own closure": reusing a cached superset
+    // here would silently ship a runtime larger than the app needs.
     if options.rebuild {
         let backend = options.backend.as_deref().unwrap_or(DEFAULT_BACKEND);
         return cache.rebuild(required, backend, options.source.as_deref());
+    }
+    if let Some(found) = cache.find(required, options.backend.as_deref())? {
+        return Ok(found);
     }
     if let Some(sibling) = sibling_template()
         && options.backend.as_deref().is_none_or(|backend| {
