@@ -993,8 +993,18 @@ fn op_fs_statfs(#[string] path: &str) -> Result<String, JsErrorBox> {
         return Err(fs_error(io::Error::last_os_error()));
     }
     // Linux reports a filesystem magic here; the BSDs, including macOS, have no equivalent.
+    // musl's `statvfs` has no `f_type`, and glibc's is a later addition, so the magic comes
+    // from `statfs`, which is where Node reads it too (`uv_fs_statfs`).
     #[cfg(target_os = "linux")]
-    let type_number = stats.f_type;
+    let type_number = {
+        // SAFETY: libc::statfs is a plain C struct of integers, so all-zero is a valid value.
+        let mut fs_stats: libc::statfs = unsafe { std::mem::zeroed() };
+        // SAFETY: `path` is NUL-terminated and `fs_stats` is a writable, correctly sized statfs.
+        if unsafe { libc::statfs(path.as_ptr(), &raw mut fs_stats) } == -1 {
+            return Err(fs_error(io::Error::last_os_error()));
+        }
+        fs_stats.f_type
+    };
     #[cfg(not(target_os = "linux"))]
     let type_number = 0;
     Ok([
