@@ -60,11 +60,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       # `dist` skips the pack probe when the requested target is not the host, so the
-      # workflow has to prove the runner is native before it trusts the build.
+      # workflow has to prove the runner is native before it trusts the build. A command
+      # substitution rather than a pipe: `set -o pipefail` turns `grep -q`'s early exit
+      # into SIGPIPE and the step fails with 141.
       - name: Assert the runner builds natively
         shell: bash
         run: |
-          rustc -vV | grep -qx "host: ${{ matrix.target }}"
+          test "$(rustc -vV | sed -n 's/^host: //p')" = "${{ matrix.target }}"
 
       # The asset name carries the crate version while the installer reads the tag: a tag that
       # disagrees with `Cargo.toml` publishes archives nobody can download.

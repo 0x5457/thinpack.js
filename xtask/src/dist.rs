@@ -41,9 +41,10 @@ const PROBE_EXPECTED: [&str; 2] = ["answer: 42", "microtask completed"];
 
 // `-z pack-relative-relocs` packs every RELATIVE relocation into a `DT_RELR` block: 553 KB
 // smaller on this runtime, and the loader has to understand `DT_RELR` to start the binary
-// (glibc 2.36). The floor comes from the runner's glibc anyway; see the matrix comment.
-const LINK_ARGS_ELF: &str = "-C force-unwind-tables=no -C link-arg=-Wl,-z,pack-relative-relocs";
-const LINK_ARGS_OTHER: &str = "-C force-unwind-tables=no";
+// (glibc 2.36). Only x86_64 GNU ld implements the flag; elsewhere it is ignored with a warning,
+// which the release build treats as an error.
+const PACK_RELATIVE_RELOCS: &str = "-C link-arg=-Wl,-z,pack-relative-relocs";
+const UNWIND: &str = "-C force-unwind-tables=no";
 const C_FLAGS: &str = "-fno-asynchronous-unwind-tables -fno-unwind-tables";
 
 /// Everything the staging directory holds, sorted by name: the programs, then the documents.
@@ -173,7 +174,7 @@ fn build(config: &Config, table: &[capabilities::Module]) -> Result<PathBuf, Str
     // same flags, so a downloaded pair and a locally rebuilt one agree.
     command.env(
         "RUSTFLAGS",
-        appended(env::var("RUSTFLAGS").ok(), link_args(&config.target)),
+        appended(env::var("RUSTFLAGS").ok(), &rust_flags(&config.target)),
     );
     // MSVC has no gcc-style unwind flags; everything else is clang or gcc.
     if !config.target.contains("msvc") {
@@ -341,12 +342,16 @@ impl Config {
 /// Cargo's target directory for this workspace, with `dist` below it. `CARGO_TARGET_DIR` wins
 /// because it is the documented way to build this workspace without the checked-in `target`
 /// symlink; nothing is written inside the repository then.
-fn link_args(target: &str) -> &'static str {
-    if target.contains("linux") {
-        LINK_ARGS_ELF
-    } else {
-        LINK_ARGS_OTHER
+/// MSVC rejects `-C force-unwind-tables=no` ("target requires unwind tables") and has no gcc
+/// driver flags at all; both code paths below are the ones that actually work per target.
+fn rust_flags(target: &str) -> String {
+    if target.contains("msvc") {
+        return String::new();
     }
+    if target.contains("linux") && target.contains("x86_64") {
+        return format!("{UNWIND} {PACK_RELATIVE_RELOCS}");
+    }
+    UNWIND.to_owned()
 }
 
 fn target_dir() -> PathBuf {

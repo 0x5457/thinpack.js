@@ -23,8 +23,11 @@ fn runtime_binary() -> String {
     format!("thinpack-rt{}", std::env::consts::EXE_SUFFIX)
 }
 
+/// `pack-relative-relocs` is `x86_64` GNU `ld` only, and MSVC rejects `force-unwind-tables=no`.
 const fn rust_flags() -> &'static str {
-    if cfg!(target_os = "linux") {
+    if cfg!(target_env = "msvc") {
+        ""
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         ELF_LINK_ARGS
     } else {
         UNWIND_ARGS
@@ -278,7 +281,15 @@ impl Cache {
                 "RUSTFLAGS",
                 appended(env::var("RUSTFLAGS").ok(), rust_flags()),
             )
-            .env("CFLAGS", appended(env::var("CFLAGS").ok(), C_FLAGS))
+            // MSVC drives cl.exe, which knows none of these.
+            .env(
+                "CFLAGS",
+                if cfg!(target_env = "msvc") {
+                    env::var("CFLAGS").unwrap_or_default()
+                } else {
+                    appended(env::var("CFLAGS").ok(), C_FLAGS)
+                },
+            )
             .args([
                 "build",
                 "--locked",

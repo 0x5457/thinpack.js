@@ -281,7 +281,14 @@ fn build(
     Ok(target_dir.join("release").join(BINARY_NAME))
 }
 
-const LINK_ARGS: &str = "-C force-unwind-tables=no -C link-arg=-Wl,-z,pack-relative-relocs";
+/// `pack-relative-relocs` is `x86_64` GNU `ld` only; MSVC rejects `force-unwind-tables=no`.
+const LINK_ARGS: &str = if cfg!(target_env = "msvc") {
+    ""
+} else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+    "-C force-unwind-tables=no -C link-arg=-Wl,-z,pack-relative-relocs"
+} else {
+    "-C force-unwind-tables=no"
+};
 const C_FLAGS: &str = "-fno-asynchronous-unwind-tables -fno-unwind-tables";
 
 fn appended(existing: Option<String>, extra: &str) -> String {
