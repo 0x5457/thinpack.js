@@ -198,10 +198,9 @@ for adding a module.
 
 - No full Intl data, no Temporal, no inspector protocol, no native backtraces;
   `Intl.Segmenter` on QuickJS is a lazy fallback implementation.
-- No `fetch` (`Headers`/`Request`/`Response`/`FormData`) and no `EventSource` or
-  `reportError`: Node defines those from dependencies bundled into its binary, and this
-  vendors Node's `lib/`, not its dependencies. `http`/`https` work; `WebSocket`, `Blob` and
-  `File` are present.
+- `fetch` and its types are Node's own undici, vendored from `deps/undici/undici.js`, so they
+  behave as Node does; `EventSource` is absent. `WebSocket`, `Blob`, `File` and `reportError`
+  are present. `docs/gaps.md` records what remains different.
 - No N-API or native addon loading; code that needs native code goes through `node:ffi`.
 - WebAssembly is always available and cannot be trimmed (WAMR on QuickJS, about 217 KB).
 - ESM loader hooks run inside synchronous checkpoints, so hooks that wait on I/O fail.
