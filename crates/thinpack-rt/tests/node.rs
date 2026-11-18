@@ -41,6 +41,10 @@ use serde::Deserialize;
 /// raise this in the manifest.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How many of the slowest tests the summary names when the run is long enough
+/// for the ranking to say something.
+const SLOWEST_LISTED: usize = 5;
+
 /// Captured output is only ever shown for failures, and trunctated so one
 /// assertion storm cannot bury the rest of the run.
 const OUTPUT_LIMIT: usize = 32 * 1024;
@@ -305,6 +309,7 @@ impl Suite {
         let started = Instant::now();
         let next = AtomicUsize::new(0);
         let failures = Mutex::new(Vec::<String>::new());
+        let timings = Mutex::new(Vec::<(String, Duration)>::new());
         let output = Mutex::new(());
         let workers = cli.threads.min(selected.len());
 
@@ -316,18 +321,30 @@ impl Suite {
                         let Some(test) = selected.get(index) else {
                             break;
                         };
+                        let test_started = Instant::now();
                         let outcome = run_test(&self.root, test, index);
+                        let took = test_started.elapsed();
                         let guard = output.lock().expect("output lock");
                         match outcome {
-                            Outcome::Passed => println!("ok {}", test.name),
+                            Outcome::Passed => {
+                                println!("ok {} ({:.2}s)", test.name, took.as_secs_f64());
+                            }
                             Outcome::Failed(report) => {
-                                println!("FAILED {}\n{report}", test.name);
+                                println!(
+                                    "FAILED {} ({:.2}s)\n{report}",
+                                    test.name,
+                                    took.as_secs_f64()
+                                );
                                 failures
                                     .lock()
                                     .expect("failure lock")
                                     .push(test.name.clone());
                             }
                         }
+                        timings
+                            .lock()
+                            .expect("timing lock")
+                            .push((test.name.clone(), took));
                         drop(guard);
                     }
                 });
@@ -344,7 +361,21 @@ impl Suite {
             ignored.len(),
             elapsed.as_secs_f64(),
         );
+        report_slowest(timings.into_inner().expect("timing lock"));
         failures.is_empty()
+    }
+}
+
+/// Prints the tests that dominate the run, so a slow binding shows up in the CI
+/// log instead of hiding behind the total.
+fn report_slowest(mut timings: Vec<(String, Duration)>) {
+    if timings.len() <= SLOWEST_LISTED {
+        return;
+    }
+    timings.sort_by_key(|(_, took)| std::cmp::Reverse(*took));
+    println!("\nslowest:");
+    for (name, took) in timings.iter().take(SLOWEST_LISTED) {
+        println!("  {:>7.2}s  {name}", took.as_secs_f64());
     }
 }
 

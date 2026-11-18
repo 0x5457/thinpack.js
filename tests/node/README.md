@@ -90,6 +90,11 @@ invocation (`CARGO_BIN_EXE_thinpack-rt`), with:
 
 A non-zero exit or a timeout fails the test. `common.skip()` exits 0, as in Node.
 
+Every result line carries the test's duration, and a run of more than five tests
+ends with the slowest ones. The compatibility suite is the cheap early warning
+that a binding lost its native implementation: a jump there is visible in the
+log instead of hiding behind the total.
+
 ## Adding a module
 
 1. Copy the relevant Node tests into `compat/test/parallel/` unchanged.
