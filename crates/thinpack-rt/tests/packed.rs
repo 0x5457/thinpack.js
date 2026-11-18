@@ -17,6 +17,9 @@ struct PackedTest {
     entry: &'static str,
     files: &'static [(&'static str, &'static str)],
     capabilities: &'static [&'static str],
+    /// A case that must fail: the app exits non-zero and writes this substring
+    /// to stderr.
+    error: Option<&'static str>,
 }
 
 const TESTS: &[PackedTest] = &[
@@ -44,6 +47,7 @@ assert.deepEqual(
 ",
         )],
         capabilities: &["assert", "fs"],
+        error: None,
     },
     PackedTest {
         name: "packed::error-paths",
@@ -69,6 +73,7 @@ assert.throws(
             ("/app/native.node", ""),
         ],
         capabilities: &["assert"],
+        error: None,
     },
     PackedTest {
         name: "packed::module-paths",
@@ -98,6 +103,7 @@ assert.deepEqual(
 ",
         )],
         capabilities: &["assert"],
+        error: None,
     },
     PackedTest {
         name: "packed::worker-vfs",
@@ -135,6 +141,24 @@ parentPort.postMessage('worker loaded from the packed VFS');
             ),
         ],
         capabilities: &["assert", "worker_threads"],
+        error: None,
+    },
+    PackedTest {
+        name: "packed::commonjs-esm-diagnostic",
+        directory: "commonjs-esm-diagnostic",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r"
+import { readFileSync } from 'node:fs';
+console.log(readFileSync);
+",
+        )],
+        capabilities: &[],
+        error: Some(
+            "/app/main.js is loaded as CommonJS; if it is an ES module, rename it to .mjs \
+             or add \"type\": \"module\" to the nearest package.json.",
+        ),
     },
     PackedTest {
         name: "packed::zlib-constructors",
@@ -202,6 +226,7 @@ stream.end(input);
 ",
         )],
         capabilities: &["assert", "zlib"],
+        error: None,
     },
     PackedTest {
         name: "packed::util-diff-without-assert",
@@ -245,6 +270,7 @@ check(diff('foo', 'foo'), []);
 ",
         )],
         capabilities: &["util"],
+        error: None,
     },
 ];
 
@@ -307,7 +333,7 @@ fn run_test(test: &PackedTest) -> super::Outcome {
             return super::Outcome::Failed(format!("cannot build packed test executable: {error}"));
         }
     };
-    run_binary(&binary, directory.path())
+    run_binary(&binary, directory.path(), test.error)
 }
 
 fn build_packed_binary(
@@ -401,7 +427,7 @@ fn capabilities(roots: &[&str]) -> Vec<String> {
     names.into_iter().collect()
 }
 
-fn run_binary(binary: &Path, directory: &Path) -> super::Outcome {
+fn run_binary(binary: &Path, directory: &Path, expected: Option<&str>) -> super::Outcome {
     let mut command = Command::new(binary);
     command
         .current_dir(directory)
@@ -460,12 +486,23 @@ fn run_binary(binary: &Path, directory: &Path) -> super::Outcome {
     super::kill_process_group(pid);
     let stdout = super::read(stdout);
     let stderr = super::read(stderr);
-    if status.success() && !timed_out {
-        return super::Outcome::Passed;
+    if !timed_out {
+        match expected {
+            Some(fragment) if !status.success() && stderr.contains(fragment) => {
+                return super::Outcome::Passed;
+            }
+            None if status.success() => return super::Outcome::Passed,
+            _ => {}
+        }
     }
 
     let reason = if timed_out {
         format!("timed out after {} ms", TEST_TIMEOUT.as_millis())
+    } else if let Some(fragment) = expected {
+        format!(
+            "expected a failure whose stderr contains {fragment:?}, got {}",
+            super::describe_status(status)
+        )
     } else {
         format!("exited with {}", super::describe_status(status))
     };
