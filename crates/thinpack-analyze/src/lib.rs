@@ -244,6 +244,47 @@ fn js_string(value: oxc_str::JSStr<'_>) -> String {
         .map_or_else(|| value.display().to_string(), str::to_owned)
 }
 
+/// The modules behind a global that the runtime installs lazily, so a static
+/// reference to the global is what brings them into the payload.
+const WEBSOCKET_BUILTINS: [&str; 4] = ["http", "https", "crypto", "buffer"];
+/// The vendored undici bundle (`crates/node/http/vendor/undici.js`) requires these, so a
+/// static reference to one of its globals has to pull all of them into the payload.
+const FETCH_BUILTINS: [&str; 16] = [
+    "assert",
+    "async_hooks",
+    "buffer",
+    "crypto",
+    "diagnostics_channel",
+    "events",
+    "http",
+    "net",
+    "perf_hooks",
+    "querystring",
+    "stream",
+    "tls",
+    "url",
+    "util",
+    "worker_threads",
+    "zlib",
+];
+/// undici probes these two and handles their absence, so they are optional like any other
+/// package that guards a `require`.
+const FETCH_OPTIONAL_BUILTINS: [&str; 2] = ["http2", "sqlite"];
+
+/// The global an expression names, either bare or through `globalThis`.
+fn global_name<'a>(expression: &'a Expression<'_>) -> Option<&'a str> {
+    match expression {
+        Expression::Identifier(identifier) => Some(identifier.name.as_str()),
+        Expression::StaticMemberExpression(member) => match &member.object {
+            Expression::Identifier(object) if object.name == "globalThis" => {
+                Some(member.property.name.as_str())
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 struct SpecifierCollector<'a, 'w> {
     path: &'a Path,
     specifiers: BTreeMap<(String, bool), bool>,
@@ -265,6 +306,12 @@ impl SpecifierCollector<'_, '_> {
             .entry((specifier, is_import))
             .and_modify(|existing| *existing &= optional)
             .or_insert(optional);
+    }
+
+    fn add_builtins(&mut self, builtins: &[&str]) {
+        for builtin in builtins {
+            self.add_specifier((*builtin).to_owned(), false);
+        }
     }
 
     fn require_call(&mut self, call: &CallExpression<'_>) {
@@ -354,6 +401,12 @@ impl<'a> VisitJs<'a> for SpecifierCollector<'a, '_> {
 
     fn visit_call_expression(&mut self, call: &CallExpression<'a>) {
         self.require_call(call);
+        if global_name(&call.callee) == Some("fetch") {
+            self.add_builtins(&FETCH_BUILTINS);
+            for builtin in FETCH_OPTIONAL_BUILTINS {
+                self.add_specifier(builtin.to_owned(), true);
+            }
+        }
         walk_js::walk_call_expression(self, call);
     }
 
@@ -364,18 +417,12 @@ impl<'a> VisitJs<'a> for SpecifierCollector<'a, '_> {
     }
 
     fn visit_new_expression(&mut self, expression: &NewExpression<'a>) {
-        let is_websocket = match &expression.callee {
-            Expression::Identifier(identifier) => identifier.name == "WebSocket",
-            Expression::StaticMemberExpression(member) => {
-                matches!(&member.object, Expression::Identifier(object) if object.name == "globalThis")
-                    && member.property.name == "WebSocket"
+        match global_name(&expression.callee) {
+            Some("WebSocket") => self.add_builtins(&WEBSOCKET_BUILTINS),
+            Some("Headers" | "Request" | "Response" | "FormData") => {
+                self.add_builtins(&FETCH_BUILTINS);
             }
-            _ => false,
-        };
-        if is_websocket {
-            for builtin in ["http", "https", "crypto", "buffer"] {
-                self.add_specifier(builtin.to_owned(), false);
-            }
+            _ => {}
         }
         walk_js::walk_new_expression(self, expression);
     }
@@ -528,6 +575,36 @@ mod tests {
                 "missing {name}: {capabilities:?}"
             );
         }
+    }
+
+    #[test]
+    fn detects_fetch_globals() {
+        let cases = [
+            "fetch('http://127.0.0.1/');\n",
+            "globalThis.fetch('http://127.0.0.1/');\n",
+            "new Headers();\n",
+            "new Request('http://127.0.0.1/');\n",
+            "new Response(null);\n",
+            "new FormData();\n",
+        ];
+        for source in cases {
+            let fs = MemoryFs::new(&[("/app/main.js", source)]);
+            let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
+            let capabilities = capabilities(&analysis);
+            for name in ["http", "tls", "zlib", "buffer"] {
+                assert!(
+                    capabilities.iter().any(|capability| capability == name),
+                    "{source} did not pull {name}: {capabilities:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn report_error_pulls_no_builtin() {
+        let fs = MemoryFs::new(&[("/app/main.js", "reportError(new Error('x'));\n")]);
+        let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
+        assert!(analysis.builtins.is_empty(), "{:?}", analysis.builtins);
     }
 
     #[test]
