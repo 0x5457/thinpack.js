@@ -1,6 +1,6 @@
 (() => {
   const { EventEmitter } = require("node:events");
-  const { resolve } = require("node:path");
+  const { posix, resolve } = require("node:path");
   const { codes } = require("node:thinpack/internal/errors");
 
   const core = Deno.core;
@@ -17,6 +17,13 @@
       : transferList.filter((item) => item instanceof ArrayBuffer);
 
   const ids = (raw) => raw.split("\0").map(Number);
+
+  // Packed payload paths are POSIX absolute paths. Win32 `path.resolve` rebases
+  // them onto the current drive (`/app/main.js` -> `C:\app\main.js`), a path the
+  // virtual fs never holds, so absolute payload paths keep their POSIX root and
+  // only relative scripts resolve against the host working directory.
+  const scriptPath = (filename) =>
+    filename.startsWith("/") ? posix.normalize(filename) : resolve(filename);
 
   class MessagePort extends EventEmitter {
     #port;
@@ -160,7 +167,7 @@
       const [port, parent] = ids(ops.op_worker_channel());
       this.#parent = parent;
       this.#port = new MessagePort(port, parent);
-      this.#id = ops.op_worker_spawn(resolve(filename), data, parent, port);
+      this.#id = ops.op_worker_spawn(scriptPath(filename), data, parent, port);
       this.#watch();
     }
 
