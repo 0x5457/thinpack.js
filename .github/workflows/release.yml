@@ -92,13 +92,17 @@ jobs:
         if: matrix.musl
         shell: bash
         env:
+          # `cc` reads CC_<target>; cmake and autotools (WAMR, libffi) read the unqualified
+          # variables, and a C object compiled by the glibc compiler links against
+          # __snprintf_chk and libgcc helpers that a static musl link does not have.
+          CC: musl-gcc
+          CXX: musl-g++
           CC_x86_64_unknown_linux_musl: musl-gcc
           CC_aarch64_unknown_linux_musl: musl-gcc
           CXX_x86_64_unknown_linux_musl: musl-g++
           CXX_aarch64_unknown_linux_musl: musl-g++
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-          CMAKE_C_COMPILER: musl-gcc
         run: cargo xtask dist --target ${{ matrix.target }} --out dist
 
       - name: Build, verify, and archive
