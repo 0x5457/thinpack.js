@@ -17,6 +17,10 @@ pub(crate) fn init() -> Extension {
             thinpack_js::js!("bootstrap/node_globals.js"),
         ),
         ExtensionFileSource::new_compressed(
+            "thinpack:node-fetch-globals",
+            thinpack_js::js!("bootstrap/fetch_globals.js"),
+        ),
+        ExtensionFileSource::new_compressed(
             "thinpack:node-event-globals",
             thinpack_js::js!("bootstrap/event_globals.js"),
         ),
