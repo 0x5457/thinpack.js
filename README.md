@@ -4,6 +4,10 @@ Packs a Node.js app into a single executable file. `deno_core`/`v8x` provide the
 `oxc` static analysis computes the built-in module closure the app references, only those
 implementations are linked, and the app's sources and assets are appended to the template.
 
+The same apps land **9–25× smaller** than the other single-file packers: `pi` at 12.4 MiB
+against bun's 115.2 and Node SEA's 157.8; `tsc` at 9.0 MiB against 109.6 and 149.8; `js-yaml`
+at 5.8 MiB against 104.3 and 143.8.
+
 - **Capability trimming**: `require`/`import` are resolved from the entry; unreferenced
   built-in modules never enter the binary.
 - **Single-file artifact**: the payload is appended after the template and read by the runtime
