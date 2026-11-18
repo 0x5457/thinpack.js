@@ -17,6 +17,7 @@ Usage: thinpack pack <entry.js> [-o <output>] [--template <thinpack-rt>] [--rebu
                      [--backend <quickjs|v8>] [--source <checkout>]
                      [--with <module>]... [--without <module>]... [-- <args>...]
        thinpack templates
+       thinpack --version
 
 Packages the entry's module graph into a single executable based on a runtime
 template. Templates come from `--template`, or from the cache
@@ -38,6 +39,10 @@ fn main() -> std::process::ExitCode {
         "run" => commands::run_command(args.collect())
             .map(|code| std::process::ExitCode::from(u8::try_from(code).unwrap_or(1))),
         "templates" => commands::templates_command().map(|()| std::process::ExitCode::SUCCESS),
+        "-V" | "--version" => {
+            println!("thinpack {}", env!("CARGO_PKG_VERSION"));
+            Ok(std::process::ExitCode::SUCCESS)
+        }
         "-h" | "--help" => {
             println!("{USAGE}");
             Ok(std::process::ExitCode::SUCCESS)
