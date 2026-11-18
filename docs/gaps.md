@@ -67,8 +67,9 @@ the divergence, why it exists, and where it lives.
 
 - Workers in a packed executable see the `/app` virtual file system, but a
   relative worker path still resolves against the host working directory, like
-  the unpacked runtime; load virtual files by absolute `/app/...` path
-  (`crates/thinpack-rt/src/runtime.rs`).
+  the unpacked runtime; load virtual files by absolute `/app/...` path, which
+  stays in the payload's path space on every platform
+  (`crates/node/worker-threads/src/worker_threads.js`).
 - `getEnvironmentData`/`setEnvironmentData`/`markAsUncloneable` throw
   `ERR_NOT_IMPLEMENTED`; real environment data needs cross-thread clone
   machinery (`crates/node/worker-threads/src/worker_threads.js`).
