@@ -251,6 +251,14 @@ pub const MODULES: &[Module] = &[
         optional: false,
     },
     Module {
+        name: "test",
+        feature: "node-test",
+        builtins: &["test"],
+        deps: &["async_hooks"],
+        ambient: false,
+        optional: false,
+    },
+    Module {
         name: "timers",
         feature: "node-timers",
         builtins: &["timers", "timers/promises"],

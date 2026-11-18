@@ -3470,6 +3470,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "thinpack-node-test"
+version = "0.1.0"
+dependencies = [
+ "deno_core",
+ "thinpack-js",
+]
+
+[[package]]
 name = "thinpack-node-timers"
 version = "0.1.0"
 dependencies = [
@@ -3610,6 +3618,7 @@ dependencies = [
  "thinpack-node-sqlite",
  "thinpack-node-stream",
  "thinpack-node-string-decoder",
+ "thinpack-node-test",
  "thinpack-node-timers",
  "thinpack-node-tls",
  "thinpack-node-tty",

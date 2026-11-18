@@ -48,6 +48,8 @@ pub(crate) fn extensions() -> Vec<deno_core::Extension> {
     extensions.push(thinpack_node_path::init());
     #[cfg(feature = "node-punycode")]
     extensions.push(thinpack_node_punycode::init());
+    #[cfg(feature = "node-test")]
+    extensions.push(thinpack_node_test::init());
     #[cfg(feature = "node-tty")]
     extensions.push(thinpack_node_tty::init());
     #[cfg(feature = "node-module")]
@@ -141,6 +143,8 @@ pub(crate) fn enabled() -> Vec<&'static str> {
     names.push("path");
     #[cfg(feature = "node-punycode")]
     names.push("punycode");
+    #[cfg(feature = "node-test")]
+    names.push("test");
     #[cfg(feature = "node-tty")]
     names.push("tty");
     #[cfg(feature = "node-module")]

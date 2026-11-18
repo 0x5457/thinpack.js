@@ -114,9 +114,12 @@ log instead of hiding behind the total.
 7. Re-run the module and then the full suite. An ignored test that starts
    passing should lose its `ignore` field.
 
-Tests that use `node:test`, Node's `internal/*` modules, or `vm.runInNewContext`
-currently cannot pass; they are ignored with those reasons rather than silently
-skipped outside the manifest.
+The `node:test` module implements common registration, hooks, nested subtests,
+skip/todo, `mock.fn`, and `mock.method` APIs. It does not implement the `run()`
+stream, reporters, or timer mocking. `test-node-test.mjs` exercises the supported
+subset. Other upstream tests remain listed with specific reasons, including
+runner features that are not covered yet, runtime behavior thinpack does not
+provide, Node's `internal/*` modules, or `vm.runInNewContext`.
 
 ## Current coverage
 
@@ -134,6 +137,7 @@ skipped outside the manifest.
 | timers | 28 | 31 | 59 |
 | console | 8 | 14 | 22 |
 | tty | 2 | 3 | 5 |
+| test | 1 | 0 | 1 |
 
 Every upstream `test/parallel` file for these module families is present; the
 skipped cluster files are the handle-passing, dgram, round-robin and UNIX-socket
