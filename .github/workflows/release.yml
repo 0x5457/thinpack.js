@@ -103,6 +103,9 @@ jobs:
           CXX_aarch64_unknown_linux_musl: musl-g++
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          # aarch64 GCC lowers `__builtin___clear_cache` and the atomic swap libffi's
+          # dlmalloc uses into libgcc calls, and rustc's link line leaves libgcc out.
+          RUSTFLAGS: -C link-arg=-lgcc
         run: cargo xtask dist --target ${{ matrix.target }} --out dist
 
       - name: Build, verify, and archive
