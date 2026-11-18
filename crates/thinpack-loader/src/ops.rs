@@ -46,7 +46,10 @@ fn op_require_resolve(
         Ok(resolved) => Ok(fs.js_path(&resolved.path)),
         Err(error) => Err(JsErrorBox::new(
             "Error",
-            format!("MODULE_NOT_FOUND\0{error}"),
+            format!(
+                "MODULE_NOT_FOUND\0{}",
+                error.message(|path| fs.js_path(path))
+            ),
         )),
     }
 }
@@ -124,7 +127,7 @@ fn op_require(
 
     match thinpack_resolve::resolve(specifier, Path::new(parent), fs) {
         Ok(resolved) => read(&resolved, fs),
-        Err(error) => resolve_error(&error),
+        Err(error) => resolve_error(&error, fs),
     }
 }
 
@@ -252,7 +255,7 @@ fn invalid_url(path: &str) -> String {
     format!("e\0ERR_INVALID_URL\0{path} cannot be converted to a file URL\0")
 }
 
-fn resolve_error(error: &thinpack_resolve::Error) -> String {
+fn resolve_error(error: &thinpack_resolve::Error, fs: &ModuleFs) -> String {
     use thinpack_resolve::Error;
 
     let code = match error {
@@ -262,5 +265,5 @@ fn resolve_error(error: &thinpack_resolve::Error) -> String {
         Error::InvalidPackage { .. } => "ERR_INVALID_PACKAGE_CONFIG",
         Error::Io { .. } => "ERR_MODULE_READ",
     };
-    format!("e\0{code}\0{error}\0")
+    format!("e\0{code}\0{}\0", error.message(|path| fs.js_path(path)))
 }

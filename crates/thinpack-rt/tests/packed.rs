@@ -46,6 +46,31 @@ assert.deepEqual(
         capabilities: &["assert", "fs"],
     },
     PackedTest {
+        name: "packed::error-paths",
+        directory: "error-paths",
+        entry: "/app/main.js",
+        files: &[
+            (
+                "/app/main.js",
+                r"
+const assert = require('node:assert/strict');
+
+// Resolver errors name the path the payload records, not a host rendering of it.
+assert.throws(
+  () => require('/app/native.node'),
+  (error) => {
+    assert.match(error.message, /\/app\/native\.node/);
+    assert.doesNotMatch(error.message, /\\/);
+    return true;
+  },
+);
+",
+            ),
+            ("/app/native.node", ""),
+        ],
+        capabilities: &["assert"],
+    },
+    PackedTest {
         name: "packed::module-paths",
         directory: "module-paths",
         entry: "/app/main.js",
