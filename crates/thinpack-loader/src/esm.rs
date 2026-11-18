@@ -217,8 +217,12 @@ pub(crate) fn resolve(
     let base = parent.as_deref().unwrap_or_else(|| Path::new("/"));
     let resolved = thinpack_resolve::resolve_import(specifier, base, fs)
         .map_err(|error| format!("cannot resolve `{specifier}`: {error}"))?;
-    let url = file_url(&resolved.path)
-        .ok_or_else(|| format!("{} cannot be represented as a URL", resolved.path.display()))?;
+    let url = file_url(&resolved.path).ok_or_else(|| {
+        format!(
+            "{} cannot be represented as a URL",
+            fs.js_path(&resolved.path)
+        )
+    })?;
     ModuleSpecifier::parse(&url).map_err(|error| error.to_string())
 }
 
@@ -283,9 +287,9 @@ pub(crate) fn default_source(
                 .ok_or_else(|| JsErrorBox::generic(format!("{specifier}: not a file URL")))?;
             let bytes = fs
                 .read(&path)
-                .map_err(|error| JsErrorBox::generic(format!("{}: {error}", path.display())))?;
+                .map_err(|error| JsErrorBox::generic(format!("{}: {error}", fs.js_path(&path))))?;
             let source = String::from_utf8(bytes).map_err(|_| {
-                JsErrorBox::generic(format!("{}: module is not valid UTF-8", path.display()))
+                JsErrorBox::generic(format!("{}: module is not valid UTF-8", fs.js_path(&path)))
             })?;
             let format = match thinpack_resolve::format_of(&path, fs) {
                 Ok(Format::Json) => "json",
@@ -335,12 +339,12 @@ fn module_from_format(
             if let Some(path) = path.as_deref() {
                 collect_reexports(fs, path, &source, &mut names, &mut BTreeSet::new());
             }
+            let id = path
+                .as_deref()
+                .map_or_else(|| specifier.as_str().to_owned(), |path| fs.js_path(path));
             let mut facade = format!(
                 "const __exports__ = globalThis.__thinpack_require_source__({}, {}, {});\n",
-                js_string_literal(&path.as_deref().map_or_else(
-                    || specifier.as_str().to_owned(),
-                    |path| path.to_string_lossy().into_owned(),
-                )),
+                js_string_literal(&id),
                 js_string_literal(specifier.as_str()),
                 js_string_literal(&source),
             );

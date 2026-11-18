@@ -5,7 +5,7 @@ mod cjs_exports;
 mod esm;
 
 use std::borrow::Cow;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use deno_core::{Extension, ExtensionFileSource, ModuleLoader};
@@ -50,6 +50,33 @@ impl FileSystem for ModuleFs {
             Self::Virtual(vfs) => vfs.read(path),
         }
     }
+}
+
+impl ModuleFs {
+    /// Renders a resolved module path the way JS names it.
+    ///
+    /// Payload paths are POSIX paths rooted at `/app` on every platform, and JS
+    /// receives them as module ids. Windows would print the native separators a
+    /// payload never records, so a packed module would report a filename the
+    /// manifest does not contain and lose the `/app` root in `__dirname`.
+    pub(crate) fn js_path(&self, path: &Path) -> String {
+        let rendered = path.display().to_string();
+        match self {
+            Self::Host => rendered,
+            Self::Virtual(_) => posix_separators(rendered),
+        }
+    }
+}
+
+/// Host paths already use the platform separator; payload paths are POSIX.
+#[cfg(windows)]
+fn posix_separators(path: String) -> String {
+    path.replace('\\', "/")
+}
+
+#[cfg(not(windows))]
+const fn posix_separators(path: String) -> String {
+    path
 }
 
 #[must_use]

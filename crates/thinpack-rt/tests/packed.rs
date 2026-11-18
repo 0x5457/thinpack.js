@@ -46,6 +46,35 @@ assert.deepEqual(
         capabilities: &["assert", "fs"],
     },
     PackedTest {
+        name: "packed::module-paths",
+        directory: "module-paths",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r"
+const assert = require('node:assert/strict');
+
+// Payload paths are POSIX paths on every platform, so the ids JS reports must
+// not pick up the host separators of a Windows build.
+assert.deepEqual(
+  {
+    dirname: __dirname,
+    filename: module.filename,
+    relative: require.resolve('./main.js'),
+    absolute: require.resolve('/app/main.js'),
+  },
+  {
+    dirname: '/app',
+    filename: '/app/main.js',
+    relative: '/app/main.js',
+    absolute: '/app/main.js',
+  },
+);
+",
+        )],
+        capabilities: &["assert"],
+    },
+    PackedTest {
         name: "packed::worker-vfs",
         directory: "worker-vfs",
         entry: "/app/main.js",
@@ -72,6 +101,10 @@ worker.once('exit', (code) => {
                 "/app/worker.js",
                 r"
 const { parentPort } = require('node:worker_threads');
+const assert = require('node:assert/strict');
+
+assert.equal(__dirname, '/app');
+assert.equal(require.resolve('./worker.js'), '/app/worker.js');
 parentPort.postMessage('worker loaded from the packed VFS');
 ",
             ),

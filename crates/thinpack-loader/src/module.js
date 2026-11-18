@@ -13,8 +13,12 @@
     ];
   };
 
+  // Module ids are native host paths when the app runs from disk, and POSIX
+  // `/app/...` payload paths when it runs from a packed binary.
   const dirname = (filename) => {
-    const slash = filename.lastIndexOf("/");
+    const slash = filename[0] === "/"
+      ? filename.lastIndexOf("/")
+      : filename.lastIndexOf("\\");
     return slash <= 0 ? "/" : filename.slice(0, slash);
   };
 
