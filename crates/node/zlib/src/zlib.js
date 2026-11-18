@@ -79,6 +79,72 @@
     }
   }
 
+  class Gzip extends ZlibTransform {
+    constructor(options) {
+      super("gzip", options);
+    }
+  }
+
+  class Gunzip extends ZlibTransform {
+    constructor(options) {
+      super("ungzip", options);
+    }
+  }
+
+  class Deflate extends ZlibTransform {
+    constructor(options) {
+      super("deflate", options);
+    }
+  }
+
+  class Inflate extends ZlibTransform {
+    constructor(options) {
+      super("inflate", options);
+    }
+  }
+
+  class DeflateRaw extends ZlibTransform {
+    constructor(options) {
+      super("deflate-raw", options);
+    }
+  }
+
+  class InflateRaw extends ZlibTransform {
+    constructor(options) {
+      super("inflate-raw", options);
+    }
+  }
+
+  class Unzip extends ZlibTransform {
+    constructor(options) {
+      super("unzip", options);
+    }
+  }
+
+  class BrotliCompress extends ZlibTransform {
+    constructor(options) {
+      super("brotli", options);
+    }
+  }
+
+  class BrotliDecompress extends ZlibTransform {
+    constructor(options) {
+      super("unbrotli", options);
+    }
+  }
+
+  class ZstdCompress extends ZlibTransform {
+    constructor(options) {
+      super("zstd", options);
+    }
+  }
+
+  class ZstdDecompress extends ZlibTransform {
+    constructor(options) {
+      super("unzstd", options);
+    }
+  }
+
   const detect = (buffer) =>
     buffer.length >= 2 && buffer[0] === 0x1f && buffer[1] === 0x8b ? "gzip" : "deflate";
 
@@ -172,7 +238,7 @@
     });
   };
 
-  const stream = (format) => (options) => new ZlibTransform(format, options);
+  const stream = (Ctor) => (options) => new Ctor(options);
 
   const crcTable = new Uint32Array(256);
   for (let index = 0; index < 256; index += 1) {
@@ -193,17 +259,28 @@
 
   module.exports = {
     constants,
-    createGzip: stream("gzip"),
-    createGunzip: stream("ungzip"),
-    createDeflate: stream("deflate"),
-    createInflate: stream("inflate"),
-    createDeflateRaw: stream("deflate-raw"),
-    createInflateRaw: stream("inflate-raw"),
-    createUnzip: stream("unzip"),
-    createBrotliCompress: stream("brotli"),
-    createBrotliDecompress: stream("unbrotli"),
-    createZstdCompress: stream("zstd"),
-    createZstdDecompress: stream("unzstd"),
+    Gzip,
+    Gunzip,
+    Deflate,
+    Inflate,
+    DeflateRaw,
+    InflateRaw,
+    Unzip,
+    BrotliCompress,
+    BrotliDecompress,
+    ZstdCompress,
+    ZstdDecompress,
+    createGzip: stream(Gzip),
+    createGunzip: stream(Gunzip),
+    createDeflate: stream(Deflate),
+    createInflate: stream(Inflate),
+    createDeflateRaw: stream(DeflateRaw),
+    createInflateRaw: stream(InflateRaw),
+    createUnzip: stream(Unzip),
+    createBrotliCompress: stream(BrotliCompress),
+    createBrotliDecompress: stream(BrotliDecompress),
+    createZstdCompress: stream(ZstdCompress),
+    createZstdDecompress: stream(ZstdDecompress),
     gzip: (data, options, cb) => callbackStyle("gzip", data, options, cb),
     gunzip: (data, options, cb) => callbackStyle("ungzip", data, options, cb),
     deflate: (data, options, cb) => callbackStyle("deflate", data, options, cb),

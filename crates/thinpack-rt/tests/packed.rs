@@ -136,6 +136,73 @@ parentPort.postMessage('worker loaded from the packed VFS');
         ],
         capabilities: &["assert", "worker_threads"],
     },
+    PackedTest {
+        name: "packed::zlib-constructors",
+        directory: "zlib-constructors",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r"
+const assert = require('node:assert/strict');
+const zlib = require('node:zlib');
+
+// Dependencies such as crc32-stream subclass the named compression streams:
+// they override `_transform`/`push`, call the inherited implementations, and
+// run their own bookkeeping alongside the compressed output.
+class DeflateCRC32Stream extends zlib.DeflateRaw {
+  constructor(options) {
+    super(options);
+    this.checksum = 0;
+    this.rawSize = 0;
+    this.compressedSize = 0;
+  }
+
+  push(chunk, encoding) {
+    if (chunk) this.compressedSize += chunk.length;
+    return super.push(chunk, encoding);
+  }
+
+  _transform(chunk, encoding, callback) {
+    this.checksum = zlib.crc32(chunk, this.checksum);
+    this.rawSize += chunk.length;
+    super._transform(chunk, encoding, callback);
+  }
+}
+
+const input = Buffer.from('thinpack zlib constructor compatibility');
+const stream = new DeflateCRC32Stream();
+const chunks = [];
+stream.on('data', (chunk) => chunks.push(chunk));
+stream.on('end', () => {
+  const compressed = Buffer.concat(chunks);
+  assert.equal(stream.rawSize, input.length);
+  assert.equal(stream.compressedSize, compressed.length);
+  assert.equal(stream.checksum, zlib.crc32(input));
+  assert.ok(zlib.inflateRawSync(compressed).equals(input));
+
+  const pairs = [
+    ['Gzip', 'createGzip'],
+    ['Gunzip', 'createGunzip'],
+    ['Deflate', 'createDeflate'],
+    ['Inflate', 'createInflate'],
+    ['DeflateRaw', 'createDeflateRaw'],
+    ['InflateRaw', 'createInflateRaw'],
+    ['Unzip', 'createUnzip'],
+    ['BrotliCompress', 'createBrotliCompress'],
+    ['BrotliDecompress', 'createBrotliDecompress'],
+    ['ZstdCompress', 'createZstdCompress'],
+    ['ZstdDecompress', 'createZstdDecompress'],
+  ];
+  for (const [name, factory] of pairs) {
+    assert.equal(typeof zlib[name], 'function', name);
+    assert.ok(zlib[factory]() instanceof zlib[name], factory);
+  }
+});
+stream.end(input);
+",
+        )],
+        capabilities: &["assert", "zlib"],
+    },
 ];
 
 pub(super) fn print_list(cli: &super::Cli) {
