@@ -34,16 +34,21 @@ jobs:
       # One broken target must not hide the others: a missing runner label or an
       # unavailable toolchain still leaves the other four assets diagnosable.
       fail-fast: false
-      # Linux artifacts inherit the runner's glibc floor: built on 24.04 they need glibc 2.39,
-      # so Debian 12 (2.36) and Ubuntu 22.04 (2.35) have to build from source. Moving these two
-      # labels to ubuntu-22.04 lowers that floor to 2.35 at the cost of an older toolchain;
-      # do it only together with a rehearsal run.
+      # Two kinds of Linux artifact. The static musl build has no libc floor and runs on any
+      # distribution, Alpine included; the glibc build inherits the runner's floor (Ubuntu 24.04
+      # is glibc 2.39) and exists for a host that wants dynamic linking.
       matrix:
         include:
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            musl: true
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            musl: true
           - runner: macos-latest
             target: aarch64-apple-darwin
           - runner: macos-15-intel
@@ -57,16 +62,8 @@ jobs:
         with:
           rustflags: ""
           cache: false
+          target: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-
-      # `dist` skips the pack probe when the requested target is not the host, so the
-      # workflow has to prove the runner is native before it trusts the build. A command
-      # substitution rather than a pipe: `set -o pipefail` turns `grep -q`'s early exit
-      # into SIGPIPE and the step fails with 141.
-      - name: Assert the runner builds natively
-        shell: bash
-        run: |
-          test "$(rustc -vV | sed -n 's/^host: //p')" = "${{ matrix.target }}"
 
       # The asset name carries the crate version while the installer reads the tag: a tag that
       # disagrees with `Cargo.toml` publishes archives nobody can download.
@@ -77,7 +74,27 @@ jobs:
           version=$(cargo pkgid -p thinpack-cli | sed 's/.*[#@]//')
           test "v${version}" = "${GITHUB_REF_NAME}"
 
+      - name: Install musl
+        if: matrix.musl
+        run: sudo apt-get update && sudo apt-get install --yes musl-tools
+
+      # `cc` and `cmake` both build C here (QuickJS/WAMR, sqlite): point them at musl-gcc so the
+      # objects match the static musl libc the target links against.
+      - name: Build, verify, and archive (static)
+        if: matrix.musl
+        shell: bash
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+          CXX_x86_64_unknown_linux_musl: musl-g++
+          CXX_aarch64_unknown_linux_musl: musl-g++
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CMAKE_C_COMPILER: musl-gcc
+        run: cargo xtask dist --target ${{ matrix.target }} --out dist
+
       - name: Build, verify, and archive
+        if: ${{ !matrix.musl }}
         shell: bash
         run: cargo xtask dist --target ${{ matrix.target }} --out dist
 

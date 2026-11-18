@@ -19,8 +19,10 @@ thinpack pack app.js -o app
 
 | Target | Runs on |
 | --- | --- |
-| `x86_64-unknown-linux-gnu` | 64-bit Linux, glibc 2.39+ |
-| `aarch64-unknown-linux-gnu` | 64-bit ARM Linux, glibc 2.39+ |
+| `x86_64-unknown-linux-musl` | 64-bit Linux, any distribution (static) |
+| `aarch64-unknown-linux-musl` | 64-bit ARM Linux, any distribution (static) |
+| `x86_64-unknown-linux-gnu` | 64-bit Linux, glibc 2.39+ (dynamic, smaller) |
+| `aarch64-unknown-linux-gnu` | 64-bit ARM Linux, glibc 2.39+ (dynamic, smaller) |
 | `aarch64-apple-darwin` | Apple Silicon macOS |
 | `x86_64-apple-darwin` | Intel macOS |
 | `x86_64-pc-windows-msvc` | 64-bit Windows |
@@ -30,7 +32,8 @@ Every archive carries the same two binaries: `thinpack` (the packer, links no JS
 a superset, so any app packs; `thinpack pack --rebuild` from a source checkout builds one that
 carries only that app's capability set, which is where the smallest artifacts come from.
 
-The Linux archives are linked against the runner's glibc (Ubuntu 24.04, 2.39). On an older
-distribution, build from source.
+The static musl artifacts link no libc and run anywhere, Alpine included; `dlopen` through
+`node:ffi` is the one thing they cannot do. The glibc artifacts are linked against the runner's
+glibc (Ubuntu 24.04, 2.39), so on an older distribution take the musl one.
 
 Verify a download against `SHA256SUMS`.
