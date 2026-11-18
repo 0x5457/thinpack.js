@@ -1,0 +1,110 @@
+name: Release
+
+# `cargo xtask dist` builds the CLI and its runtime template, stages them side by side,
+# packs and runs `examples/hello.js` from the staged directory, then writes a reproducible
+# archive and its checksum. A target that cannot run its own artifacts fails the release
+# instead of shipping them.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      draft:
+        description: Publish as a draft release
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  dist:
+    name: dist ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      # One broken target must not hide the others: a missing runner label or an
+      # unavailable toolchain still leaves the other four assets diagnosable.
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          rustflags: ""
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+
+      # `dist` skips the pack probe when the requested target is not the host, so the
+      # workflow has to prove the runner is native before it trusts the build.
+      - name: Assert the runner builds natively
+        shell: bash
+        run: |
+          rustc -vV | grep -qx "host: ${{ matrix.target }}"
+
+      - name: Build, verify, and archive
+        shell: bash
+        run: cargo xtask dist --target ${{ matrix.target }} --out dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: thinpack-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  release:
+    name: Publish
+    needs: dist
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          cat ./*.tar.gz.sha256 > SHA256SUMS
+          rm ./*.tar.gz.sha256
+          sha256sum --check SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRAFT: ${{ inputs.draft && '--draft' || '' }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          case "${tag}" in
+            v*) ;;
+            *) echo "a release needs a v* tag, not ${tag}" >&2; exit 1 ;;
+          esac
+          gh release create "${tag}" dist/*.tar.gz dist/SHA256SUMS \
+            --title "${tag}" --notes-file .github/release-notes.md ${DRAFT}
