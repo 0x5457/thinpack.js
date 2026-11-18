@@ -218,6 +218,11 @@ fn memory() -> String {
 
 #[cfg(all(unix, not(target_os = "linux")))]
 #[cfg(target_vendor = "apple")]
+#[expect(
+    deprecated,
+    reason = "libc points at the `mach2` crate for `mach_task_self`; the port is the \
+              process-wide constant behind the C macro, so one call does not justify the dependency"
+)]
 fn memory() -> String {
     // No `/proc` here; `task_info` on the current task reports the real current
     // resident size.
@@ -236,7 +241,10 @@ fn memory() -> String {
         )
     } == libc::KERN_SUCCESS;
     if current_rss {
-        format!("{}\0\0\0\0\0", info.resident_size)
+        // The struct is only 4-byte aligned, so the 8-byte field is copied out
+        // instead of referenced; `format!` would borrow it (E0793).
+        let resident_size = info.resident_size;
+        format!("{resident_size}\0\0\0\0\0")
     } else {
         // `task_info` on the current task cannot realistically fail; if it ever
         // does, fall back to `ru_maxrss` (bytes on macOS) — a high-water mark
