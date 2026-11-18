@@ -1370,3 +1370,39 @@ module = "util"
 [tests."parallel/test-thinpack-cjs-reexport-alias-cycle.mjs"]
 module = "module"
 timeout_ms = 5000
+
+[tests."parallel/test-thinpack-fetch-get-json.js"]
+module = "http"
+timeout_ms = 10000
+
+[tests."parallel/test-thinpack-fetch-post-string.js"]
+module = "http"
+timeout_ms = 10000
+
+[tests."parallel/test-thinpack-fetch-status-404.js"]
+module = "http"
+timeout_ms = 10000
+
+[tests."parallel/test-thinpack-fetch-redirect.js"]
+module = "http"
+timeout_ms = 10000
+
+[tests."parallel/test-thinpack-fetch-headers.js"]
+module = "http"
+timeout_ms = 10000
+
+[tests."parallel/test-thinpack-fetch-formdata-multipart.js"]
+module = "http"
+timeout_ms = 10000
+
+[tests."parallel/test-thinpack-fetch-gzip.js"]
+module = "http"
+timeout_ms = 10000
+
+[tests."parallel/test-thinpack-fetch-abort.js"]
+module = "http"
+timeout_ms = 10000
+
+[tests."parallel/test-thinpack-fetch-body-used.js"]
+module = "http"
+timeout_ms = 10000

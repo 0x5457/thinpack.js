@@ -7,12 +7,22 @@ the divergence, why it exists, and where it lives.
 
 ## Globals
 
-- The globals Node gets from undici are absent: `fetch` and its types
-  (`Headers`, `Request`, `Response`, `FormData`). Node defines them from a
-  dependency bundled into its binary; this project vendors Node's `lib/`, not its
-  dependencies. `WebSocket`, `Blob` and `File` are present, `EventSource` and
-  `reportError` are not, and code that reaches for a missing global fails with
-  `ReferenceError`. `http`, `https` and `http2` are unaffected.
+- `fetch`, `Headers`, `Request`, `Response` and `FormData` are Node's own undici, vendored
+  byte for byte from `deps/undici/undici.js` at the Node tag this repo tracks
+  (`crates/node/http/src/vendor/undici.js`). They are the same code Node runs, so request
+  construction, redirects, `AbortSignal`, multipart encoding and the error shapes are Node's,
+  and the module needs no seams: the bundle requires only `node:` builtins.
+  - That bundle is the reason a `fetch` call pulls sixteen modules into the payload
+    (`assert`, `async_hooks`, `buffer`, `crypto`, `diagnostics_channel`, `events`, `http`,
+    `net`, `perf_hooks`, `querystring`, `stream`, `tls`, `url`, `util`, `worker_threads`,
+    `zlib`); `http2` and `sqlite` are optional, because undici probes them and handles their
+    absence.
+  - `EventSource` is absent: Node's bundle does not export one.
+  - Everything undici builds on is still this runtime's implementation, so the entries below
+    for `net`, `tls`, `zlib` and the streams apply to it too.
+- `Blob` parts are read through a JS reader (`crates/node/buffer/src/binding_blob.js`). Node's
+  reader is C++ and can answer `STATUS_BLOCK`; these parts are already in memory and always
+  answer synchronously, so `setWakeup` accepts Node's callback and never invokes it.
 
 ## Event loop
 
@@ -79,9 +89,12 @@ the divergence, why it exists, and where it lives.
   the unpacked runtime; load virtual files by absolute `/app/...` path, which
   stays in the payload's path space on every platform
   (`crates/node/worker-threads/src/worker_threads.js`).
-- `getEnvironmentData`/`setEnvironmentData`/`markAsUncloneable` throw
-  `ERR_NOT_IMPLEMENTED`; real environment data needs cross-thread clone
-  machinery (`crates/node/worker-threads/src/worker_threads.js`).
+- `markAsUncloneable` is real: it marks the object in a `WeakSet` that
+  `structuredClone` consults, so a clone of a marked value throws
+  `DataCloneError` (`crates/thinpack-rt/src/bootstrap/structured_clone.js`).
+- `getEnvironmentData`/`setEnvironmentData` still throw `ERR_NOT_IMPLEMENTED`;
+  real environment data needs cross-thread state
+  (`crates/node/worker-threads/src/worker_threads.js`).
 
 ## Inspector
 
