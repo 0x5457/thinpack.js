@@ -34,6 +34,10 @@ jobs:
       # One broken target must not hide the others: a missing runner label or an
       # unavailable toolchain still leaves the other four assets diagnosable.
       fail-fast: false
+      # Linux artifacts inherit the runner's glibc floor: built on 24.04 they need glibc 2.39,
+      # so Debian 12 (2.36) and Ubuntu 22.04 (2.35) have to build from source. Moving these two
+      # labels to ubuntu-22.04 lowers that floor to 2.35 at the cost of an older toolchain;
+      # do it only together with a rehearsal run.
       matrix:
         include:
           - runner: ubuntu-24.04
@@ -61,6 +65,15 @@ jobs:
         shell: bash
         run: |
           rustc -vV | grep -qx "host: ${{ matrix.target }}"
+
+      # The asset name carries the crate version while the installer reads the tag: a tag that
+      # disagrees with `Cargo.toml` publishes archives nobody can download.
+      - name: Assert the tag matches the crate version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          version=$(cargo pkgid -p thinpack-cli | sed 's/.*[#@]//')
+          test "v${version}" = "${GITHUB_REF_NAME}"
 
       - name: Build, verify, and archive
         shell: bash
@@ -104,5 +117,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           DRAFT: ${{ inputs.draft && '--draft' || '' }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz dist/SHA256SUMS \
-            --title "${GITHUB_REF_NAME}" --notes-file .github/release-notes.md ${DRAFT}
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            # Re-running a failed publish has to replace the assets, not refuse the tag.
+            gh release upload "${GITHUB_REF_NAME}" dist/*.tar.gz dist/SHA256SUMS --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz dist/SHA256SUMS \
+              --title "${GITHUB_REF_NAME}" --notes-file .github/release-notes.md ${DRAFT}
+          fi

@@ -6,8 +6,9 @@
 //! staging directory with an empty template cache — the exact path a user takes after
 //! unpacking — so no release ships a pair that cannot pack.
 //!
-//! The archive is reproducible for the same input: sorted entries, fixed uid/gid/mtime, explicit
-//! modes.
+//! The archive is reproducible for the same build: sorted entries, fixed uid/gid/mtime, explicit
+//! modes. The binaries themselves are not portable across checkouts — `templates.rs` compiles its
+//! own source directory in as the `--rebuild` default — so "same input" includes the source path.
 
 use std::env;
 use std::fmt::Write as _;
@@ -38,9 +39,23 @@ const PROBE: &str = "examples/hello.js";
 /// runtime that starts but never drains the microtask queue fails the release.
 const PROBE_EXPECTED: [&str; 2] = ["answer: 42", "microtask completed"];
 
+// `-z pack-relative-relocs` packs every RELATIVE relocation into a `DT_RELR` block: 553 KB
+// smaller on this runtime, and the loader has to understand `DT_RELR` to start the binary
+// (glibc 2.36). The floor comes from the runner's glibc anyway; see the matrix comment.
 const LINK_ARGS_ELF: &str = "-C force-unwind-tables=no -C link-arg=-Wl,-z,pack-relative-relocs";
 const LINK_ARGS_OTHER: &str = "-C force-unwind-tables=no";
 const C_FLAGS: &str = "-fno-asynchronous-unwind-tables -fno-unwind-tables";
+
+/// Everything the staging directory holds, sorted by name: the programs, then the documents.
+fn staged() -> Vec<(&'static str, bool)> {
+    let mut entries: Vec<(&str, bool)> = BINARIES
+        .map(|name| (name, true))
+        .into_iter()
+        .chain(DOCUMENTS.map(|name| (name, false)))
+        .collect();
+    entries.sort_unstable();
+    entries
+}
 
 struct Config {
     backend: Backend,
@@ -105,7 +120,7 @@ fn dist(config: &Config) -> Result<(), String> {
     let built = build(config, &table)?;
     stage_files(config, &stage, &built)?;
     if config.host {
-        verify(config, &stage)?;
+        verify(config, &stage, &table)?;
     } else {
         println!(
             "skipping the probe: {} cannot run on this host",
@@ -184,16 +199,14 @@ fn stage_files(config: &Config, stage: &Path, built: &Path) -> Result<(), String
     }
     fs::create_dir_all(stage).map_err(|error| format!("{}: {error}", stage.display()))?;
 
-    let sources = BINARIES
-        .iter()
-        .map(|name| (built.join(config.file_name(name)), config.file_name(name)))
-        .chain(
-            DOCUMENTS
-                .iter()
-                .map(|name| (crate::repo_root().join(name), config.file_name(name))),
-        );
-    for (source, name) in sources {
-        fs::copy(&source, stage.join(&name))
+    for (name, binary) in staged() {
+        let file = config.file_name(name, binary);
+        let source = if binary {
+            built.join(&file)
+        } else {
+            crate::repo_root().join(&file)
+        };
+        fs::copy(&source, stage.join(&file))
             .map_err(|error| format!("{}: {error}", source.display()))?;
     }
     Ok(())
@@ -201,8 +214,8 @@ fn stage_files(config: &Config, stage: &Path, built: &Path) -> Result<(), String
 
 /// What a user does after unpacking: `thinpack pack <app>` with nothing but the sibling runtime,
 /// in a cache that cannot answer for it.
-fn verify(config: &Config, stage: &Path) -> Result<(), String> {
-    let runtime = stage.join(config.file_name("thinpack-rt"));
+fn verify(config: &Config, stage: &Path, table: &[capabilities::Module]) -> Result<(), String> {
+    let runtime = stage.join(config.file_name("thinpack-rt", true));
     let info = output(Command::new(&runtime).arg("--template-info"))?;
     let expected = [
         format!("version {}", env!("CARGO_PKG_VERSION")),
@@ -217,6 +230,23 @@ fn verify(config: &Config, stage: &Path) -> Result<(), String> {
         }
     }
 
+    // The probe is a packed executable, so it needs the target's executable suffix:
+    // Windows decides that by extension, and `thinpack pack -o hello` writes `hello`.
+    // The archive claims a template carrying every built-in module; a feature lost between
+    // `capabilities.toml` and the registry would otherwise pass the probe below, and the app
+    // that needs it would fail at `require` time on a user's machine.
+    let reported = output(Command::new(&runtime).arg("--capabilities"))?;
+    for module in table {
+        let expected = format!("module {}", module.name);
+        if !reported.lines().any(|have| have == expected) {
+            return Err(format!(
+                "{} does not carry `{}`; the packaged template is not the full set",
+                runtime.display(),
+                module.name
+            ));
+        }
+    }
+
     let scratch = target_dir().join("probe");
     let cache = scratch.join("cache");
     if cache.exists() {
@@ -224,9 +254,9 @@ fn verify(config: &Config, stage: &Path) -> Result<(), String> {
     }
     fs::create_dir_all(&cache).map_err(|error| format!("{}: {error}", cache.display()))?;
 
-    let artifact = scratch.join(config.file_name("hello"));
+    let artifact = scratch.join(config.file_name("hello", true));
     output(
-        Command::new(stage.join(config.file_name("thinpack")))
+        Command::new(stage.join(config.file_name("thinpack", true)))
             .current_dir(crate::repo_root())
             .env("THINPACK_CACHE", &cache)
             .args(["pack", PROBE, "-o"])
@@ -258,27 +288,19 @@ fn archive(config: &Config, stage: &Path) -> Result<PathBuf, String> {
     );
     let mut tar = tar::Builder::new(encoder);
 
-    let mut names: Vec<&str> = Vec::new();
-    names.extend(BINARIES);
-    names.extend(DOCUMENTS);
-    names.sort_unstable();
-    for name in names {
-        let file = stage.join(config.file_name(name));
+    for (name, binary) in staged() {
+        let file_name = config.file_name(name, binary);
+        let file = stage.join(&file_name);
         let bytes = fs::read(&file).map_err(|error| format!("{}: {error}", file.display()))?;
         let mut header = tar::Header::new_ustar();
         header.set_entry_type(tar::EntryType::Regular);
         header.set_size(bytes.len() as u64);
-        header.set_mode(if BINARIES.contains(&name) {
-            0o755
-        } else {
-            0o644
-        });
+        header.set_mode(if binary { 0o755 } else { 0o644 });
         header.set_mtime(0);
         header.set_uid(0);
         header.set_gid(0);
         header.set_cksum();
-        let entry = format!("{stem}/{}", config.file_name(name));
-        tar.append_data(&mut header, entry, &bytes[..])
+        tar.append_data(&mut header, format!("{stem}/{file_name}"), &bytes[..])
             .map_err(|error| format!("{}: {error}", path.display()))?;
     }
     tar.into_inner()
@@ -306,9 +328,9 @@ impl Config {
         }
     }
 
-    /// Binaries take the target's executable suffix; documentation keeps its name.
-    fn file_name(&self, name: &str) -> String {
-        if BINARIES.contains(&name) {
+    /// A staged file. Programs take the target's executable suffix; documentation keeps its name.
+    fn file_name(&self, name: &str, binary: bool) -> String {
+        if binary {
             format!("{name}{}", self.exe_suffix())
         } else {
             name.to_owned()
@@ -319,6 +341,14 @@ impl Config {
 /// Cargo's target directory for this workspace, with `dist` below it. `CARGO_TARGET_DIR` wins
 /// because it is the documented way to build this workspace without the checked-in `target`
 /// symlink; nothing is written inside the repository then.
+fn link_args(target: &str) -> &'static str {
+    if target.contains("linux") {
+        LINK_ARGS_ELF
+    } else {
+        LINK_ARGS_OTHER
+    }
+}
+
 fn target_dir() -> PathBuf {
     env::var_os("CARGO_TARGET_DIR")
         .map_or_else(|| crate::repo_root().join("target"), PathBuf::from)
@@ -335,14 +365,6 @@ fn host_triple() -> String {
         .find_map(|line| line.strip_prefix("host: "))
         .map(str::to_owned)
         .expect("rustc -vV reports a host triple")
-}
-
-fn link_args(target: &str) -> &'static str {
-    if target.contains("linux") {
-        LINK_ARGS_ELF
-    } else {
-        LINK_ARGS_OTHER
-    }
 }
 
 fn appended(existing: Option<String>, extra: &str) -> String {

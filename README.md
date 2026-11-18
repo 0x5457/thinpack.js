@@ -28,13 +28,14 @@ thinpack pack app.js -o app
 
 The installer puts `thinpack` and `thinpack-rt` in `~/.local/bin` (`THINPACK_INSTALL_DIR`
 overrides that, `THINPACK_VERSION` pins a release). They have to stay in the same directory: the
-CLI loads its template from next to itself. Archives for Linux (glibc, x86_64 and aarch64), macOS
-(arm64 and Intel) and Windows, with `SHA256SUMS`, are on the
+CLI loads its template from next to itself. Archives for Linux (x86_64 and aarch64, glibc 2.39 or
+newer — the runner's floor), macOS (arm64 and Intel) and Windows, with `SHA256SUMS`, are on the
 [releases page](https://github.com/0x5457/thinpack.js/releases).
 
-The archive carries one template with every built-in module, so any app packs. `--rebuild` from a
-source checkout builds a template that carries only the app's own capability set, which is where
-the smallest artifacts in the table below come from.
+The archive carries one template with every built-in module, so any app packs. `--rebuild` builds a
+template that carries only the app's own capability set, which is where the smallest artifacts in
+the table below come from; it compiles the runtime, so it needs a source checkout (`--source
+<checkout>` when the CLI was not built from one).
 
 ## Build from source
 

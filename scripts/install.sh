@@ -15,6 +15,7 @@ set -eu
 REPOSITORY="0x5457/thinpack.js"
 API_URL="https://api.github.com/repos/${REPOSITORY}/releases/latest"
 RELEASE_URL="https://github.com/${REPOSITORY}/releases/download"
+: "${HOME:?HOME is not set; set THINPACK_INSTALL_DIR to choose a directory}"
 INSTALL_DIR="${THINPACK_INSTALL_DIR:-${HOME}/.local/bin}"
 
 say() { printf '%s\n' "$@"; }
@@ -24,6 +25,7 @@ fail() {
 }
 
 command -v tar >/dev/null 2>&1 || fail "tar is required"
+command -v install >/dev/null 2>&1 || fail "install (coreutils) is required"
 if command -v curl >/dev/null 2>&1; then
     fetch() { curl -fsSL "$1"; }
     download() { curl -fsSL -o "$2" "$1"; }
@@ -42,15 +44,24 @@ triple() {
         Linux:aarch64 | Linux:arm64) echo aarch64-unknown-linux-gnu ;;
         Darwin:arm64) echo aarch64-apple-darwin ;;
         Darwin:x86_64) echo x86_64-apple-darwin ;;
-        *) fail "no release for ${system} ${machine}; build from source instead" ;;
+        *) fail "no archive for ${system} ${machine}; see the releases page, or build from source" ;;
     esac
 }
 
-# The releases are linked against glibc; on a musl host they would install and then not start.
+# The Linux archives carry the runner's glibc floor (Ubuntu 24.04 → 2.39). Refusing an older
+# loader here is better than installing a binary that the dynamic loader rejects or crashes on.
 require_glibc() {
     [ "$(uname -s)" = Linux ] || return 0
-    if ldd --version 2>&1 | grep -qi musl; then
-        fail "this host is musl and the release is glibc-linked; build from source instead"
+    banner=$(ldd --version 2>&1 | head -n 1)
+    case "${banner}" in
+        *musl*) fail "this host is musl and the archives are glibc-linked; build from source" ;;
+    esac
+    version=$(printf '%s\n' "${banner}" | sed -n 's/.*[^0-9]\([0-9][0-9]*\)\.\([0-9][0-9]*\)$/\1 \2/p')
+    [ -n "${version}" ] || fail "cannot read the glibc version from \`${banner}\`; build from source"
+    major=${version%% *}
+    minor=${version#* }
+    if [ "${major}" -lt 2 ] || { [ "${major}" -eq 2 ] && [ "${minor}" -lt 39 ]; }; then
+        fail "this host has glibc ${major}.${minor} and the archives need 2.39 (built on Ubuntu 24.04); build from source"
     fi
 }
 
@@ -103,6 +114,7 @@ actual=$(digest "${work}/${asset}")
 
 tar -xzf "${work}/${asset}" -C "${work}"
 mkdir -p "${INSTALL_DIR}"
+INSTALL_DIR=$(cd "${INSTALL_DIR}" && pwd -P)
 for binary in thinpack thinpack-rt; do
     install -m 0755 "${work}/${staging}/${binary}" "${INSTALL_DIR}/${binary}"
 done
