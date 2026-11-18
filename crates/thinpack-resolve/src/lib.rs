@@ -59,23 +59,30 @@ pub enum Error {
     Io { path: PathBuf, message: String },
 }
 
+impl Error {
+    /// Renders the error with paths formatted by `render`.
+    ///
+    /// Callers that hand paths to a layer with its own path space — the loader
+    /// names packed payload paths POSIX on every platform — pass their own
+    /// formatter; [`Display`](fmt::Display) renders host paths.
+    pub fn message(&self, render: impl Fn(&Path) -> String) -> String {
+        match self {
+            Self::NotFound => "module not found".to_owned(),
+            Self::NotExported { subpath } => format!("package subpath '{subpath}' is not exported"),
+            Self::Unsupported { path } => {
+                format!("{} is not a supported module type", render(path))
+            }
+            Self::InvalidPackage { path, message } => {
+                format!("invalid {}: {message}", render(path))
+            }
+            Self::Io { path, message } => format!("{}: {message}", render(path)),
+        }
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotFound => formatter.write_str("module not found"),
-            Self::NotExported { subpath } => {
-                write!(formatter, "package subpath '{subpath}' is not exported")
-            }
-            Self::Unsupported { path } => write!(
-                formatter,
-                "{} is not a supported module type",
-                path.display()
-            ),
-            Self::InvalidPackage { path, message } => {
-                write!(formatter, "invalid {}: {message}", path.display())
-            }
-            Self::Io { path, message } => write!(formatter, "{}: {message}", path.display()),
-        }
+        formatter.write_str(&self.message(|path| path.display().to_string()))
     }
 }
 
@@ -554,6 +561,21 @@ mod tests {
             resolve_from(&fs, "./addon.node", "/app/main.js"),
             Err(Error::Unsupported { .. })
         ));
+    }
+
+    #[test]
+    fn errors_render_paths_through_the_caller() {
+        let unsupported = Error::Unsupported {
+            path: PathBuf::from("/app/addon.node"),
+        };
+        assert_eq!(
+            unsupported.to_string(),
+            "/app/addon.node is not a supported module type"
+        );
+        assert_eq!(
+            unsupported.message(|path| path.display().to_string().replace('/', "\\")),
+            "\\app\\addon.node is not a supported module type"
+        );
     }
 
     #[test]

@@ -215,8 +215,12 @@ pub(crate) fn resolve(
     };
 
     let base = parent.as_deref().unwrap_or_else(|| Path::new("/"));
-    let resolved = thinpack_resolve::resolve_import(specifier, base, fs)
-        .map_err(|error| format!("cannot resolve `{specifier}`: {error}"))?;
+    let resolved = thinpack_resolve::resolve_import(specifier, base, fs).map_err(|error| {
+        format!(
+            "cannot resolve `{specifier}`: {}",
+            error.message(|path| fs.js_path(path))
+        )
+    })?;
     let url = file_url(&resolved.path).ok_or_else(|| {
         format!(
             "{} cannot be represented as a URL",
@@ -295,7 +299,9 @@ pub(crate) fn default_source(
                 Ok(Format::Json) => "json",
                 Ok(Format::Esm) => "module",
                 Ok(Format::CommonJs) => "commonjs",
-                Err(error) => return Err(JsErrorBox::generic(error.to_string())),
+                Err(error) => {
+                    return Err(JsErrorBox::generic(error.message(|path| fs.js_path(path))));
+                }
             };
             Ok((format, source))
         }
