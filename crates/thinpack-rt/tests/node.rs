@@ -8,9 +8,10 @@
 //! manifest, so a copied test cannot silently go unexercised.
 //!
 //! The target is `harness = false`; the runner is deliberately small and has
-//! no opinion about test output. Each file runs in its own `thinpack-rt`
+//! no opinion about test output. Each manifest file runs in its own `thinpack-rt`
 //! process with a private `TEST_SERIAL_ID`, which keeps Node's `common/tmpdir`
-//! isolated between concurrent tests.
+//! isolated between concurrent tests. `packed.rs` adds focused Rust-driven cases
+//! that assemble payloads to exercise packed VFS behavior.
 //!
 //! ```text
 //! cargo test -p thinpack-rt --test node                     # everything
@@ -21,8 +22,10 @@
 
 #![allow(
     unused_crate_dependencies,
-    reason = "this target runs the runtime binary and does not use the package's dependencies"
+    reason = "this target drives the runtime binary and uses pack/capability crates only for packed VFS regression cases"
 )]
+
+mod packed;
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
@@ -68,10 +71,13 @@ fn main() -> ExitCode {
 
     if cli.list {
         suite.print_list(&cli);
+        packed::print_list(&cli);
         return ExitCode::SUCCESS;
     }
 
-    if suite.execute(&cli) {
+    let node_passed = suite.execute(&cli);
+    let packed_passed = packed::execute(&cli);
+    if node_passed && packed_passed {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(101)
@@ -178,6 +184,8 @@ struct Test {
     relative: String,
     ignore: Option<String>,
     timeout: Duration,
+    /// Keep an idle stdin pipe open for tests that adopt fd 0 as a socket.
+    stdin_pipe: bool,
     env: BTreeMap<String, String>,
 }
 
@@ -258,6 +266,7 @@ impl Suite {
                 timeout: test
                     .timeout_ms
                     .map_or(DEFAULT_TIMEOUT, Duration::from_millis),
+                stdin_pipe: test.stdin_pipe,
                 env: test.env,
             });
         }
@@ -311,21 +320,29 @@ impl Suite {
     }
 
     fn execute(&self, cli: &Cli) -> bool {
-        let (mut selected, ignored): (Vec<&Test>, Vec<&Test>) = self
+        let matching: Vec<&Test> = self
             .tests
             .iter()
             .filter(|test| cli.matches(&test.name))
-            .partition(|test| cli.ignored != Ignored::Skip || test.ignore.is_none());
-
-        if cli.ignored == Ignored::Only {
-            selected.retain(|test| test.ignore.is_some());
-        }
+            .collect();
+        let (selected, skipped): (Vec<&Test>, Vec<&Test>) = match cli.ignored {
+            Ignored::Skip => matching.into_iter().partition(|test| test.ignore.is_none()),
+            Ignored::Only => (
+                matching
+                    .iter()
+                    .filter(|test| test.ignore.is_some())
+                    .copied()
+                    .collect(),
+                Vec::new(),
+            ),
+            Ignored::Include => (matching, Vec::new()),
+        };
 
         if selected.is_empty() {
             println!(
                 "running 0 tests ({} ignored)\n\ntest result: ok. 0 passed; 0 failed; {} ignored",
-                ignored.len(),
-                ignored.len(),
+                skipped.len(),
+                skipped.len(),
             );
             return true;
         }
@@ -334,7 +351,7 @@ impl Suite {
             "running {} test{} ({} ignored)",
             selected.len(),
             if selected.len() == 1 { "" } else { "s" },
-            ignored.len(),
+            skipped.len(),
         );
 
         let started = Instant::now();
@@ -389,7 +406,7 @@ impl Suite {
         println!(
             "\ntest result: {result}. {passed} passed; {} failed; {} ignored; finished in {:.2}s",
             failures.len(),
-            ignored.len(),
+            skipped.len(),
             elapsed.as_secs_f64(),
         );
         report_slowest(timings.into_inner().expect("timing lock"));
@@ -425,6 +442,8 @@ struct TestConfig {
     ignore: Option<String>,
     #[serde(default)]
     timeout_ms: Option<u64>,
+    #[serde(default)]
+    stdin_pipe: bool,
     #[serde(default)]
     env: BTreeMap<String, String>,
 }
@@ -492,7 +511,11 @@ fn run_test(root: &Path, test: &Test, serial: usize) -> Outcome {
         .env("NO_COLOR", "1")
         .env_remove("NODE_OPTIONS")
         .env_remove("NODE_PATH")
-        .stdin(Stdio::null())
+        .stdin(if test.stdin_pipe {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     for (key, value) in &test.env {
