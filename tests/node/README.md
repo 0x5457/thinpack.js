@@ -44,8 +44,9 @@ Keeping the `compat/test/...` prefix is not cosmetic:
 Test files are byte-for-byte copies from Node.js. Never edit a copied test to
 make it pass; either fix the runtime or add an `ignore` reason to the manifest.
 
-Source checkout: `/home/tw/Work/node`, commit `1c90519c1a8` (Node 27.0.0-dev).
-That is also the version the vendored cluster-adjacent modules are patched from.
+Source checkout: Node.js, commit `1c90519c1a8` (Node 27.0.0-dev), e.g.
+`git clone https://github.com/nodejs/node` at that commit. That is also the
+version the vendored cluster-adjacent modules are patched from.
 
 ## Manifest
 
