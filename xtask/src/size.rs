@@ -9,7 +9,7 @@ const MEASUREMENTS_DIR: &str = "measurements";
 const BINARY_NAME: &str = "thinpack-rt";
 
 #[derive(Clone, Copy)]
-enum Backend {
+pub(crate) enum Backend {
     QuickJs,
     V8,
 }
@@ -37,7 +37,7 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
 }
 
 impl Backend {
-    fn parse(value: &str) -> Option<Self> {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
         match value {
             "quickjs" => Some(Self::QuickJs),
             "v8" => Some(Self::V8),
@@ -45,7 +45,7 @@ impl Backend {
         }
     }
 
-    const fn name(self) -> &'static str {
+    pub(crate) const fn name(self) -> &'static str {
         match self {
             Self::QuickJs => "quickjs",
             Self::V8 => "v8",
@@ -111,7 +111,7 @@ impl Profile {
         }
     }
 
-    const fn name(self) -> &'static str {
+    pub(crate) const fn name(self) -> &'static str {
         match self {
             Self::Release => "release",
             Self::Small => "small",

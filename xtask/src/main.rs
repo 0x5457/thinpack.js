@@ -1,5 +1,7 @@
 mod capabilities;
 
+mod dist;
+
 mod lint;
 
 mod size;
@@ -12,7 +14,8 @@ const USAGE: &str = "\
 Usage: cargo xtask gen [--check]
        cargo xtask lint
        cargo xtask size [--backend <quickjs|v8>] [--profile <release|small|all>]
-                        [--modules <all|core|name,...>]";
+                        [--modules <all|core|name,...>]
+       cargo xtask dist [--backend <quickjs|v8>] [--target <triple>] [--out <dir>]";
 
 /// The workspace root: the parent directory of the `xtask` package.
 ///
@@ -39,6 +42,7 @@ fn main() -> ExitCode {
         "gen" => capabilities::run(&rest),
         "lint" => lint::run(&rest),
         "size" => size::run(&rest),
+        "dist" => dist::run(&rest),
         _ => {
             eprintln!("unknown command `{command}`\n{USAGE}");
             ExitCode::from(2)
