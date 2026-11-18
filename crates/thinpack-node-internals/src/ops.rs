@@ -41,6 +41,7 @@ pub(crate) const OPS: &[OpDecl] = &[
     op_binding_base64_decode(),
     op_binding_base64_slice(),
     op_binding_compare(),
+    op_binding_get_own_non_index_properties(),
     op_binding_hex_decode(),
     op_binding_hex_slice(),
     op_binding_index_of(),
@@ -49,6 +50,7 @@ pub(crate) const OPS: &[OpDecl] = &[
     op_binding_is_ascii(),
     op_binding_is_utf8(),
     op_binding_latin1_slice(),
+    op_binding_latin1_write(),
     op_binding_string_length_utf8(),
     op_binding_swap(),
     op_binding_utf8_length(),
@@ -56,6 +58,64 @@ pub(crate) const OPS: &[OpDecl] = &[
     op_binding_utf8_slice(),
     op_binding_utf8_write(),
 ];
+
+/// `Buffer#write` with `latin1` or `ascii`: Node writes the low byte of every
+/// UTF-16 code unit, so `\u20ac` becomes `0xac`. The op only sees strings the JS
+/// side checked with `String#isWellFormed`: on `QuickJS` the units are recovered
+/// from the string's UTF-8 bytes, which round-trip exactly for those, while an
+/// unpaired surrogate would come back as U+FFFD.
+#[op2(nofast)]
+#[number]
+pub(crate) fn op_binding_latin1_write<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    #[buffer] target: &mut [u8],
+    #[number] offset: usize,
+    #[number] max_bytes: usize,
+    value: v8::Local<'s, v8::String>,
+) -> usize {
+    let start = offset.min(target.len());
+    let written = max_bytes.min(target.len() - start).min(value.length());
+    value.write_one_byte_v2(
+        scope,
+        0,
+        &mut target[start..start + written],
+        v8::WriteFlags::empty(),
+    );
+    written
+}
+
+/// `util.getOwnNonIndexProperties`: own property keys with the array indices
+/// dropped. The engine skips them while collecting, so a typed-array view costs
+/// what an empty object costs; the JS version enumerated every index as a string
+/// and then called `Number()`/`String()` on it to drop it again.
+#[op2]
+pub(crate) fn op_binding_get_own_non_index_properties<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    object: v8::Local<'s, v8::Object>,
+    #[smi] filter: u32,
+) -> v8::Local<'s, v8::Value> {
+    let mut property_filter = v8::PropertyFilter::ALL_PROPERTIES;
+    if filter & ENUMERABLE_ONLY != 0 {
+        property_filter = property_filter | v8::PropertyFilter::ONLY_ENUMERABLE;
+    }
+    if filter & SYMBOLS_SKIPPED != 0 {
+        property_filter = property_filter | v8::PropertyFilter::SKIP_SYMBOLS;
+    }
+    let args = v8::GetPropertyNamesArgs {
+        mode: v8::KeyCollectionMode::OwnOnly,
+        property_filter,
+        index_filter: v8::IndexFilter::SkipIndices,
+        key_conversion: v8::KeyConversionMode::ConvertToString,
+    };
+    object
+        .get_property_names(scope, args)
+        .map_or_else(|| v8::undefined(scope).into(), v8::Local::into)
+}
+
+/// The `util` binding's own filter bits (`node-internal-util.js` exports them as
+/// `constants`); they are not the engine's `PropertyFilter` values.
+const ENUMERABLE_ONLY: u32 = 2;
+const SYMBOLS_SKIPPED: u32 = 8;
 
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

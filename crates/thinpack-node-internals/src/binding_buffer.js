@@ -8,6 +8,9 @@
   const UCS2 = 3;
   const LATIN1 = 4;
 
+  const LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
+  const UCS2_CHUNK = 4096;
+
   // Every op below reads bytes: a `Uint32Array` view of the same memory has to be
   // reduced to its byte representation first, the way Node's binding does.
   const toBytes = (input) => {
@@ -27,6 +30,7 @@
     op_binding_is_ascii,
     op_binding_is_utf8,
     op_binding_latin1_slice,
+    op_binding_latin1_write,
     op_binding_swap,
     op_binding_utf8_length,
     op_binding_utf8_slice,
@@ -43,10 +47,15 @@
   };
   const utf8Decode = (bytes, start, end) =>
     op_binding_utf8_slice(bytes, start, end);
-  // `latin1`, `ascii` and `ucs2` writes stay here: they consume raw UTF-16 code
-  // units (`code & 0xff`), and a JS string may hold unpaired surrogates that the
-  // engine's Rust-facing conversions replace with U+FFFD.
+  // `ucs2` writes stay here: they consume raw UTF-16 code units, and a JS string
+  // may hold unpaired surrogates that the engine's Rust-facing conversions
+  // replace with U+FFFD. The `latin1`/`ascii` write op truncates the units itself,
+  // but on QuickJS it recovers them from the string's UTF-8 bytes, so only a
+  // well-formed string, which round-trips exactly, may take it.
   const latin1WriteInto = (target, offset, maxBytes, string) => {
+    if (string.isWellFormed()) {
+      return op_binding_latin1_write(target, offset, maxBytes, string);
+    }
     const written = Math.min(maxBytes, string.length);
     for (let index = 0; index < written; index += 1) {
       target[offset + index] = string.charCodeAt(index) & 0xff;
@@ -93,11 +102,33 @@
 
   const ucs2Slice = (buffer, start, end) => {
     const bytes = toBytes(buffer);
-    let result = "";
-    for (let index = start; index + 1 < end; index += 2) {
-      result += String.fromCharCode(bytes[index] | (bytes[index + 1] << 8));
+    // A `Uint16Array` view needs an even address, and units stay on the parity of
+    // `start`, so an odd offset cannot be viewed at all.
+    if (
+      !LITTLE_ENDIAN ||
+      start < 0 ||
+      end > bytes.length ||
+      end - start < 2 ||
+      (bytes.byteOffset + start) % 2 !== 0
+    ) {
+      let result = "";
+      for (let index = start; index + 1 < end; index += 2) {
+        result += String.fromCharCode(bytes[index] | (bytes[index + 1] << 8));
+      }
+      return result;
     }
-    return result;
+    const units = new Uint16Array(
+      bytes.buffer,
+      bytes.byteOffset + start,
+      (end - start) >> 1,
+    );
+    const parts = [];
+    for (let offset = 0; offset < units.length; offset += UCS2_CHUNK) {
+      parts.push(
+        String.fromCharCode.apply(null, units.subarray(offset, offset + UCS2_CHUNK)),
+      );
+    }
+    return parts.length === 1 ? parts[0] : parts.join("");
   };
 
   const writeBase64 = (buffer, string, offset, length) => {

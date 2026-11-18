@@ -1,38 +1,15 @@
 (() => {
   const types = require("node:thinpack/internal/binding/types");
   const { codes } = require("node:thinpack/internal/errors");
+  const { op_binding_get_own_non_index_properties } = Deno.core.ops;
   const ALL_PROPERTIES = 0;
   const ONLY_ENUMERABLE = 2;
   const SKIP_SYMBOLS = 8;
   const kPending = 0;
   const kRejected = 1;
-  const isArrayIndex = (key) => {
-    if (typeof key !== "string") return false;
-    if (key.length === 0 || key.length > 10) return false;
-    const index = Number(key);
-    return (
-      Number.isInteger(index) &&
-      index >= 0 &&
-      index < 4294967295 &&
-      String(index) === key
-    );
-  };
 
-  const getOwnNonIndexProperties = (object, filter) => {
-    const keys = [];
-    for (const key of Reflect.ownKeys(object)) {
-      if (isArrayIndex(key)) continue;
-      if ((filter & SKIP_SYMBOLS) !== 0 && typeof key === "symbol") continue;
-      if (
-        (filter & ONLY_ENUMERABLE) !== 0 &&
-        !Object.getOwnPropertyDescriptor(object, key).enumerable
-      ) {
-        continue;
-      }
-      keys.push(key);
-    }
-    return keys;
-  };
+  const getOwnNonIndexProperties = (object, filter) =>
+    op_binding_get_own_non_index_properties(object, filter);
   const getConstructorName = (object) => {
     let current = object;
     while (current !== null) {
