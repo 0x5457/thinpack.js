@@ -20,62 +20,14 @@
     );
   };
 
-  const REPLACEMENT = "\ufffd";
+  const { op_binding_utf8_slice, op_binding_utf8_units, op_binding_utf8_write } =
+    Deno.core.ops;
+
+  // `TextDecoder` drops a leading BOM unless `ignoreBOM` is set; decoding itself
+  // is the buffer binding's maximal-subpart replacement, not one U+FFFD per byte.
   const decodeUtf8 = (bytes) => {
-    let index = 0;
-    let out = "";
-    if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
-      index = 3;
-    }
-    while (index < bytes.length) {
-      const first = bytes[index];
-      if (first < 0x80) {
-        out += String.fromCharCode(first);
-        index += 1;
-        continue;
-      }
-
-      let needed;
-      let code;
-      let minimum;
-      if ((first & 0xe0) === 0xc0) {
-        needed = 1;
-        code = first & 0x1f;
-        minimum = 0x80;
-      } else if ((first & 0xf0) === 0xe0) {
-        needed = 2;
-        code = first & 0x0f;
-        minimum = 0x800;
-      } else if ((first & 0xf8) === 0xf0) {
-        needed = 3;
-        code = first & 0x07;
-        minimum = 0x10000;
-      } else {
-        out += REPLACEMENT;
-        index += 1;
-        continue;
-      }
-
-      let valid = true;
-      for (let offset = 1; offset <= needed; offset += 1) {
-        const byte = bytes[index + offset];
-        if (byte === undefined || (byte & 0xc0) !== 0x80) {
-          valid = false;
-          break;
-        }
-        code = (code << 6) | (byte & 0x3f);
-      }
-      const validCode = code >= minimum && code <= 0x10ffff &&
-        !(code >= 0xd800 && code <= 0xdfff);
-      if (!valid || !validCode) {
-        out += REPLACEMENT;
-        index += 1;
-        continue;
-      }
-      out += String.fromCodePoint(code);
-      index += needed + 1;
-    }
-    return out;
+    const decoded = op_binding_utf8_slice(bytes, 0, bytes.length);
+    return decoded.charCodeAt(0) === 0xfeff ? decoded.slice(1) : decoded;
   };
 
   const decodeUtf16le = (bytes) => {
@@ -128,10 +80,12 @@
     }
 
     encodeInto(source, destination) {
-      const bytes = Buffer.from(String(source), "utf8");
-      const written = Math.min(bytes.length, destination.length);
-      destination.set(bytes.subarray(0, written));
-      return { read: String(source).length, written };
+      const text = String(source);
+      const written = op_binding_utf8_write(destination, 0, destination.length, text);
+      return {
+        read: op_binding_utf8_units(destination.subarray(0, written)),
+        written,
+      };
     }
   }
 
