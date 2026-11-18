@@ -15,7 +15,7 @@
     blue: "\u001b[34m",
     magenta: "\u001b[35m",
     cyan: "\u001b[36m",
-    white: "\u001b[39m",
+    white: "\u001b[37m",
     gray: "\u001b[90m",
     grey: "\u001b[90m",
     bgBlack: "\u001b[40m",

@@ -753,10 +753,20 @@ pub fn take_stream(id: u32) -> Result<TcpStream, TakeStreamError> {
     };
     let stream = match transport {
         Transport::Tcp(stream) => stream,
-        #[cfg(unix)]
-        Transport::Stream(_) | Transport::Pipe(_) => return Err(TakeStreamError::NotTcp),
-        #[cfg(windows)]
-        Transport::Pipe(_) => return Err(TakeStreamError::NotTcp),
+        // NotTcp is a caller error, not a socket death: put the connection back
+        // like the Busy branch so the handle stays owned and usable instead of
+        // silently closing the fd under the JS socket that still references it.
+        transport => {
+            table().lock().expect("connection table").insert(
+                id,
+                Connection {
+                    stream: Arc::new(transport),
+                    local,
+                    remote,
+                },
+            );
+            return Err(TakeStreamError::NotTcp);
+        }
     };
     let stream = stream.into_std().map_err(TakeStreamError::Io)?;
     TcpStream::from_std(stream).map_err(TakeStreamError::Io)

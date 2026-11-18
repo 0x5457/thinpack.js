@@ -1,5 +1,11 @@
 // Vendored from Node.js v26.13.1 lib/fs.js (MIT, https://github.com/nodejs/node).
 // Patched: require("internal/...") -> require("node:thinpack/internal/...").
+// Patched: glob() runs ArrayFromAsync(Glob#glob()) instead of Glob#globAll()
+//   and checks fs.read permission up front so the lstat walk cannot probe
+//   outside the granted set.
+// Patched: mkdtemp() drops the Buffer-prefix encoding override.
+// Patched: openAsBlob()/openAsBlobSync() read the file eagerly and build a
+//   memory-resident Blob (Node's file-backed blob handle is not implemented).
 
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -811,8 +817,12 @@ function openAsBlob(path, options = kEmptyObject) {
   // To give ourselves flexibility to maybe return the Blob asynchronously,
   // this API returns a Promise.
   path = getValidatedPath(path);
-  const { createBlobFromFilePath } = require('node:thinpack/internal/blob');
-  return PromiseResolve(createBlobFromFilePath(path, { type }));
+  const { Blob } = require('node:thinpack/internal/blob');
+  // Node keeps the blob file-backed and reads lazily; the file-backed handle is
+  // not implemented here, so the file is read into memory eagerly instead and
+  // read failures surface the real fs error rather than a misleading
+  // NotReadableError.
+  return PromiseResolve(new Blob([readFileSync(path)], { type }));
 }
 
 /**
@@ -834,8 +844,9 @@ function openAsBlobSync(path, options = kEmptyObject) {
     if (result !== undefined) return result;
   }
 
-  const { createBlobFromFilePath } = require('node:thinpack/internal/blob');
-  return createBlobFromFilePath(path, { type });
+  const { Blob } = require('node:thinpack/internal/blob');
+  // As with openAsBlob(): the file is read eagerly into a memory-resident Blob.
+  return new Blob([readFileSync(path)], { type });
 }
 
 /**

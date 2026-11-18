@@ -87,7 +87,15 @@
         if (this.#unrefed) core.unrefOpPromise(promise);
         const bytes = await promise;
         this.#waiting = null;
-        if (bytes.length === 0) break;
+        if (bytes.length === 0) {
+          // An empty read means the channel closed; when the peer initiated it,
+          // Node still fires `close` on this end.
+          if (!this.#closed) {
+            this.#closed = true;
+            this.emit("close");
+          }
+          break;
+        }
         this.emit("message", core.deserialize(bytes, { deserializers }));
       }
     }
@@ -183,12 +191,12 @@
       const promise = ops.op_worker_exit(this.#id);
       this.#waiting = promise;
       if (this.#unrefed) core.unrefOpPromise(promise);
-      promise.then(() => {
+      promise.then((code) => {
         this.#waiting = null;
         this.#port.close();
         const message = ops.op_worker_error(this.#id);
         if (message !== "") this.emit("error", new Error(message));
-        this.emit("exit", 0);
+        this.emit("exit", code);
       });
     }
 
@@ -240,13 +248,15 @@
     workerData,
     parentPort,
     SHARE_ENV: Symbol("SHARE_ENV"),
-    markAsUncloneable(value) {
-      return value;
+    markAsUncloneable() {
+      throw notImplemented("markAsUncloneable");
     },
     getEnvironmentData() {
-      return undefined;
+      throw notImplemented("getEnvironmentData");
     },
-    setEnvironmentData() {},
+    setEnvironmentData() {
+      throw notImplemented("setEnvironmentData");
+    },
     receiveMessageOnPort,
     MessageChannel,
     MessagePort,

@@ -497,7 +497,16 @@
         this.push(null);
         this.read(0);
       } else if (kind === EVENT_CLOSE) {
-        if (!this.#localClosed) this.rstCode = readUInt32(event, 1);
+        const reason = readUInt32(event, 1);
+        if (!this.#localClosed) this.rstCode = reason;
+        if (reason !== 0 && !this.#localClosed) {
+          // Mirror the server twin: a peer-sent RST ends the readable side,
+          // settles a pending end(), and destroys the stream.
+          this.aborted = true;
+          this.push(null);
+          this.destroy();
+          return false;
+        }
       } else if (kind === EVENT_ERROR) {
         this.destroy(
           http2Error(
@@ -627,7 +636,8 @@
           this.#queued.clear();
           this.#pump();
           this.emit("connect", this, socket);
-          this.emit("remoteSettings", { ...DEFAULT_SETTINGS });
+          // The ops layer never surfaces the peer's SETTINGS frame; not emitting
+          // "remoteSettings" is honest, broadcasting defaults would not be.
         })
         .catch((error) => {
           const failure = opError(error);
@@ -690,11 +700,12 @@
         this.once("connect", () => this.ping(callback, payload));
         return;
       }
+      const start = Date.now();
       Deno.core.ops
         .op_http2_ping(this.#id)
         .then(() => {
           if (typeof callback === "function") {
-            process.nextTick(callback, null, 0, payload ?? Buffer.alloc(8));
+            process.nextTick(callback, null, Date.now() - start, payload ?? Buffer.alloc(8));
           }
         })
         .catch((error) => {
@@ -704,6 +715,10 @@
     }
     settings(settings, callback) {
       if (typeof settings === "function") callback = settings;
+      else if (settings !== undefined) {
+        // The ops layer cannot send a SETTINGS frame; refuse to pretend one was applied.
+        throw notImplemented("http2 session.settings with a settings object");
+      }
       if (typeof callback === "function") process.nextTick(callback);
     }
 
@@ -997,11 +1012,12 @@
     }
 
     ping(callback) {
+      const start = Date.now();
       Deno.core.ops
         .op_http2_ping(this.#id)
         .then(() => {
           if (typeof callback === "function") {
-            process.nextTick(callback, null, 0, Buffer.alloc(8));
+            process.nextTick(callback, null, Date.now() - start, Buffer.alloc(8));
           }
         })
         .catch((error) => {
@@ -1015,6 +1031,10 @@
 
     settings(settings, callback) {
       if (typeof settings === "function") callback = settings;
+      else if (settings !== undefined) {
+        // The ops layer cannot send a SETTINGS frame; refuse to pretend one was applied.
+        throw notImplemented("http2 session.settings with a settings object");
+      }
       if (typeof callback === "function") process.nextTick(callback);
     }
 

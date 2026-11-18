@@ -1,5 +1,5 @@
 (() => {
-  const { codes } = require("node:thinpack/internal/errors");
+  const { codes, opError } = require("node:thinpack/internal/errors");
 
   const ipcError = (code, message) => {
     const error = new Error(message);
@@ -21,17 +21,22 @@
     const port = Number(process.env.NODE_CHANNEL_PORT);
     const fd = Number(process.env.NODE_CHANNEL_FD);
     let id;
+    // The adopted channel descriptor: real on unix, where the channel is the fd the
+    // primary dup'd into the child; the Windows loopback TCP channel has no descriptor.
+    let channelFd = -1;
     if (Number.isInteger(port) && port > 0) {
       delete process.env.NODE_CHANNEL_PORT;
       id = Deno.core.ops.op_cluster_channel_adopt_port(port);
     } else if (Number.isInteger(fd) && fd >= 0) {
       delete process.env.NODE_CHANNEL_FD;
+      channelFd = fd;
       id = Deno.core.ops.op_cluster_channel_adopt(fd);
     } else {
       throw ipcError("ERR_IPC_DISCONNECTED", "no IPC channel for this cluster worker");
     }
     state = {
       id,
+      fd: channelFd,
       connected: true,
       closed: false,
       callbacks: new Map(),
@@ -59,7 +64,7 @@
         disconnect();
       },
       get fd() {
-        return -1;
+        return state.fd;
       },
     };
     process.send = send;
@@ -97,7 +102,13 @@
         state.read = Deno.core.ops.op_cluster_channel_read(state.id);
         if (!state.refed) Deno.core.unrefOpPromise(state.read);
         frame = await state.read;
-      } catch {
+      } catch (error) {
+        // A frame read error means the peer broke the channel (or died
+        // mid-frame); surface it instead of reporting a silent disconnect.
+        // A read that fails because this side already closed the channel is
+        // that disconnect itself, not a peer failure.
+        if (state === null || state.closed) break;
+        process.emit("error", opError(error));
         break;
       }
       state.read = null;

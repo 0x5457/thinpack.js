@@ -588,6 +588,26 @@
   });
 
   globalThis.process = process;
+  // Compat marker, only present when the build includes `node:crypto`: the value
+  // is the OpenSSL version bundled with Node 26.13.1. This runtime's crypto is
+  // Rust crates (ring/aes), not OpenSSL, but consumers such as
+  // `util.isKeyObject` gate on the field being set. The builtin list is read
+  // lazily because this startup script runs before the loader's op state
+  // carries it.
+  Object.defineProperty(process.versions, "openssl", {
+    enumerable: true,
+    configurable: true,
+    get() {
+      const value = globalThis.__thinpack_builtin_modules.includes("node:crypto")
+        ? "3.5.9"
+        : undefined;
+      Object.defineProperty(process.versions, "openssl", {
+        value,
+        enumerable: true,
+      });
+      return value;
+    },
+  });
   __thinpack_on_finish(restoreTerminal);
   __thinpack_on_finish(() => {
     if (exiting) return;

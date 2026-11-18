@@ -1,4 +1,5 @@
 (() => {
+  const { codes } = require("node:thinpack/internal/errors");
   const homedir = () => {
     const environment = process.platform === "win32"
       ? process.env.USERPROFILE
@@ -20,10 +21,14 @@
   const os = {
     arch: () => process.arch,
     platform: () => process.platform,
-    type: () => {
-      if (process.platform === "win32") return "Windows_NT";
-      return process.platform === "linux" ? "Linux" : process.platform;
-    },
+    type: () => ({
+      win32: "Windows_NT",
+      linux: "Linux",
+      darwin: "Darwin",
+      freebsd: "FreeBSD",
+      openbsd: "OpenBSD",
+      sunos: "SunOS",
+    })[process.platform] ?? process.platform,
     release: () => release,
     version: () => version,
     hostname: () => hostname,
@@ -59,13 +64,17 @@
     freemem: () => freemem,
     uptime: () => uptime,
     loadavg: () => loadavg,
-    userInfo: () => ({
-      uid: process.getuid(),
-      gid: process.getgid(),
-      username: process.env.USER || "unknown",
-      homedir: homedir(),
-      shell: process.env.SHELL || "/bin/sh",
-    }),
+    userInfo: () => {
+      // Windows has no uid/gid; Node reports -1 there (and no shell).
+      const isWindows = process.platform === "win32";
+      return {
+        uid: isWindows ? -1 : process.getuid(),
+        gid: isWindows ? -1 : process.getgid(),
+        username: process.env.USER || "unknown",
+        homedir: homedir(),
+        shell: isWindows ? null : (process.env.SHELL || "/bin/sh"),
+      };
+    },
     networkInterfaces: () => {
       const result = {};
       const raw = Deno.core.ops.op_os_network_interfaces();
@@ -90,8 +99,14 @@
     machine: () => ({ x64: "x86_64", arm64: "aarch64", ia32: "i386" })[process.arch] ?? process.arch,
     availableParallelism: () => cpuCount,
     constants,
-    getPriority: () => 0,
-    setPriority: () => {},
+    // `os.constants.priority` is not implemented; the priority accessors are
+    // loud instead of reporting fabricated values.
+    getPriority: () => {
+      throw new codes.ERR_NOT_IMPLEMENTED("os.getPriority");
+    },
+    setPriority: () => {
+      throw new codes.ERR_NOT_IMPLEMENTED("os.setPriority");
+    },
   };
 
   Object.defineProperty(os, "EOL", {

@@ -63,7 +63,7 @@ fn main() -> ExitCode {
             }
         };
     }
-    if let Some(pack) = &packed {
+    if let Some(pack) = packed {
         return runtime::run_packed(pack);
     }
     if args.is_empty() {

@@ -23,6 +23,18 @@
     SIGTTOU: 22, SIGUSR1: 10, SIGUSR2: 12, SIGVTALRM: 26, SIGXCPU: 24,
     SIGXFSZ: 25,
   };
+  const SIGNAL_NAMES = {};
+  for (const [name, number] of Object.entries(SIGNALS)) SIGNAL_NAMES[number] = name;
+
+  const signalName = (signal) =>
+    signal > 0 ? (SIGNAL_NAMES[signal] ?? `SIG${signal}`) : null;
+
+  // `exec` runs the command through the platform shell; Windows resolves the shell the
+  // way Node does, through ComSpec.
+  const shell = () =>
+    process.platform === "win32"
+      ? [process.env.ComSpec ?? "cmd.exe", "/d", "/s", "/c"]
+      : ["/bin/sh", "-c"];
 
   const signalNumber = (signal) => {
     if (signal === undefined || signal === null) return SIGNALS.SIGTERM;
@@ -85,11 +97,13 @@
       this.stdin = this.#stdinPipe();
       queueMicrotask(() => this.emit("spawn"));
 
-      const wait = Deno.core.ops.op_child_wait(id).then((code) => {
-        this.exitCode = code;
-        this.emit("exit", code, null);
+      const wait = Deno.core.ops.op_child_wait(id).then((payload) => {
+        const [code, signal] = payload.split("\0").map(Number);
+        this.exitCode = code >= 0 ? code : null;
+        this.signalCode = signalName(signal);
+        this.emit("exit", this.exitCode, this.signalCode);
         return Promise.all([this.#stdoutDone, this.#stderrDone]).then(() => {
-          this.emit("close", code, null);
+          this.emit("close", this.exitCode, this.signalCode);
         });
       });
       wait.catch((error) => this.emit("error", spawnError(error, this.spawnfile)));
@@ -215,7 +229,8 @@
       callback = options;
       options = {};
     }
-    return execFile("/bin/sh", ["-c", String(command)], options, callback);
+    const [file, ...flags] = shell();
+    return execFile(file, [...flags, String(command)], options, callback);
   };
 
   const runSync = (file, args, options = {}) => {
@@ -232,19 +247,23 @@
       return { error: spawnError(error, String(file)), status: null, signal: null, stdout: null, stderr: null };
     }
     const buffer = Buffer.from(payload.buffer ?? payload, payload.byteOffset ?? 0, payload.byteLength);
+    // Header layout: status (i32), signal (i32), pid (u32), stdout length (u32),
+    // stderr length (u32), all little-endian; then the two outputs.
     const status = buffer.readInt32LE(0);
-    const stdoutLength = buffer.readUInt32LE(4);
-    const stderrLength = buffer.readUInt32LE(8);
-    const stdout = Buffer.from(buffer.subarray(12, 12 + stdoutLength));
-    const stderr = Buffer.from(buffer.subarray(12 + stdoutLength, 12 + stdoutLength + stderrLength));
+    const signal = signalName(buffer.readInt32LE(4));
+    const pid = buffer.readUInt32LE(8);
+    const stdoutLength = buffer.readUInt32LE(12);
+    const stderrLength = buffer.readUInt32LE(16);
+    const stdout = Buffer.from(buffer.subarray(20, 20 + stdoutLength));
+    const stderr = Buffer.from(buffer.subarray(20 + stdoutLength, 20 + stdoutLength + stderrLength));
     const encoding = options.encoding;
     return {
-      status,
-      signal: null,
+      status: status >= 0 ? status : null,
+      signal,
       stdout: encoding ? stdout.toString(encoding) : stdout,
       stderr: encoding ? stderr.toString(encoding) : stderr,
       output: [null, stdout, stderr],
-      pid: 0,
+      pid,
       error: undefined,
     };
   };
@@ -279,7 +298,8 @@
   };
 
   const execSync = (command, options = {}) => {
-    const result = runSync("/bin/sh", ["-c", String(command)], options);
+    const [file, ...flags] = shell();
+    const result = runSync(file, [...flags, String(command)], options);
     if (result.error) throw result.error;
     if (result.status !== 0) {
       const error = new Error(`Command failed: ${command}`);

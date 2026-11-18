@@ -2,9 +2,10 @@ use std::error::Error;
 use std::fs;
 use std::io;
 use std::io::Cursor;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use thinpack_analyze::Analysis;
+use thinpack_caps::Module;
 use thinpack_pack::{AssetRecord, Compression, FileRecord, Manifest};
 
 use crate::options::AssetInput;
@@ -40,14 +41,13 @@ pub(crate) fn project_root(entry: &Path) -> Result<PathBuf, Box<dyn Error>> {
 pub(crate) fn build(
     root: &Path,
     entry: &Path,
-    capabilities: &[String],
+    capabilities: &[&'static Module],
     info: &TemplateInfo,
     analysis: &Analysis,
     assets: &[AssetInput],
 ) -> Result<Bundle, Box<dyn Error>> {
     let mut files = collect_analysis_files(root, analysis)?;
     files.extend(collect_package_json(root, &files)?);
-    bound_source_lines(&mut files);
     files.sort_by(|left, right| left.path.cmp(&right.path));
 
     let (mut manifest, mut blob) = build_manifest(root, entry, capabilities, info, &files);
@@ -160,7 +160,11 @@ fn collect_package_json(
             let path = entry.path();
             let metadata = entry.metadata()?;
             if metadata.is_dir() {
-                stack.push(path);
+                // `.git` and cargo's `target` never carry a packed
+                // `package.json`; skipping them keeps the walk off large trees.
+                if entry.file_name() != ".git" && entry.file_name() != "target" {
+                    stack.push(path);
+                }
             } else if metadata.is_file()
                 && path.file_name().is_some_and(|name| name == "package.json")
             {
@@ -178,31 +182,29 @@ fn collect_package_json(
     Ok(files)
 }
 
-fn bound_source_lines(files: &mut [PackedFile]) {
-    for file in files.iter_mut() {
-        if !matches!(
-            Path::new(&file.path)
-                .extension()
-                .and_then(|extension| extension.to_str()),
-            Some("js" | "cjs" | "mjs")
-        ) {
-            continue;
-        }
-        let Ok(source) = std::str::from_utf8(&file.contents) else {
-            continue;
-        };
-        if let Some(bounded) = thinpack_analyze::bound_lines(
-            source,
-            Path::new(&file.path),
-            thinpack_analyze::LINE_LIMIT,
-        ) {
-            file.contents = bounded.into_bytes();
+/// Lexically removes `.` components and resolves `..`, the same semantics the
+/// runtime's virtual-path lookup applies when it resolves a specifier.
+pub(crate) fn normalize(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other),
         }
     }
+    normalized
 }
 
+/// Maps a host path under `root` to its `/app` virtual path. This is the one
+/// place that builds virtual paths, so `.` and `..` components never reach a
+/// manifest record: the runtime's lookup normalizes specifiers, and a record
+/// that kept them would never be found.
 fn virtual_path(root: &Path, path: &Path) -> String {
-    let relative = path.strip_prefix(root).unwrap_or(path);
+    let root = normalize(root);
+    let relative = normalize(path.strip_prefix(&root).unwrap_or(path));
     format!("/app/{}", relative.to_string_lossy().replace('\\', "/"))
 }
 
@@ -219,7 +221,7 @@ const fn record_length(contents: &[u8]) -> u32 {
 fn build_manifest(
     root: &Path,
     entry: &Path,
-    capabilities: &[String],
+    capabilities: &[&'static Module],
     info: &TemplateInfo,
     files: &[PackedFile],
 ) -> (Manifest, Vec<u8>) {
@@ -236,7 +238,10 @@ fn build_manifest(
     }
     let manifest = Manifest {
         entry: virtual_path(root, entry),
-        capabilities: capabilities.to_vec(),
+        capabilities: capabilities
+            .iter()
+            .map(|module| module.name.to_owned())
+            .collect(),
         template: thinpack_pack::Template {
             version: info.version.clone(),
             backend: info.backend.clone(),

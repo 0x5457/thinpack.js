@@ -204,7 +204,7 @@ pub(crate) fn op_process_ids() -> String {
     ids()
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn memory() -> String {
     let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
     let rss_kib = status
@@ -214,6 +214,44 @@ fn memory() -> String {
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(0);
     format!("{}\0\0\0\0\0", rss_kib * 1024)
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+#[cfg(target_vendor = "apple")]
+fn memory() -> String {
+    // No `/proc` here; `task_info` on the current task reports the real current
+    // resident size.
+    // SAFETY: `mach_task_basic_info_data_t` is a plain-data struct for which
+    // all-zero is a valid value.
+    let mut info: libc::mach_task_basic_info_data_t = unsafe { std::mem::zeroed() };
+    let mut count = libc::MACH_TASK_BASIC_INFO_COUNT;
+    // SAFETY: `task_info` writes `mach_task_basic_info` into the zeroed buffer,
+    // bounded by `count`; `mach_task_self` is always a valid port.
+    let current_rss = unsafe {
+        libc::task_info(
+            libc::mach_task_self(),
+            libc::MACH_TASK_BASIC_INFO,
+            (&raw mut info).cast(),
+            &raw mut count,
+        )
+    } == libc::KERN_SUCCESS;
+    if current_rss {
+        format!("{}\0\0\0\0\0", info.resident_size)
+    } else {
+        // `task_info` on the current task cannot realistically fail; if it ever
+        // does, fall back to `ru_maxrss` (bytes on macOS) — a high-water mark
+        // rather than a fake zero.
+        format!("{}\0\0\0\0\0", rusage().map_or(0, |usage| usage.ru_maxrss))
+    }
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+#[cfg(not(target_vendor = "apple"))]
+fn memory() -> String {
+    // No `/proc` and no lightweight current-RSS call here; `ru_maxrss` (KiB) is a
+    // high-water approximation of the resident size, not a fake zero.
+    let rss = rusage().map_or(0, |usage| usage.ru_maxrss * 1024);
+    format!("{rss}\0\0\0\0\0")
 }
 
 #[cfg(windows)]

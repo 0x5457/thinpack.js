@@ -260,7 +260,7 @@ pub(crate) fn op_sqlite_create_module(
     let declaration = CString::new(declaration).map_err(|_| {
         error(
             "ERR_INVALID_ARG_VALUE",
-            "The column name contains a null byte.",
+            "The module declaration contains a null byte.",
         )
     })?;
     let registration = Box::new(Registration {

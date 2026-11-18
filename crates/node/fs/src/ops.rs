@@ -674,6 +674,9 @@ fn op_fs_readdir(
         };
         entries.push((name, kind));
     }
+    // Node returns readdir(3) order (directory order); this sorts byte-wise instead
+    // so results are deterministic across filesystems. The divergence is
+    // observable in the entry order.
     entries.sort_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
     let mut fields: Vec<String> = Vec::new();
     for (name, kind) in entries {

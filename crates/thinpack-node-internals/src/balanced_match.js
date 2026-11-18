@@ -1,4 +1,5 @@
-// Vendored from npm balanced-match@4.0.2 dist/commonjs/index.js (MIT).
+// Vendored from npm balanced-match@4.0.2 (MIT).
+// Patched: upstream require("../...") / require("minimatch/...") rewrites -> require("node:thinpack/internal/deps/...").
 
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });

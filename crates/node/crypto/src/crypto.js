@@ -311,6 +311,10 @@
     for (const mode of ["gcm", "cbc", "ctr"]) CIPHERS.push(`aes-${bits}-${mode}`);
   }
 
+  // Deviation from Node: Cipheriv/Decipheriv buffer every update() and emit
+  // all output (plus the GCM tag) at final(), where the one-shot
+  // op_crypto_cipher runs over the accumulated data; the ops layer exposes
+  // no incremental cipher state for true streaming.
   class Cipheriv extends Transform {
     #spec;
     #key;
@@ -617,18 +621,33 @@
     return Buffer.from(bytes);
   };
 
+  // The async KDF forms keep their callback contract: argument errors reach
+  // the callback rather than the caller, while the derivation itself runs in
+  // a blocking task off the event loop.
+  const kdfAsync = (start, callback) => {
+    queueMicrotask(() => {
+      let task;
+      try {
+        task = start();
+      } catch (error) {
+        callback(opFailure(error));
+        return;
+      }
+      task.then(
+        (bytes) => callback(null, Buffer.from(bytes)),
+        (error) => callback(opFailure(error)),
+      );
+    });
+  };
+
   const pbkdf2 = (password, salt, iterations, keylen, digest, callback) => {
     if (typeof digest === "function") {
       callback = digest;
       digest = "sha1";
     }
-    queueMicrotask(() => {
-      try {
-        callback(null, pbkdf2Sync(password, salt, iterations, keylen, digest));
-      } catch (error) {
-        callback(opFailure(error));
-      }
-    });
+    kdfAsync(() => Deno.core.ops.op_crypto_pbkdf2_async(
+      String(digest), decode(password), decode(salt), iterations, keylen,
+    ), callback);
   };
 
   const scryptParams = (options = {}) => {
@@ -660,13 +679,12 @@
       callback = options;
       options = {};
     }
-    queueMicrotask(() => {
-      try {
-        callback(null, scryptSync(password, salt, keylen, options));
-      } catch (error) {
-        callback(opFailure(error));
-      }
-    });
+    kdfAsync(() => {
+      const [logN, r, p] = scryptParams(options);
+      return Deno.core.ops.op_crypto_scrypt_async(
+        decode(password), decode(salt), logN, r, p, keylen,
+      );
+    }, callback);
   };
 
   const hkdfSync = (digest, ikm, salt, info, keylen) => {
@@ -681,13 +699,9 @@
   };
 
   const hkdf = (digest, ikm, salt, info, keylen, callback) => {
-    queueMicrotask(() => {
-      try {
-        callback(null, hkdfSync(digest, ikm, salt, info, keylen));
-      } catch (error) {
-        callback(opFailure(error));
-      }
-    });
+    kdfAsync(() => Deno.core.ops.op_crypto_hkdf_async(
+      String(digest), decode(ikm), decode(salt), decode(info), keylen,
+    ), callback);
   };
 
   const randomFill = (buffer, offset, size, callback) => {

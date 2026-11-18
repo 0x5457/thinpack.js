@@ -19,16 +19,25 @@
       addDeserializeCallback() {},
       setDeserializeMainFunction() {},
     },
-    getHeapStatistics: () => ({
-      total_heap_size: 0,
-      used_heap_size: 0,
-      external_memory: 0,
-      heap_size_limit: 0,
-    }),
+    getHeapStatistics: () => {
+      // The engine binding reports real heap usage on both backends
+      // (`JS_ComputeMemoryUsage` under QuickJS, V8's `GetHeapStatistics`
+      // under the V8 backend); it exposes no limit/peak counters, so
+      // `heap_size_limit` stays an honest zero.
+      const { heapTotal, heapUsed, external } = Deno.core.memoryUsage();
+      return {
+        total_heap_size: heapTotal,
+        used_heap_size: heapUsed,
+        external_memory: external,
+        heap_size_limit: 0,
+      };
+    },
     getHeapSpaceStatistics: () => [],
     cachedDataVersionTag: () => 0,
     setFlagsFromString() {},
-    getV8Version: () => "v8x",
+    // The V8 masquerade string is owned by `process.versions.v8`; reading it
+    // back keeps `getV8Version()` and `process.versions.v8` consistent.
+    getV8Version: () => process.versions.v8,
     Serializer() {
       throw new codes.ERR_NOT_IMPLEMENTED("v8.Serializer");
     },

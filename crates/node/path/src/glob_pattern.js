@@ -45,7 +45,6 @@ function matchGlobPattern(path, pattern, windows = isWindows) {
     matcher = patternFnCache.get(cacheKey);
   } else {
     matcher = createMatcher(pattern, {
-      kEmptyObject,
       platform: windows ? 'win32' : 'posix',
     });
     patternFnCache.set(cacheKey, matcher);

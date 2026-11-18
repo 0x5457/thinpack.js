@@ -54,7 +54,13 @@
     warn(...values) { this.#write(true, values); }
     error(...values) { this.#write(true, values); }
     dir(value) { this.#write(false, [value]); }
-    trace(...values) { this.#write(true, ["Trace:", ...values]); }
+    trace(...values) {
+      // Node renders a synthetic error's default stack, which formats as
+      // "Trace: <formatted args>" followed by the captured frames.
+      const error = { name: "Trace", message: format(...values) };
+      Error.captureStackTrace(error, this.trace);
+      this.error(error.stack);
+    }
 
     assert(condition, ...values) {
       if (!condition) this.#write(true, ["Assertion failed:", ...values]);
@@ -66,20 +72,32 @@
       this.log(`${label}: ${count}`);
     }
 
-    countReset(label = "default") { this.#counts.delete(label); }
+    countReset(label = "default") {
+      if (!this.#counts.has(label)) {
+        process.emitWarning(`Count for '${label}' does not exist`);
+        return;
+      }
+      this.#counts.delete(label);
+    }
 
     time(label = "default") { this.#times.set(label, Date.now()); }
 
     timeEnd(label = "default") {
       const start = this.#times.get(label);
-      if (start === undefined) return;
+      if (start === undefined) {
+        process.emitWarning(`No such label '${label}' for console.timeEnd()`);
+        return;
+      }
       this.#times.delete(label);
       this.log(`${label}: ${Date.now() - start}ms`);
     }
 
     timeLog(label = "default", ...values) {
       const start = this.#times.get(label);
-      if (start === undefined) return;
+      if (start === undefined) {
+        process.emitWarning(`No such label '${label}' for console.timeLog()`);
+        return;
+      }
       this.log(`${label}: ${Date.now() - start}ms`, ...values);
     }
 
@@ -91,6 +109,9 @@
     groupCollapsed(...values) { this.group(...values); }
     groupEnd() { this.#groups = Math.max(0, this.#groups - 1); }
 
+    // Deviation from Node: table() prints plain formatted output instead of
+    // Node's ASCII table, whose renderer (internal/cli_table plus
+    // getStringWidth) is not vendored here.
     table(data) { this.#write(false, [data]); }
     clear() { this.#write(false, ["\x1b[2J\x1b[H"]); }
   }

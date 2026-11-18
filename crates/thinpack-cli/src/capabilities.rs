@@ -3,19 +3,25 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 
 use thinpack_analyze::Analysis;
+use thinpack_caps::Module;
 
-use crate::bundle::project_root;
+use crate::bundle::{normalize, project_root};
 use crate::options::Options;
 
 pub(crate) struct Analyzed {
     pub entry: PathBuf,
     pub root: PathBuf,
     pub analysis: Analysis,
-    pub capabilities: Vec<String>,
+    pub capabilities: Vec<&'static Module>,
 }
 
 pub(crate) fn analyze_entry(options: &Options) -> Result<Analyzed, Box<dyn Error>> {
-    let entry = std::path::absolute(options.entry.as_ref().expect("entry checked"))?;
+    // `absolute` keeps `..` components; a manifest record built from them would
+    // never match the runtime's normalized lookup, so the whole pipeline works
+    // on lexically clean paths.
+    let entry = normalize(&std::path::absolute(
+        options.entry.as_ref().expect("entry checked"),
+    )?);
     let root = project_root(&entry)?;
     let mut analysis = thinpack_analyze::analyze(&entry, &thinpack_resolve::HostFs)?;
     let included = expand_includes(&root, &options.include)?;
@@ -55,13 +61,27 @@ fn is_javascript(path: &Path) -> bool {
 }
 
 fn expand_includes(root: &Path, includes: &[PathBuf]) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    let root = normalize(root);
     let mut files = Vec::new();
     for include in includes {
-        let path = if include.is_absolute() {
+        let joined = if include.is_absolute() {
             include.clone()
         } else {
             root.join(include)
         };
+        let path = normalize(&joined);
+        // A packed executable only sees the virtual `/app` tree, so an include
+        // outside the project root would ship as unreachable weight.
+        if !path.starts_with(&root) {
+            return Err(format!(
+                "--include {} resolves to {}, outside the project root {}; \
+                 copy the file into the project or pack it with --asset",
+                include.display(),
+                path.display(),
+                root.display()
+            )
+            .into());
+        }
         let metadata =
             std::fs::metadata(&path).map_err(|error| format!("{}: {error}", path.display()))?;
         if metadata.is_dir() {
@@ -91,7 +111,10 @@ fn collect_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), Box<d
     Ok(())
 }
 
-fn apply_overrides(analysis: &Analysis, options: &Options) -> Result<Vec<String>, Box<dyn Error>> {
+fn apply_overrides(
+    analysis: &Analysis,
+    options: &Options,
+) -> Result<Vec<&'static Module>, Box<dyn Error>> {
     let mut roots: BTreeSet<String> = analysis
         .builtins
         .keys()
@@ -106,9 +129,6 @@ fn apply_overrides(analysis: &Analysis, options: &Options) -> Result<Vec<String>
         if module.ambient {
             return Err(format!("cannot remove ambient module `{module_name}`").into());
         }
-        if !roots.contains(module_name) {
-            return Err(format!("module `{module_name}` is not part of this build").into());
-        }
         for builtin in module.builtins {
             if let Some(files) = analysis.builtins.get(*builtin) {
                 let files: Vec<String> = files
@@ -122,7 +142,6 @@ fn apply_overrides(analysis: &Analysis, options: &Options) -> Result<Vec<String>
                 .into());
             }
         }
-        roots.remove(module_name);
         let dependents: Vec<&str> = thinpack_caps::MODULES
             .iter()
             .filter(|candidate| {
@@ -137,6 +156,10 @@ fn apply_overrides(analysis: &Analysis, options: &Options) -> Result<Vec<String>
             )
             .into());
         }
+        if !roots.contains(module_name) {
+            return Err(format!("module `{module_name}` is not part of this build").into());
+        }
+        roots.remove(module_name);
     }
 
     for module_name in &options.with {
@@ -147,18 +170,16 @@ fn apply_overrides(analysis: &Analysis, options: &Options) -> Result<Vec<String>
     }
 
     let roots: Vec<String> = roots.into_iter().collect();
-    Ok(thinpack_caps::closure(&roots)?
-        .iter()
-        .map(|module| module.name.to_owned())
-        .collect())
+    Ok(thinpack_caps::closure(&roots)?)
 }
 
-pub(crate) fn print_capabilities(analysis: &Analysis, capabilities: &[String], root: &Path) {
+pub(crate) fn print_capabilities(
+    analysis: &Analysis,
+    capabilities: &[&'static Module],
+    root: &Path,
+) {
     println!("{:<12} {:<28} required by", "module", "builtins");
-    for name in capabilities {
-        let Some(module) = thinpack_caps::module(name) else {
-            continue;
-        };
+    for module in capabilities {
         let mut files = BTreeSet::new();
         for builtin in module.builtins {
             if let Some(required_by) = analysis.builtins.get(*builtin) {
@@ -176,7 +197,7 @@ pub(crate) fn print_capabilities(analysis: &Analysis, capabilities: &[String], r
             .collect();
         println!(
             "{:<12} {:<28} {}",
-            name,
+            module.name,
             module.builtins.join(", "),
             if required_by.is_empty() {
                 if module.ambient {

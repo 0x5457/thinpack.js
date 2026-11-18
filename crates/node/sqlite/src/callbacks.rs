@@ -239,12 +239,10 @@ fn record_range_error(
     let Some(object) = exception.to_object(scope) else {
         return;
     };
-    if let Some(code) = v8::String::new(scope, OUT_OF_RANGE) {
-        object.create_data_property(
-            scope,
-            v8::String::new(scope, "code").unwrap().into(),
-            code.into(),
-        );
+    if let Some(code) = v8::String::new(scope, OUT_OF_RANGE)
+        && let Some(key) = v8::String::new(scope, "code")
+    {
+        object.create_data_property(scope, key.into(), code.into());
     }
     record(scope, state, exception);
 }

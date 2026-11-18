@@ -98,6 +98,16 @@
         this.destroy(notImplemented("tls.connect with a non-thinpack socket"));
         return this;
       }
+      // rustls verifies the server name during the handshake; a custom identity
+      // hook cannot run on top because the peer certificate never reaches JS.
+      // Refuse the connection loudly rather than silently skipping the check.
+      if ((options.checkServerIdentity ?? module.exports.checkServerIdentity) !==
+          checkServerIdentity) {
+        this.destroy(notImplemented(
+          "tls.connect with a custom checkServerIdentity (the peer certificate is not exposed by this TLS implementation)",
+        ));
+        return this;
+      }
       this.connecting = true;
       this.#attempt = (TLSSocket.nextAttempt = (TLSSocket.nextAttempt ?? 0) + 1);
       const alpn = Array.isArray(options.ALPNProtocols)
@@ -275,11 +285,13 @@
     }
 
     getPeerCertificate() {
-      return {};
+      // The ops layer does not surface the negotiated peer certificate; report
+      // that honestly instead of handing back an empty object.
+      throw notImplemented("tls.TLSSocket.getPeerCertificate");
     }
 
     getSession() {
-      return undefined;
+      throw notImplemented("tls.TLSSocket.getSession");
     }
 
     isSessionReused() {
@@ -435,6 +447,11 @@
     }
   }
 
+  // rustls performs the real hostname verification during the handshake, so the
+  // default hook has nothing left to check. `connect` rejects any *replacement*
+  // hook loudly (see TLSSocket.connect).
+  const checkServerIdentity = () => undefined;
+
   module.exports = {
     TLSSocket,
     Server,
@@ -442,8 +459,10 @@
     createServer: (options, listener) => new Server(options, listener),
     connect,
     createSecureContext: (options) => new SecureContext(options),
-    checkServerIdentity: () => undefined,
-    getCACertificates: () => [],
+    checkServerIdentity,
+    getCACertificates: () => {
+      throw notImplemented("tls.getCACertificates");
+    },
     DEFAULT_MIN_VERSION: "TLSv1.2",
     DEFAULT_MAX_VERSION: "TLSv1.3",
   };

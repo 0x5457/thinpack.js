@@ -1,5 +1,6 @@
 // Vendored from Node.js v26.13.1 lib/internal/fs/promises.js (MIT, https://github.com/nodejs/node).
 // Patched: require("internal/...") -> require("node:thinpack/internal/...").
+// Patched: mkdtemp() drops the Buffer-prefix encoding override.
 
 'use strict';
 

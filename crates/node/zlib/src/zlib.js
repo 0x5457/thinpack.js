@@ -91,13 +91,13 @@
     return format;
   };
 
-  const sync = (format, data) => {
+  const sync = (format, data, options) => {
     const input = toBuffer(data);
     try {
       if (DECOMPRESS.has(format)) {
         return Buffer.from(Deno.core.ops.op_zlib_decompress(opFormat(format, input), input));
       }
-      return Buffer.from(Deno.core.ops.op_zlib_compress(format, input, constants.Z_DEFAULT_COMPRESSION));
+      return Buffer.from(Deno.core.ops.op_zlib_compress(format, input, levelOf(options)));
     } catch (error) {
       throw opError(error);
     }
@@ -213,11 +213,11 @@
     unzip: (data, options, cb) => callbackStyle("unzip", data, options, cb),
     brotliCompress: (data, options, cb) => brotliCallback(false, data, options, cb),
     brotliDecompress: (data, options, cb) => brotliCallback(true, data, options, cb),
-    gzipSync: (data) => sync("gzip", data),
+    gzipSync: (data, options) => sync("gzip", data, options),
     gunzipSync: (data) => sync("ungzip", data),
-    deflateSync: (data) => sync("deflate", data),
+    deflateSync: (data, options) => sync("deflate", data, options),
     inflateSync: (data) => sync("inflate", data),
-    deflateRawSync: (data) => sync("deflate-raw", data),
+    deflateRawSync: (data, options) => sync("deflate-raw", data, options),
     inflateRawSync: (data) => sync("inflate-raw", data),
     unzipSync: (data) => sync("unzip", data),
     brotliCompressSync: (data, options) => brotliSync(false, data, options),

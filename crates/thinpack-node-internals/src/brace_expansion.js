@@ -1,4 +1,5 @@
-// Vendored from npm brace-expansion@5.0.13 dist/commonjs/index.js (MIT).
+// Vendored from npm brace-expansion@5.0.13 (MIT).
+// Patched: upstream require("../...") / require("minimatch/...") rewrites -> require("node:thinpack/internal/deps/...").
 
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });

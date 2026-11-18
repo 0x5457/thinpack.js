@@ -50,8 +50,11 @@ fn op_worker_terminate(id: u32) {
 }
 
 #[op2(async(lazy), fast)]
-async fn op_worker_exit(id: u32) {
-    worker::wait_exit(id).await;
+async fn op_worker_exit(id: u32) -> u32 {
+    // The exit code follows Node's convention: 0 for a clean worker, 1 when
+    // the worker ended with an error (surfaced separately through
+    // `op_worker_error`).
+    u32::from(!worker::wait_exit(id).await)
 }
 
 #[op2]

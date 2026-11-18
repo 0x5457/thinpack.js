@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::process::ExitStatus;
 
 use crate::bundle;
 use crate::capabilities::{analyze_entry, print_capabilities};
@@ -59,7 +60,23 @@ pub(crate) fn run_command(args: Vec<String>) -> Result<i32, Box<dyn Error>> {
         .args(&parsed.rest)
         .status()
         .map_err(|error| format!("{}: {error}", template.display()))?;
-    Ok(status.code().unwrap_or(1))
+    Ok(exit_code(status))
+}
+
+/// Shells report a process killed by a signal as `128 + signal`.
+#[cfg(unix)]
+fn exit_code(status: ExitStatus) -> i32 {
+    use std::os::unix::process::ExitStatusExt;
+
+    status
+        .code()
+        .unwrap_or_else(|| 128 + status.signal().unwrap_or(0))
+}
+
+/// Windows termination has no signal component to report.
+#[cfg(not(unix))]
+fn exit_code(status: ExitStatus) -> i32 {
+    status.code().unwrap_or(1)
 }
 
 pub(crate) fn templates_command() -> Result<(), Box<dyn Error>> {

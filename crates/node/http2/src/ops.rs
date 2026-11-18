@@ -762,13 +762,8 @@ fn op_http2_close_session(session_id: u32) {
 
 #[op2]
 #[string]
-fn op_http2_session_info(session_id: u32) -> String {
-    sessions()
-        .lock()
-        .expect("http2 session table")
-        .get(&session_id)
-        .map(|session| session.info.clone())
-        .unwrap_or_default()
+fn op_http2_session_info(session_id: u32) -> Result<String, JsErrorBox> {
+    Ok(session_of(session_id)?.info.clone())
 }
 
 #[op2(fast)]
@@ -918,13 +913,13 @@ fn op_http2_set_secure_context(
 
 #[op2]
 #[string]
-fn op_http2_listener_info(listener_id: u32) -> String {
+fn op_http2_listener_info(listener_id: u32) -> Result<String, JsErrorBox> {
     listeners()
         .lock()
         .expect("http2 listeners")
         .get(&listener_id)
         .map(|listener| listener.local.clone())
-        .unwrap_or_default()
+        .ok_or_else(|| JsErrorBox::new("Error", "EBADF\0listener closed"))
 }
 
 #[op2(async(lazy), fast)]

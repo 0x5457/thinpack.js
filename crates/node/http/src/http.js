@@ -146,6 +146,9 @@
       } else if (this.req.method === "HEAD") {
         lines.push("Content-Length: 0");
       }
+      if (this.sendDate && !this.#headers.has("date")) {
+        lines.push(`Date: ${new Date().toUTCString()}`);
+      }
       lines.push(`Connection: ${this._keepAlive ? "keep-alive" : "close"}`);
 
       this.#sent = true;
@@ -330,7 +333,6 @@
 
     constructor(options = {}) {
       this.options = options ?? {};
-      this.maxSockets = this.options.maxSockets ?? Infinity;
       this.keepAlive = this.options.keepAlive ?? false;
     }
     take(origin) {
@@ -498,6 +500,7 @@
     let chunked = false;
     let remaining = 0;
     let chunkSize = null;
+    let terminated = false;
     let done = false;
     let keepAlive = Boolean(options.keepAlive);
 
@@ -517,9 +520,30 @@
       }
     };
 
+    // After the `0\r\n` chunk-size line the trailer section runs to the first
+    // blank line: a bare CRLF when there are no trailers, `...\r\n\r\n` when
+    // there are. finish() must not release the socket to the agent pool before
+    // that line is consumed, or the leftover bytes poison the next pipelined
+    // request on the connection.
+    const consumeTerminator = () => {
+      const blank = buffer.indexOf("\r\n\r\n");
+      if (blank !== -1) {
+        buffer = buffer.subarray(blank + 4);
+      } else if (buffer.length >= 2 && buffer[0] === 13 && buffer[1] === 10) {
+        buffer = buffer.subarray(2);
+      } else {
+        return;
+      }
+      finish();
+    };
+
     const feed = (data) => {
       if (chunked) {
         buffer = Buffer.concat([buffer, data]);
+        if (terminated) {
+          consumeTerminator();
+          return;
+        }
         for (;;) {
           if (chunkSize === null) {
             const end = buffer.indexOf("\r\n");
@@ -527,7 +551,8 @@
             chunkSize = Number.parseInt(buffer.subarray(0, end).toString("latin1"), 16);
             buffer = buffer.subarray(end + 2);
             if (chunkSize === 0) {
-              finish();
+              terminated = true;
+              consumeTerminator();
               return;
             }
           }
@@ -558,6 +583,12 @@
         return;
       }
       const end = buffer.indexOf("\r\n\r\n");
+      // Cap the response head at `http.maxHeaderSize` like Node's parser.
+      if ((end < 0 ? buffer.length : end) > http.maxHeaderSize) {
+        request.emit("error", new Error("Response header overflow"));
+        socket.destroy();
+        return;
+      }
       if (end < 0) return;
       const head = buffer.subarray(0, end).toString("latin1");
       const rest = buffer.subarray(end + 4);
@@ -592,11 +623,14 @@
         return;
       }
       request.emit("response", response);
-      if (rest.length > 0) feed(rest);
       chunked = /chunked/i.test(headers["transfer-encoding"] ?? "");
       remaining = headers["content-length"] !== undefined
         ? Number(headers["content-length"])
-        : (chunked ? Infinity : Infinity);
+        : Infinity;
+      // A bodyless response never produces another data event; `feed` (and with
+      // it `finish`) only runs on body bytes or socket end, so settle it now.
+      if (!chunked && remaining === 0) finish();
+      else if (rest.length > 0) feed(rest);
     };
 
     function onEnd() {

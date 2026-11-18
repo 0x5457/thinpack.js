@@ -1,3 +1,11 @@
+// `op2(async(lazy))` only accepts an `async fn`, so ops whose body has nothing
+// to await still have to be async.
+#![expect(
+    clippy::unused_async,
+    clippy::unused_async_trait_impl,
+    reason = "`op2(async(lazy))` rejects a non-async op fn"
+)]
+
 #[cfg(unix)]
 mod unix {
     //! Ops backing `node:cluster`.
@@ -22,6 +30,7 @@ mod unix {
 
     pub(crate) const OPS: &[OpDecl] = &[
         op_cluster_spawn(),
+        op_cluster_channel_accept(),
         op_cluster_clear_env(),
         op_cluster_allocate_port(),
         op_cluster_channel_adopt(),
@@ -177,6 +186,15 @@ mod unix {
         Ok(format!("{id}\0{pid}"))
     }
 
+    #[op2(async(lazy), fast)]
+    async fn op_cluster_channel_accept(id: u32) -> Result<(), JsErrorBox> {
+        // On unix the channel is complete once `op_cluster_spawn` returns; the op exists
+        // so the shared JS layer can run the same handshake on every platform (Windows
+        // connects its loopback channel here).
+        worker_of(id)?;
+        Ok(())
+    }
+
     #[op2(fast)]
     fn op_cluster_clear_env() {
         // SAFETY: a cluster worker calls this once during startup, before user code can spawn
@@ -269,11 +287,13 @@ mod unix {
         let length =
             usize::try_from(u32::from_be_bytes(header)).expect("a u32 frame length fits in usize");
         let mut payload = vec![0u8; length];
+        // The frame header was already consumed, so an EOF here is a peer dying mid-frame
+        // and is an error, not a clean channel close.
         if !fill_exact(&entry.stream, &mut payload)
             .await
             .map_err(io_error)?
         {
-            return Ok(String::new());
+            return Err(io_error(io::Error::from(io::ErrorKind::UnexpectedEof)));
         }
         String::from_utf8(payload)
             .map_err(|_| cluster_error("EINVAL", "the channel frame is not UTF-8"))
@@ -454,7 +474,7 @@ mod windows {
     use std::io::{self, Write};
     use std::process::Stdio;
     use std::sync::{Arc, Mutex, OnceLock};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use deno_core::{OpDecl, op2};
     use deno_error::JsErrorBox;
@@ -463,9 +483,13 @@ mod windows {
     use tokio::sync::Mutex as AsyncMutex;
 
     const PIPE_CHUNK: usize = 65536;
+    /// How long the primary waits for a spawned worker to connect its channel before
+    /// giving up on the handshake.
+    const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
     pub(crate) const OPS: &[OpDecl] = &[
         op_cluster_spawn(),
+        op_cluster_channel_accept(),
         op_cluster_clear_env(),
         op_cluster_allocate_port(),
         op_cluster_channel_adopt_port(),
@@ -486,6 +510,8 @@ mod windows {
         stdin: Arc<AsyncMutex<Option<ChildStdin>>>,
         stdout: Arc<AsyncMutex<Option<ChildStdout>>>,
         stderr: Arc<AsyncMutex<Option<ChildStderr>>>,
+        /// The listener the worker connects back to; taken by the channel handshake.
+        accept: AsyncMutex<Option<tokio::net::TcpListener>>,
     }
 
     struct ChannelEntry {
@@ -572,10 +598,13 @@ mod windows {
         let rest: Vec<String> = parts.map(str::to_owned).collect();
 
         // Windows has no socketpair; a loopback TCP channel is the portable
-        // equivalent of Node's IPC pipe. The child gets the port in its env.
+        // equivalent of Node's IPC pipe. The child gets the port in its env and connects
+        // during its bootstrap; the primary completes the handshake through
+        // `op_cluster_channel_accept` without blocking the event loop.
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).map_err(io_error)?;
         listener.set_nonblocking(true).map_err(io_error)?;
         let port = listener.local_addr().map_err(io_error)?.port();
+        let listener = tokio::net::TcpListener::from_std(listener).map_err(io_error)?;
 
         let mut command = tokio::process::Command::new(program);
         command
@@ -595,24 +624,6 @@ mod windows {
         command.stderr(stdio(silent));
 
         let mut child = command.spawn().map_err(io_error)?;
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let stream = loop {
-            match listener.accept() {
-                Ok((stream, _)) => break stream,
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    if Instant::now() >= deadline {
-                        let _ = child.start_kill();
-                        return Err(cluster_error(
-                            "ETIMEDOUT",
-                            "the cluster worker did not connect",
-                        ));
-                    }
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                Err(error) => return Err(io_error(error)),
-            }
-        };
-        let channel = channel_entry(stream)?;
         let pid = child.id().unwrap_or_default();
         let stdin = child.stdin.take();
         let stdout = child.stdout.take();
@@ -627,13 +638,41 @@ mod windows {
                 stdin: Arc::new(AsyncMutex::new(stdin)),
                 stdout: Arc::new(AsyncMutex::new(stdout)),
                 stderr: Arc::new(AsyncMutex::new(stderr)),
+                accept: AsyncMutex::new(Some(listener)),
             }),
         );
+        Ok(format!("{id}\0{pid}"))
+    }
+
+    #[op2(async(lazy), fast)]
+    async fn op_cluster_channel_accept(id: u32) -> Result<(), JsErrorBox> {
+        let entry = worker_of(id)?;
+        let listener = entry
+            .accept
+            .lock()
+            .await
+            .take()
+            .ok_or_else(|| cluster_error("EINVAL", "the channel handshake already ran"))?;
+        // The handshake runs asynchronously so a worker that never connects never blocks
+        // the event loop with sleep polling; `cluster.fork` has already returned by now.
+        let accepted = tokio::time::timeout(HANDSHAKE_TIMEOUT, listener.accept()).await;
+        let stream = match accepted {
+            Ok(Ok((stream, _))) => stream.into_std().map_err(io_error)?,
+            Ok(Err(error)) => return Err(io_error(error)),
+            Err(_) => {
+                let _ = entry.child.lock().await.start_kill();
+                return Err(cluster_error(
+                    "ETIMEDOUT",
+                    "the cluster worker did not connect",
+                ));
+            }
+        };
+        let channel = channel_entry(stream)?;
         channels()
             .lock()
             .expect("channel table")
             .insert(id, channel);
-        Ok(format!("{id}\0{pid}"))
+        Ok(())
     }
 
     #[op2(fast)]
@@ -700,11 +739,13 @@ mod windows {
         let length =
             usize::try_from(u32::from_be_bytes(header)).expect("a u32 frame length fits in usize");
         let mut payload = vec![0u8; length];
+        // The frame header was already consumed, so an EOF here is a peer dying mid-frame
+        // and is an error, not a clean channel close.
         if !fill_exact(&mut stream, &mut payload)
             .await
             .map_err(io_error)?
         {
-            return Ok(String::new());
+            return Err(io_error(io::Error::from(io::ErrorKind::UnexpectedEof)));
         }
         String::from_utf8(payload)
             .map_err(|_| cluster_error("EINVAL", "the channel frame is not UTF-8"))

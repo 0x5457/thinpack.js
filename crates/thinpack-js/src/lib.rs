@@ -22,6 +22,11 @@ const WINDOW: u32 = 22;
 /// Expands to the brotli-compressed bytes of `src/$file` of the calling crate, as
 /// a `&'static [u8]`.
 ///
+/// The path is resolved against the calling crate's `src/` directory
+/// (`$CARGO_MANIFEST_DIR/src/$file`), so an embed site always names a file
+/// relative to its own crate root; a `js!` call inside a nested module reads the
+/// same file as one at the crate root.
+///
 /// The expansion also mentions the file through `include_str!`, so cargo rebuilds
 /// the crate that embeds it when the JavaScript changes.
 ///

@@ -126,9 +126,19 @@
 
   class ERR_MISSING_ARGS extends TypeError {
     constructor(...names) {
+      // Node's message shape: quoted names, "or" inside an alternative group,
+      // commas and a final "and" between the rest.
+      const wrap = (name) => '"' + name + '"';
+      const list = names.map((name) =>
+        Array.isArray(name) ? name.map(wrap).join(" or ") : wrap(name),
+      );
+      const joined =
+        list.length <= 1
+          ? list.join("")
+          : list.slice(0, -1).join(", ") + " and " + list[list.length - 1];
       super(
         "The " +
-          names.map((name) => '"' + name + '"').join(" or ") +
+          joined +
           " argument" +
           (names.length > 1 ? "s" : "") +
           " must be specified",

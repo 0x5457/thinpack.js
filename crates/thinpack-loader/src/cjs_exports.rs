@@ -654,15 +654,19 @@ fn collect_rhs(tokens: &[Token], start: usize, names: &mut BTreeSet<String>, con
         index += 1;
     }
     *consumed = index;
+    // One visited set per right-hand side: mutual initializers like
+    // `module.exports = a; const a = b; const b = a;` would otherwise recurse
+    // through resolve_identifier/resolve_identifier_value without end.
+    let mut visited = BTreeSet::new();
     if let Some(member) = trailing_member_name(tokens, start) {
-        resolve_identifier(tokens, member, names, consumed);
+        resolve_identifier(tokens, member, names, consumed, &mut visited);
     }
 
     for identifier in identifiers {
         if let Some(rhs) = find_global_assignment(tokens, &identifier) {
-            resolve_identifier_value(tokens, rhs, names, consumed);
+            resolve_identifier_value(tokens, rhs, names, consumed, &mut visited);
         }
-        resolve_identifier(tokens, &identifier, names, consumed);
+        resolve_identifier(tokens, &identifier, names, consumed, &mut visited);
     }
 }
 
@@ -703,6 +707,7 @@ fn resolve_identifier_value(
     start: usize,
     names: &mut BTreeSet<String>,
     consumed: &mut usize,
+    visited: &mut BTreeSet<String>,
 ) {
     if tokens.get(start).is_some_and(|token| token.is_punct('{')) {
         names.extend(object_keys(tokens, start, consumed));
@@ -728,7 +733,7 @@ fn resolve_identifier_value(
         return;
     }
     if let Some(name) = tokens.get(start).and_then(Token::ident) {
-        resolve_identifier(tokens, name, names, consumed);
+        resolve_identifier(tokens, name, names, consumed, visited);
     }
 }
 
@@ -737,8 +742,13 @@ fn resolve_identifier(
     identifier: &str,
     names: &mut BTreeSet<String>,
     consumed: &mut usize,
+    visited: &mut BTreeSet<String>,
 ) {
     if matches!(identifier, "module" | "exports" | "require" | "globalThis") {
+        return;
+    }
+    // The revisit is a cycle in the initializer graph, not new information.
+    if !visited.insert(identifier.to_owned()) {
         return;
     }
     for (position, token) in tokens.iter().enumerate() {
@@ -751,7 +761,7 @@ fn resolve_identifier(
                 .get(position + 2)
                 .is_some_and(|next| next.is_punct('='))
         {
-            resolve_identifier_value(tokens, position + 3, names, consumed);
+            resolve_identifier_value(tokens, position + 3, names, consumed, visited);
             break;
         }
     }
@@ -797,11 +807,9 @@ fn collect_defined_properties(tokens: &[Token], target: &str, names: &mut BTreeS
             .get(start + 3)
             .is_some_and(|token| token.is_punct('{'));
         if check && brace {
-            let mut consumed = start + 3;
             for name in defined_property_names(tokens, start + 3) {
                 names.insert(name);
             }
-            let _ = &mut consumed;
         }
     }
 

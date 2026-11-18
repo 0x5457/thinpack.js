@@ -10,6 +10,7 @@ use deno_core::{
 
 use deno_error::JsErrorBox;
 use thinpack_core::BuiltinSources;
+use thinpack_core::js_string_literal;
 use thinpack_resolve::{FileSystem, Format};
 
 use crate::ModuleFs;
@@ -390,26 +391,6 @@ fn append_named_exports(source: &mut String, names: &std::collections::BTreeSet<
         let _ = writeln!(source, "export const {name} = __exports__.{name};");
     }
     source.push_str("export default __exports__;\n");
-}
-
-fn js_string_literal(value: &str) -> String {
-    let mut literal = String::with_capacity(value.len() + 2);
-    literal.push('"');
-    for character in value.chars() {
-        match character {
-            '"' => literal.push_str("\\\""),
-            '\\' => literal.push_str("\\\\"),
-            '\n' => literal.push_str("\\n"),
-            '\r' => literal.push_str("\\r"),
-            '\t' => literal.push_str("\\t"),
-            other if (other as u32) < 0x20 => {
-                let _ = write!(literal, "\\u{:04x}", other as u32);
-            }
-            other => literal.push(other),
-        }
-    }
-    literal.push('"');
-    literal
 }
 
 #[must_use]

@@ -3,14 +3,36 @@
 
   const notImplemented = (api) => new codes.ERR_NOT_IMPLEMENTED(api);
 
+  // libuv-style getaddrinfo errno codes; the ops layer translates the
+  // platform's EAI_* values into these. Node reports them as `error.errno`
+  // and derives `error.code` the same way its DNSException does: ENOTFOUND
+  // for EAI_NODATA/EAI_NONAME, otherwise the EAI_* name.
+  const EAI_CODES = new Map([
+    [-3000, "EAI_ADDRFAMILY"],
+    [-3001, "EAI_AGAIN"],
+    [-3002, "EAI_BADFLAGS"],
+    [-3003, "EAI_CANCELED"],
+    [-3004, "EAI_FAIL"],
+    [-3005, "EAI_FAMILY"],
+    [-3006, "EAI_MEMORY"],
+    [-3007, "ENOTFOUND"],
+    [-3008, "ENOTFOUND"],
+    [-3009, "EAI_OVERFLOW"],
+    [-3010, "EAI_SERVICE"],
+    [-3011, "EAI_SOCKTYPE"],
+    [-3013, "EAI_BADHINTS"],
+    [-3014, "EAI_PROTOCOL"],
+  ]);
+
   const dnsError = (error, hostname) => {
     const errno = Number(error.message);
-    if (!Number.isInteger(errno)) return error;
+    const code = EAI_CODES.get(errno);
+    if (code === undefined) return error;
     const failure = new Error(
-      `getaddrinfo ENOTFOUND ${hostname}`,
+      `getaddrinfo ${code} ${hostname}`,
     );
     failure.errno = errno;
-    failure.code = "ENOTFOUND";
+    failure.code = code;
     failure.syscall = "getaddrinfo";
     failure.hostname = hostname;
     return failure;
@@ -38,11 +60,7 @@
     Deno.core.ops
       .op_dns_lookup(String(hostname), Number(family))
       .then((result) => {
-        const fields = result.split("\0");
-        const addresses = [];
-        for (let index = 0; index < fields.length; index += 2) {
-          addresses.push({ address: fields[index + 1], family: Number(fields[index]) });
-        }
+        const addresses = parseAddresses(result);
         if (all) {
           callback(null, addresses);
         } else {
@@ -164,11 +182,7 @@
       return Deno.core.ops
         .op_dns_lookup(String(hostname), Number(family))
         .then((result) => {
-          const fields = result.split("\0");
-          const addresses = [];
-          for (let index = 0; index < fields.length; index += 2) {
-            addresses.push({ address: fields[index + 1], family: Number(fields[index]) });
-          }
+          const addresses = parseAddresses(result);
           return all ? addresses : addresses[0];
         }, (error) => Promise.reject(dnsError(error, hostname)));
     },
@@ -181,11 +195,37 @@
     return entry;
   };
 
+  let dnsOrder = "verbatim";
+
+  const setDefaultResultOrder = (value) => {
+    if (value !== "verbatim" && value !== "ipv4first" && value !== "ipv6first") {
+      throw new codes.ERR_INVALID_ARG_VALUE(
+        "dnsOrder",
+        value,
+        "must be one of: 'verbatim', 'ipv4first', 'ipv6first'",
+      );
+    }
+    dnsOrder = value;
+  };
+
+  const parseAddresses = (result) => {
+    const fields = result.split("\0");
+    const addresses = [];
+    for (let index = 0; index < fields.length; index += 2) {
+      addresses.push({ address: fields[index + 1], family: Number(fields[index]) });
+    }
+    // Node's `ipv4first`/`ipv6first` reorder getaddrinfo's RFC 6724 ordering
+    // so one family precedes the other, stable within each family.
+    if (dnsOrder === "ipv4first") addresses.sort((a, b) => a.family - b.family);
+    else if (dnsOrder === "ipv6first") addresses.sort((a, b) => b.family - a.family);
+    return addresses;
+  };
+
   module.exports = {
     lookup,
     promises,
-    setDefaultResultOrder() {},
-    getDefaultResultOrder: () => "verbatim",
+    setDefaultResultOrder,
+    getDefaultResultOrder: () => dnsOrder,
     Resolver,
     resolve: (hostname, rrtype, callback) => resolveWith("", hostname, rrtype, callback),
     resolve4: (hostname, callback) => resolveWith("", hostname, "A", callback),

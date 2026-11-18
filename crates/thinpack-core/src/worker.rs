@@ -135,10 +135,18 @@ pub async fn wait(id: PortId) -> Option<Vec<u8>> {
     }
 }
 
+/// Closes both ends of the port's channel, like Node: the peer's pending
+/// `wait` settles so its pump observes the close instead of blocking the
+/// event loop forever.
 pub fn close(id: PortId) {
     let port = ports().remove(&id);
-    if let Some(port) = port {
-        port.inbox.close();
+    let Some(port) = port else {
+        return;
+    };
+    let peer = ports().remove(&port.peer);
+    port.inbox.close();
+    if let Some(peer) = peer {
+        peer.inbox.close();
     }
 }
 
@@ -219,6 +227,10 @@ impl WorkerState {
             Some(Err(message)) => message.clone(),
         }
     }
+
+    fn succeeded(&self) -> bool {
+        matches!(&*self.outcome.lock().expect("worker outcome"), Some(Ok(())))
+    }
 }
 
 fn workers() -> MutexGuard<'static, HashMap<WorkerId, Arc<WorkerState>>> {
@@ -265,12 +277,14 @@ pub fn spawn(spec: WorkerSpec) -> Result<WorkerId, Error> {
     Ok(id)
 }
 
+/// Returns whether the worker finished without an error; `false` when the id
+/// is unknown.
 pub async fn wait_exit(id: WorkerId) -> bool {
     let state = workers().get(&id).cloned();
     match state {
         Some(state) => {
             state.done().await;
-            true
+            state.succeeded()
         }
         None => false,
     }

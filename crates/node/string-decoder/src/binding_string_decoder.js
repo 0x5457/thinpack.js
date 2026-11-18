@@ -14,6 +14,15 @@
     state[kMissingBytes] = 0;
     state[kBufferedBytes] = 0;
   };
+  // Length of the multi-byte sequence that starts at `start` (2-4 bytes).
+  // Only called on a leading byte that `incompleteUtf8Tail` has already
+  // classified as the start of an incomplete sequence.
+  const leadingSequenceLength = (bytes, start) => {
+    const byte = bytes[start];
+    if (byte >= 0xf0) return 4;
+    if (byte >= 0xe0) return 3;
+    return 2;
+  };
   const incompleteUtf8Tail = (bytes) => {
     const length = bytes.length;
     for (let back = 1; back <= 3 && back <= length; back += 1) {
@@ -30,6 +39,9 @@
     return 0;
   };
 
+  // `kMissingBytes` is how many bytes the next chunk must still supply to
+  // complete the buffered character: the full length of the leading sequence
+  // minus what is already buffered.
   const decodeUtf8 = (state, buffer) => {
     const buffered = state[kBufferedBytes];
     const bytes =
@@ -43,7 +55,7 @@
     const complete = tail === 0 ? bytes.length : bytes.length - tail;
     const decoded = bytes.toString("utf8", 0, complete);
     state[kBufferedBytes] = tail;
-    state[kMissingBytes] = tail === 0 ? 0 : 0;
+    state[kMissingBytes] = tail === 0 ? 0 : leadingSequenceLength(bytes, complete) - tail;
     if (tail > 0) {
       bytes.copy(
         state,

@@ -310,8 +310,14 @@
   module.exports = {
     arrayBufferAlignedOffset: () => 0,
     asciiSlice,
-    asciiWriteStatic: (buffer, string, offset, length) =>
-      latin1WriteInto(buffer, offset, length, string),
+    // Node's ASCII write masks each code unit to its low 7 bits; it is not latin1.
+    asciiWriteStatic: (buffer, string, offset, length) => {
+      const written = Math.min(length, string.length);
+      for (let index = 0; index < written; index += 1) {
+        buffer[offset + index] = string.charCodeAt(index) & 0x7f;
+      }
+      return written;
+    },
     atob,
     base64Slice: (buffer, start, end) =>
       base64Encode(toBytes(buffer), start, end, false),
