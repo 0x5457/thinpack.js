@@ -19,10 +19,6 @@ pub fn init() -> Extension {
             thinpack_js::js!("node-internal-assert-utils.js"),
         ),
         ExtensionFileSource::new_compressed(
-            "node:thinpack/internal/assert/myers_diff",
-            thinpack_js::js!("node-internal-myers-diff.js"),
-        ),
-        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/errors/error_source",
             thinpack_js::js!("error_source.js"),
         ),

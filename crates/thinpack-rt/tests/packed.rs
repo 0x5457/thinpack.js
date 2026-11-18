@@ -203,6 +203,49 @@ stream.end(input);
         )],
         capabilities: &["assert", "zlib"],
     },
+    PackedTest {
+        name: "packed::util-diff-without-assert",
+        directory: "util-diff-without-assert",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r"
+// `util.diff` uses the private myers_diff helper. The helper is registered by
+// the always-linked internals extension, so a template selected with `util`
+// alone can load it without pulling in the public `assert` capability.
+const { diff } = require('node:util');
+
+const check = (actual, expected) => {
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(`unexpected diff: ${JSON.stringify(actual)}`);
+  }
+};
+
+check(diff('12345678', '12!!5!7!'), [
+  [0, '1'],
+  [0, '2'],
+  [1, '3'],
+  [1, '4'],
+  [-1, '!'],
+  [-1, '!'],
+  [0, '5'],
+  [1, '6'],
+  [-1, '!'],
+  [0, '7'],
+  [1, '8'],
+  [-1, '!'],
+]);
+check(diff(['1', '2', '3'], ['1', '3', '4']), [
+  [0, '1'],
+  [1, '2'],
+  [0, '3'],
+  [-1, '4'],
+]);
+check(diff('foo', 'foo'), []);
+",
+        )],
+        capabilities: &["util"],
+    },
 ];
 
 pub(super) fn print_list(cli: &super::Cli) {
