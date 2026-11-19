@@ -8,7 +8,13 @@
   // `worker_threads.markAsUncloneable` marks an object so cloning it throws; the set lives on
   // globalThis because the worker_threads module owns the marking and this bootstrap owns the
   // cloning, and neither can reach the other's scope.
-  const uncloneable = (globalThis.__thinpack_uncloneable ??= new WeakSet());
+  const uncloneable = new WeakSet();
+  Object.defineProperty(globalThis, "__thinpack_uncloneable", {
+    value: uncloneable,
+    writable: false,
+    configurable: false,
+    enumerable: false,
+  });
 
   const cloneValue = (value, seen) => {
     if (value === null || typeof value !== "object") {

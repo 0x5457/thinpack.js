@@ -357,6 +357,7 @@
     versions: {
       node: "26.13.1",
       thinpack: "0.1.0",
+      undici: "8.12.4",
       v8: "14.9.0",
     },
     release: { name: "node" },

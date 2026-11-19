@@ -21,12 +21,17 @@ module evaluation entry point for CJS `require(esm)` (the Node 22.12+ behavior).
 6. `Cargo.toml`: `[lints.rust] deprecated = "allow"`. The upstream code predates the
    dependency versions we pin, so those deprecation warnings belong to upstream and not to
    this project's lint gate.
-7. `extensions.rs`: `debug_assert!(code.is_ascii())` removed from both `ExtensionFileSource`
-   arms, together with the now-unused `find_non_ascii`. Embedded sources are JavaScript text
-   and the engine decodes them as UTF-8; undici's bundle carries an author name in a licence
-   header (`formdata-polyfill`, "Jimmy Wärting"), and rewriting a vendored file to satisfy a
-   debug assertion trades a real attribution for a cosmetic one. Debug builds of the whole
-   test suite run this path, so the assertion was load-bearing for vendored sources.
+7. `extensions.rs`: the `debug_assert!(code.is_ascii())` is relaxed in the `Compressed` and
+   `Computed` arms of `ExtensionFileSource::load`; the two arms that still assert keep using
+   `find_non_ascii`. Embedded sources are JavaScript text and the engine decodes them as UTF-8;
+   undici's bundle carries an author name in a licence header (`formdata-polyfill`,
+   "Jimmy Wärting"), and rewriting a vendored file to satisfy a debug assertion trades a real
+   attribution for a cosmetic one. `Compressed` is the arm `thinpack_js::js!` produces, and
+   `Computed` is what `BuiltinSources::collect` hands back to `deno_core` after decoding once;
+   `deno_core` loads every lazy source when the runtime is created, so the same non-ASCII text
+   passes through both arms, and relaxing only `Compressed` would panic a debug build at
+   startup. Debug builds of the whole test suite run this path, so the assertion was
+   load-bearing for vendored sources.
 
 Every other file matches upstream. Upgrade procedure: unpack the target version from
 crates.io, apply the changes above, update the path dependency in `Cargo.toml`, then run

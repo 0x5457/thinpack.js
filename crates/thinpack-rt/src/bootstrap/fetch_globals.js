@@ -3,7 +3,9 @@
 
   const unavailable = (error) => {
     const wrapped = new Error(
-      "fetch and its types are not available in this build; re-pack with --with http,https,zlib,buffer",
+      "fetch and its types are not available in this build; re-pack with `--with` " +
+        "for each of http, net, tls, stream, zlib, crypto, buffer, assert, async_hooks, " +
+        "diagnostics_channel, perf_hooks, querystring, url, util and worker_threads",
     );
     wrapped.code = error.code ?? "ERR_UNKNOWN_BUILTIN_MODULE";
     wrapped.cause = error;
@@ -37,9 +39,9 @@
     });
   }
 
-  // Node dispatches an `ErrorEvent` on `globalThis` first and reports the
-  // exception unless a listener cancels it; throwing from a microtask lands in
-  // the same uncaught-exception path, which is what a caller sees today.
+  // Node dispatches a cancelable `ErrorEvent` on `globalThis` first and reports the
+  // exception unless a listener handles it; there is no `ErrorEvent` global here, so
+  // throwing from a microtask lands in the uncaught-exception path instead.
   Object.defineProperty(globalThis, "reportError", {
     value: (error) => {
       queueMicrotask(() => {
