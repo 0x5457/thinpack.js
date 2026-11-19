@@ -88,3 +88,32 @@ the divergence, why it exists, and where it lives.
 - `inspector` exposes `Session`, but `connect`/`post` throw
   `ERR_NOT_IMPLEMENTED`; there is no inspector protocol implementation
   (`crates/node/inspector/src/inspector.js`).
+
+## Test runner
+
+- `node:test` implements registration (`test`/`it`/`describe`/`suite` with the
+  `skip`/`todo`/`only` variants), hooks, nested subtests, per-test mock trackers
+  with `mock.fn`/`mock.method`, TAP output on stdout and `process.exitCode` on
+  failure. Everything else fails loudly rather than returning a fabricated
+  value: `run()` throws `ERR_NOT_IMPLEMENTED`, because its `TestsStream` result,
+  the reporters and the `--test` CLI are not implemented; a test context exposes
+  no `assert`, `plan`, `snapshot`, `waitFor` or `setTimeout`; and a mock tracker
+  has no `timers`, `getter`, `setter` or `property`
+  (`crates/node/test/src/node-test.js`,
+  `crates/node/test/src/node-test-runner.js`).
+- Mocks follow Node's scoping: `t.mock` is reset when that test finishes, while
+  the module-level `mock` tracker is only reset when the test calls `reset()` or
+  `restoreAll()`, so a mock installed through it in `before()` survives the
+  suite's tests.
+- A test registered after the run has reported still runs: registrations are
+  drained until stable and a later registration starts another drain, so a late
+  test fails the process instead of being dropped. Root `before`/`after` hooks
+  run once, around the first drain.
+- Options that only make sense with the missing parts are accepted and ignored:
+  a suite's `timeout` does not apply to its children (a hung child falls through
+  to the caller's timeout) and `concurrency` has no effect, because tests run
+  one at a time.
+- A test that drives workers and so depends on cross-thread cloning
+  (`structuredClone`, `markAsUncloneable`, `getEnvironmentData`) inherits the
+  limits recorded under Worker threads: those helpers throw
+  `ERR_NOT_IMPLEMENTED` (`crates/node/worker-threads/src/worker_threads.js`).

@@ -114,12 +114,20 @@ log instead of hiding behind the total.
 7. Re-run the module and then the full suite. An ignored test that starts
    passing should lose its `ignore` field.
 
-The `node:test` module implements common registration, hooks, nested subtests,
-skip/todo, `mock.fn`, and `mock.method` APIs. It does not implement the `run()`
-stream, reporters, or timer mocking. `test-node-test.mjs` exercises the supported
-subset. Other upstream tests remain listed with specific reasons, including
-runner features that are not covered yet, runtime behavior thinpack does not
-provide, Node's `internal/*` modules, or `vm.runInNewContext`.
+The `node:test` module implements registration (`test`/`it`/`describe`/`suite`
+with their `skip`/`todo`/`only` variants), hooks, nested subtests, per-test mock
+trackers with `mock.fn` and `mock.method`, and TAP output on stdout with a
+non-zero exit when a test fails. It does not implement `t.assert`, `t.plan`,
+`t.snapshot`, `t.waitFor`, `t.setTimeout`, `mock.timers`,
+`mock.getter`/`setter`/`property`, `run()` (which throws `ERR_NOT_IMPLEMENTED`
+instead of returning a `TestsStream`), the reporters, or the `--test` CLI;
+`docs/gaps.md` records the rest. `test-node-test.mjs` exercises the supported
+subset, and `packed::node-test-late-registration` in
+`crates/thinpack-rt/tests/packed.rs` is an expected-failure case for a test
+registered after the first run. Other upstream tests remain listed with
+specific reasons, including runner features that are not covered yet, runtime
+behavior thinpack does not provide, Node's `internal/*` modules, or
+`vm.runInNewContext`.
 
 ## Current coverage
 
@@ -131,9 +139,9 @@ provide, Node's `internal/*` modules, or `vm.runInNewContext`.
 | events | 32 | 13 | 45 |
 | os | 2 | 6 | 8 |
 | string_decoder | 1 | 3 | 4 |
-| buffer | 50 | 24 | 74 |
-| url | 3 | 15 | 18 |
-| util | 10 | 25 | 35 |
+| buffer | 51 | 23 | 74 |
+| url | 6 | 12 | 18 |
+| util | 13 | 23 | 36 |
 | timers | 28 | 31 | 59 |
 | console | 8 | 14 | 22 |
 | tty | 2 | 3 | 5 |

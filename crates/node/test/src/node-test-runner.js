@@ -1,6 +1,7 @@
 // Copyright 2018-2026 the Deno authors. MIT license.
-// Adapted from ext/node/polyfills/testing.ts in denoland/deno, with the
-// registration and export shape from Node.js lib/test.js.
+// Adapted from Deno v2.9.8 ext/node/polyfills/testing.ts
+// (denoland/deno e7b39ebd55c85aaf6a29290c1f5a99e2e21e09dd), with the
+// registration and export shape from Node.js v26.13.1 lib/test.js.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -23,17 +24,23 @@
 'use strict';
 
 const { AsyncLocalStorage } = require('node:async_hooks');
+const { codes } = require('node:thinpack/internal/errors');
+
 const contexts = new AsyncLocalStorage();
-const activeMocks = [];
 
 let root;
-let runPromise;
+let rootIndex = 0;
+let rootBeforeRan = false;
+let rootAfterRan = false;
+let drainScheduled = false;
+let draining = false;
 let testCount = 0;
 let suiteCount = 0;
 let passCount = 0;
 let failCount = 0;
 let skippedCount = 0;
 let todoCount = 0;
+let runFailed = false;
 
 function makeSuite(name, parent, options) {
   let resolve;
@@ -87,8 +94,9 @@ function store() {
 }
 
 function queueRun() {
-  if (runPromise) return;
-  runPromise = new Promise((resolve) => setTimeout(resolve, 0)).then(executeRun);
+  if (drainScheduled || draining) return;
+  drainScheduled = true;
+  setTimeout(executeRun, 0);
 }
 
 function addTest(name, options, fn, overrides) {
@@ -151,6 +159,7 @@ class TestContext {
   #subtestFailed = false;
   #beforeRan = false;
   #afterRan = false;
+  #mock;
   #skip;
   #todo;
 
@@ -167,7 +176,8 @@ class TestContext {
   }
 
   get signal() { return this.#abortController.signal; }
-  get mock() { return mock; }
+
+  get mock() { return this.#mock ??= new MockTracker(); }
 
   diagnostic(message) {
     console.log(`# ${String(message)}`);
@@ -206,6 +216,8 @@ class TestContext {
   _beforeHooks() { return this.#before; }
   _afterHooks() { return this.#after; }
   _directives() { return { skip: this.#skip, todo: this.#todo }; }
+
+  _resetMock() { this.#mock?.reset(); }
 
   async _runBeforeOnce(current) {
     if (this.#beforeRan) return;
@@ -354,8 +366,7 @@ async function runEntry(entry, number, suites, tests) {
   if (skippedEntry) {
     if (entry.kind === 'test') {
       testCount++;
-      if (wasTodo) todoCount++;
-      else skippedCount++;
+      skippedCount++;
     } else {
       suiteCount++;
     }
@@ -383,6 +394,7 @@ async function runEntry(entry, number, suites, tests) {
       } catch (caught) {
         error ||= caught;
       }
+      context._resetMock();
     }
   } else {
     testCount++;
@@ -439,7 +451,7 @@ async function runEntry(entry, number, suites, tests) {
           error ||= caught;
         }
       }
-      mock.restoreAll();
+      context._resetMock();
     }
 
     if (skippedEntry) skippedCount++;
@@ -463,7 +475,8 @@ async function runEntry(entry, number, suites, tests) {
     if (entry.kind === 'test') passCount++;
     write(depth, `ok ${number} - ${entry.name}`);
   } else {
-    failCount++;
+    runFailed = true;
+    if (entry.kind === 'test') failCount++;
     write(depth, `not ok ${number} - ${entry.name}`);
     writeError(depth, error || new Error('one or more subtests failed'));
   }
@@ -473,27 +486,51 @@ async function runEntry(entry, number, suites, tests) {
   return result;
 }
 
+// Registration is asynchronous: `test()` and the hook helpers schedule a drain
+// on the next tick, so top-level registrations batch into one run. A
+// registration that lands after a drain finished (from a top-level await
+// continuation, for example) schedules another drain instead of being dropped,
+// which would exit 0 with a failing test never executed. Root before/after
+// hooks run once, around the first drain; a later drain runs only the entries
+// that arrived after it.
 async function executeRun() {
-  write(0, 'TAP version 13');
+  drainScheduled = false;
+  draining = true;
   const activeStore = { suite: root, test: root.context, suites: [root], tests: [] };
   let rootError;
   try {
-    await runHookList(root.before, root.context, activeStore);
-    for (let i = 0; i < root.children.length; i++) {
-      await runEntry(root.children[i], i + 1, [root], []);
+    if (!rootBeforeRan) {
+      rootBeforeRan = true;
+      write(0, 'TAP version 13');
+      try {
+        await runHookList(root.before, root.context, activeStore);
+      } catch (error) {
+        rootError = error;
+      }
     }
-  } catch (error) {
-    rootError = error;
+    // A failing root before hook cancels the tests registered so far, as in
+    // Node; they are not started and the root failure is reported below.
+    if (!rootError) {
+      while (rootIndex < root.children.length) {
+        const entry = root.children[rootIndex];
+        rootIndex++;
+        await runEntry(entry, rootIndex, [root], []);
+      }
+    }
+    if (!rootAfterRan) {
+      rootAfterRan = true;
+      try {
+        await runHookList(root.after, root.context, activeStore);
+      } catch (error) {
+        rootError ||= error;
+      }
+    }
   } finally {
-    try {
-      await runHookList(root.after, root.context, activeStore);
-    } catch (error) {
-      rootError ||= error;
-    }
+    draining = false;
   }
 
   if (rootError) {
-    failCount++;
+    runFailed = true;
     write(0, '# root hook failed');
     writeError(0, rootError);
   }
@@ -504,13 +541,12 @@ async function executeRun() {
   write(0, `# fail ${failCount}`);
   write(0, `# skipped ${skippedCount}`);
   write(0, `# todo ${todoCount}`);
-  if (failCount > 0 || rootError) globalThis.process.exitCode = 1;
-  return { tests: testCount, suites: suiteCount, pass: passCount, fail: failCount, skipped: skippedCount, todo: todoCount };
+  if (runFailed) globalThis.process.exitCode = 1;
+  if (rootIndex < root.children.length) queueRun();
 }
 
 function run() {
-  queueRun();
-  return runPromise;
+  throw new codes.ERR_NOT_IMPLEMENTED('node:test run()');
 }
 
 function registerHook(kind, fn) {
@@ -553,9 +589,11 @@ class MockFunctionContext {
   #implementation;
   #restore;
   #times;
+  #tracker;
   #once = new Map();
 
-  constructor(implementation, restore, times) {
+  constructor(tracker, implementation, restore, times) {
+    this.#tracker = tracker;
     this.#implementation = implementation;
     this.#restore = restore;
     this.#times = times;
@@ -583,8 +621,7 @@ class MockFunctionContext {
       this.#restore();
       this.#restore = null;
     }
-    const index = activeMocks.indexOf(this);
-    if (index !== -1) activeMocks.splice(index, 1);
+    this.#tracker._remove(this);
   }
 
   _next() {
@@ -600,9 +637,62 @@ class MockFunctionContext {
   }
 }
 
-function mockFunction(original, implementation, options = {}, restore = null) {
-  const context = new MockFunctionContext(implementation || original, restore, options.times);
-  activeMocks.push(context);
+// A tracker owns the mocks it created and restores all of them on `reset()`.
+// Node hands every test its own tracker (`t.mock`), reset when that test
+// finishes, and keeps the module-level `mock` export as a separate tracker that
+// only resets when the test asks for it.
+class MockTracker {
+  #mocks = [];
+
+  fn(original, implementation, options) {
+    if (original && typeof original === 'object') {
+      options = original;
+      original = undefined;
+      implementation = undefined;
+    } else if (implementation && typeof implementation === 'object') {
+      options = implementation;
+      implementation = undefined;
+    }
+    return mockFunction(this, original, implementation || original, options || {});
+  }
+
+  method(object, key, implementation, options) {
+    if (implementation && typeof implementation === 'object') {
+      options = implementation;
+      implementation = undefined;
+    }
+    const descriptor = findDescriptor(object, key);
+    if (!descriptor || typeof descriptor.value !== 'function') {
+      throw new TypeError(`Cannot mock property '${String(key)}' because it is not a function`);
+    }
+
+    const ownDescriptor = Object.getOwnPropertyDescriptor(object, key);
+    const restore = () => {
+      if (ownDescriptor) Object.defineProperty(object, key, ownDescriptor);
+      else delete object[key];
+    };
+    const mocked = mockFunction(this, descriptor.value, implementation, options || {}, restore);
+    Object.defineProperty(object, key, { ...descriptor, value: mocked });
+    return mocked;
+  }
+
+  reset() {
+    while (this.#mocks.length) this.#mocks[this.#mocks.length - 1].restore();
+  }
+
+  restoreAll() { this.reset(); }
+
+  _add(context) { this.#mocks.push(context); }
+
+  _remove(context) {
+    const index = this.#mocks.indexOf(context);
+    if (index !== -1) this.#mocks.splice(index, 1);
+  }
+}
+
+function mockFunction(tracker, original, implementation, options = {}, restore = null) {
+  const context = new MockFunctionContext(tracker, implementation || original, restore, options.times);
+  tracker._add(context);
   const fn = function (...args) {
     const impl = context._next();
     let result;
@@ -627,44 +717,7 @@ function findDescriptor(object, key) {
   }
 }
 
-function mockMethod(object, key, implementation, options) {
-  if (implementation && typeof implementation === 'object') {
-    options = implementation;
-    implementation = undefined;
-  }
-  const descriptor = findDescriptor(object, key);
-  if (!descriptor || typeof descriptor.value !== 'function') {
-    throw new TypeError(`Cannot mock property '${String(key)}' because it is not a function`);
-  }
-
-  const ownDescriptor = Object.getOwnPropertyDescriptor(object, key);
-  const restore = () => {
-    if (ownDescriptor) Object.defineProperty(object, key, ownDescriptor);
-    else delete object[key];
-  };
-  const mocked = mockFunction(descriptor.value, implementation, options || {}, restore);
-  Object.defineProperty(object, key, { ...descriptor, value: mocked });
-  return mocked;
-}
-
-const mock = {
-  fn(original, implementation, options) {
-    if (original && typeof original === 'object') {
-      options = original;
-      original = undefined;
-      implementation = undefined;
-    } else if (implementation && typeof implementation === 'object') {
-      options = implementation;
-      implementation = undefined;
-    }
-    return mockFunction(original, implementation || original, options || {});
-  },
-  method: mockMethod,
-  reset() { this.restoreAll(); },
-  restoreAll() {
-    while (activeMocks.length) activeMocks[activeMocks.length - 1].restore();
-  },
-};
+const mock = new MockTracker();
 
 module.exports = {
   TestContext,
