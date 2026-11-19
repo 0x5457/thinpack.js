@@ -249,6 +249,7 @@ fn js_string(value: oxc_str::JSStr<'_>) -> String {
 const WEBSOCKET_BUILTINS: [&str; 4] = ["http", "https", "crypto", "buffer"];
 /// The vendored undici bundle (`crates/node/http/vendor/undici.js`) requires these, so a
 /// static reference to one of its globals has to pull all of them into the payload.
+/// `http2` and `sqlite` are not here: the bundle probes both and handles their absence.
 const FETCH_BUILTINS: [&str; 16] = [
     "assert",
     "async_hooks",
@@ -267,9 +268,9 @@ const FETCH_BUILTINS: [&str; 16] = [
     "worker_threads",
     "zlib",
 ];
-/// undici probes these two and handles their absence, so they are optional like any other
-/// package that guards a `require`.
-const FETCH_OPTIONAL_BUILTINS: [&str; 2] = ["http2", "sqlite"];
+/// The globals the bundle sits behind. A static reference to any of them — `fetch(...)`,
+/// `new Response(...)`, `Response.json(...)` — is what pulls [`FETCH_BUILTINS`].
+const FETCH_GLOBALS: [&str; 5] = ["fetch", "Headers", "Request", "Response", "FormData"];
 
 /// The global an expression names, either bare or through `globalThis`.
 fn global_name<'a>(expression: &'a Expression<'_>) -> Option<&'a str> {
@@ -281,6 +282,19 @@ fn global_name<'a>(expression: &'a Expression<'_>) -> Option<&'a str> {
             }
             _ => None,
         },
+        _ => None,
+    }
+}
+
+/// The global an expression references: bare, through `globalThis`, or as the receiver of a
+/// static call, so `fetch(...)`, `globalThis.fetch(...)`, `Response.json(...)` and
+/// `globalThis.Response.redirect(...)` all name one.
+fn referenced_global<'a>(expression: &'a Expression<'_>) -> Option<&'a str> {
+    if let Some(name) = global_name(expression) {
+        return Some(name);
+    }
+    match expression {
+        Expression::StaticMemberExpression(member) => global_name(&member.object),
         _ => None,
     }
 }
@@ -401,11 +415,8 @@ impl<'a> VisitJs<'a> for SpecifierCollector<'a, '_> {
 
     fn visit_call_expression(&mut self, call: &CallExpression<'a>) {
         self.require_call(call);
-        if global_name(&call.callee) == Some("fetch") {
+        if referenced_global(&call.callee).is_some_and(|name| FETCH_GLOBALS.contains(&name)) {
             self.add_builtins(&FETCH_BUILTINS);
-            for builtin in FETCH_OPTIONAL_BUILTINS {
-                self.add_specifier(builtin.to_owned(), true);
-            }
         }
         walk_js::walk_call_expression(self, call);
     }
@@ -419,9 +430,7 @@ impl<'a> VisitJs<'a> for SpecifierCollector<'a, '_> {
     fn visit_new_expression(&mut self, expression: &NewExpression<'a>) {
         match global_name(&expression.callee) {
             Some("WebSocket") => self.add_builtins(&WEBSOCKET_BUILTINS),
-            Some("Headers" | "Request" | "Response" | "FormData") => {
-                self.add_builtins(&FETCH_BUILTINS);
-            }
+            Some(name) if FETCH_GLOBALS.contains(&name) => self.add_builtins(&FETCH_BUILTINS),
             _ => {}
         }
         walk_js::walk_new_expression(self, expression);
@@ -586,18 +595,51 @@ mod tests {
             "new Request('http://127.0.0.1/');\n",
             "new Response(null);\n",
             "new FormData();\n",
+            "Response.json({});\n",
+            "globalThis.Response.redirect('/x');\n",
         ];
         for source in cases {
             let fs = MemoryFs::new(&[("/app/main.js", source)]);
             let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
             let capabilities = capabilities(&analysis);
-            for name in ["http", "tls", "zlib", "buffer"] {
+            for name in FETCH_BUILTINS {
                 assert!(
                     capabilities.iter().any(|capability| capability == name),
                     "{source} did not pull {name}: {capabilities:?}"
                 );
             }
+            for name in ["http2", "sqlite"] {
+                assert!(
+                    !capabilities.iter().any(|capability| capability == name),
+                    "{source} pulled {name}: {capabilities:?}"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn fetch_pulls_the_undici_builtins_only() {
+        let fs = MemoryFs::new(&[("/app/main.js", "fetch('http://127.0.0.1/');\n")]);
+        let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
+        for builtin in FETCH_BUILTINS {
+            assert!(
+                analysis.builtins.contains_key(builtin),
+                "missing {builtin}: {:?}",
+                analysis.builtins
+            );
+        }
+        // `http2` and `sqlite` stay out: undici guards both, so a fetch app must pack
+        // without them (and `--without http2`/`--without sqlite` must keep working).
+        for builtin in ["http2", "sqlite"] {
+            assert!(
+                !analysis.builtins.contains_key(builtin),
+                "pulled {builtin}: {:?}",
+                analysis.builtins
+            );
+        }
+        // The sixteen builtins close over nineteen modules; the CLI adds the ambient
+        // `console` and `timers` on top, so a one-line fetch app has 21 capabilities.
+        assert_eq!(capabilities(&analysis).len(), 19);
     }
 
     #[test]

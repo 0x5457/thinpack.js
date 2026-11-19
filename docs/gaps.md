@@ -15,9 +15,25 @@ the divergence, why it exists, and where it lives.
   - That bundle is the reason a `fetch` call pulls sixteen modules into the payload
     (`assert`, `async_hooks`, `buffer`, `crypto`, `diagnostics_channel`, `events`, `http`,
     `net`, `perf_hooks`, `querystring`, `stream`, `tls`, `url`, `util`, `worker_threads`,
-    `zlib`); `http2` and `sqlite` are optional, because undici probes them and handles their
-    absence.
-  - `EventSource` is absent: Node's bundle does not export one.
+    `zlib`), which closes over 21 capabilities once the ambient modules are added. `http2`
+    and `sqlite` stay out of both sets: undici probes them and handles their absence, so the
+    analyzer does not pull them and `--without http2`/`--without sqlite` keep working.
+  - Loading is lazy, the payload is not: the bundle is a lazy source of the `http` extension,
+    and every lazy source is decompressed and retained as a string per realm when the runtime
+    is created. An app that enables `http` — which includes every app that only uses
+    `new WebSocket(…)` — therefore pays its 132 KiB of template, a brotli decode per realm and
+    its 812 KiB of JavaScript kept for the life of the process, whether or not `fetch` is ever
+    evaluated; only evaluation is lazy.
+  - `EventSource` is exported by that bundle but absent here: Node gates the global behind
+    `--experimental-eventsource` and deletes it otherwise, and this runtime has no equivalent
+    switch, so the global is never installed.
+  - `MessageEvent`, `CloseEvent` and `ErrorEvent` are likewise exported by the bundle and
+    exposed by Node by default, but thinpack defines none of them, so `new MessageEvent('x')`
+    is a `ReferenceError`.
+  - `reportError` throws its argument from a microtask, which reaches the same
+    uncaught-exception path; Node first dispatches a cancelable `ErrorEvent` on `globalThis`,
+    and that global does not exist here
+    (`crates/thinpack-rt/src/bootstrap/fetch_globals.js`).
   - Everything undici builds on is still this runtime's implementation, so the entries below
     for `net`, `tls`, `zlib` and the streams apply to it too.
 - `Blob` parts are read through a JS reader (`crates/node/buffer/src/binding_blob.js`). Node's
@@ -78,6 +94,9 @@ the divergence, why it exists, and where it lives.
 - `os.getPriority`/`os.setPriority` throw `ERR_NOT_IMPLEMENTED`; a real
   implementation needs the platform priority mapping plus
   `os.constants.priority` (`crates/node/os/src/os.js`).
+- `process.versions.undici` reports the vendored bundle's version even in a build without
+  `http`, where that bundle is not compiled in
+  (`crates/node/process/src/process.js`).
 - HTTP/2 over UNIX-domain sockets and TLS over non-TCP transports fail with
   `ERR_NOT_IMPLEMENTED` (`crates/node/http2/src/ops.rs`,
   `crates/node/net/src/ops.rs`).
@@ -89,9 +108,12 @@ the divergence, why it exists, and where it lives.
   the unpacked runtime; load virtual files by absolute `/app/...` path, which
   stays in the payload's path space on every platform
   (`crates/node/worker-threads/src/worker_threads.js`).
-- `markAsUncloneable` is real: it marks the object in a `WeakSet` that
-  `structuredClone` consults, so a clone of a marked value throws
-  `DataCloneError` (`crates/thinpack-rt/src/bootstrap/structured_clone.js`).
+- `markAsUncloneable` marks the object in a `WeakSet` that the JS `structuredClone`
+  consults, so cloning a marked value throws `DataCloneError`. `worker_threads`
+  `postMessage` and `core.serialize` do not consult it: they go through the engine
+  serializer, so a marked value still transfers there
+  (`crates/thinpack-rt/src/bootstrap/structured_clone.js`,
+  `crates/node/worker-threads/src/worker_threads.js`).
 - `getEnvironmentData`/`setEnvironmentData` still throw `ERR_NOT_IMPLEMENTED`;
   real environment data needs cross-thread state
   (`crates/node/worker-threads/src/worker_threads.js`).
