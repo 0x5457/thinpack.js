@@ -149,7 +149,7 @@ Ambient (every template): `console`, `process`, `timers`, `buffer`, `url`, plus 
 On demand: `assert`, `async_hooks`, `child_process`, `constants`, `crypto`,
 `diagnostics_channel`, `dns`, `events`, `ffi`, `fs`, `http`, `http2`, `https`, `inspector`,
 `module`, `net`, `os`, `path`, `perf_hooks`, `querystring`, `readline`, `sea`, `sqlite`,
-`stream`, `string_decoder`, `tls`, `tty`, `util`, `v8`, `vm`, `worker_threads`, `zlib`.
+`stream`, `string_decoder`, `test`, `tls`, `tty`, `util`, `v8`, `vm`, `worker_threads`, `zlib`.
 Subpaths (`fs/promises`, `stream/web`, `path/posix`, `util/types`, …) ship with their module.
 
 `http2` and `sqlite` are optional: a package probing for them does not fail the pack. A module

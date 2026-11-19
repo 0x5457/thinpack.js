@@ -18,7 +18,7 @@ struct PackedTest {
     files: &'static [(&'static str, &'static str)],
     capabilities: &'static [&'static str],
     /// A case that must fail: the app exits non-zero and writes this substring
-    /// to stderr.
+    /// to its output (stdout or stderr).
     error: Option<&'static str>,
 }
 
@@ -272,6 +272,31 @@ check(diff('foo', 'foo'), []);
         capabilities: &["util"],
         error: None,
     },
+    PackedTest {
+        name: "packed::node-test-late-registration",
+        directory: "node-test-late-registration",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r"
+const test = require('node:test');
+
+test('before the timer', () => {});
+
+// The runner drains on the next tick, so this registration lands after the
+// first drain finished. It must still run: a dropped test lets a failing
+// suite exit 0. A timer rather than a top-level await keeps the entry a
+// CommonJS module, which packed ESM entries do not support on Windows.
+setTimeout(() => {
+  test('late', () => {
+    throw new Error('late boom');
+  });
+}, 20);
+",
+        )],
+        capabilities: &["test"],
+        error: Some("late boom"),
+    },
 ];
 
 pub(super) fn print_list(cli: &super::Cli) {
@@ -486,9 +511,10 @@ fn run_binary(binary: &Path, directory: &Path, expected: Option<&str>) -> super:
     super::kill_process_group(pid);
     let stdout = super::read(stdout);
     let stderr = super::read(stderr);
+    let output = format!("{stdout}{stderr}");
     if !timed_out {
         match expected {
-            Some(fragment) if !status.success() && stderr.contains(fragment) => {
+            Some(fragment) if !status.success() && output.contains(fragment) => {
                 return super::Outcome::Passed;
             }
             None if status.success() => return super::Outcome::Passed,
@@ -500,7 +526,7 @@ fn run_binary(binary: &Path, directory: &Path, expected: Option<&str>) -> super:
         format!("timed out after {} ms", TEST_TIMEOUT.as_millis())
     } else if let Some(fragment) = expected {
         format!(
-            "expected a failure whose stderr contains {fragment:?}, got {}",
+            "expected a failure whose output contains {fragment:?}, got {}",
             super::describe_status(status)
         )
     } else {

@@ -105,4 +105,30 @@ test('todo and skip bodies ran as expected', () => {
     assert.ok(events.includes('context todo continued'));
 });
 
-afterEach(() => mock.restoreAll());
+describe('mock trackers', () => {
+    const subject = {
+        read() {
+            return 'real';
+        },
+    };
+
+    before(() => mock.method(subject, 'read', () => 'mocked'));
+    after(() => mock.restoreAll());
+
+    it('sees a mock installed in before()', () => {
+        assert.strictEqual(subject.read(), 'mocked');
+    });
+
+    it('still sees the before() mock in the next test', () => {
+        assert.strictEqual(subject.read(), 'mocked');
+    });
+});
+
+test('the per-test tracker restores its mocks when the test finishes', (context) => {
+    context.mock.method(target, 'read', () => 'per-test');
+    assert.strictEqual(target.read('value'), 'per-test');
+});
+
+test('mocks from the previous test are restored', () => {
+    assert.strictEqual(target.read('value'), 'value');
+});

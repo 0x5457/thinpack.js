@@ -1,6 +1,8 @@
 // Copyright Node.js contributors. All rights reserved.
 // Copyright 2018-2026 the Deno authors. MIT license.
-// Adapted from Node.js lib/test.js and Deno ext/node/polyfills/testing.ts.
+// Adapted from Node.js v26.13.1 lib/test.js and Deno v2.9.8
+// ext/node/polyfills/testing.ts
+// (denoland/deno e7b39ebd55c85aaf6a29290c1f5a99e2e21e09dd).
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
