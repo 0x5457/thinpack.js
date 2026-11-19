@@ -10,6 +10,7 @@
 #   THINPACK_VERSION      version or tag to install (default: the latest release)
 #   THINPACK_INSTALL_DIR  where the binaries go (default: ~/.local/bin)
 #   THINPACK_BASE_URL     download location with the release assets (default: the GitHub release)
+#   THINPACK_STATIC       1 forces the static Linux build; ignored on other platforms
 set -eu
 
 REPOSITORY="0x5457/thinpack.js"
@@ -36,27 +37,34 @@ else
     fail "curl or wget is required"
 fi
 
-# Candidate archives in order of preference. The glibc build is the smaller one and comes first
-# when the host's libc can run it; the static musl build follows so a host that cannot, can.
-# `THINPACK_STATIC=1` asks for the static build regardless: it is what makes the artifacts you
-# pack run on older distributions, at about 1 MiB per artifact.
-candidates() {
+# The release target this host runs, before the libc suffix Linux adds below.
+platform() {
     system=$(uname -s)
     machine=$(uname -m)
-    if [ "${THINPACK_STATIC:-}" = "1" ]; then
-        case "${machine}" in
-            x86_64) [ "${system}" = Linux ] && echo x86_64-unknown-linux-musl ;;
-            aarch64 | arm64) [ "${system}" = Linux ] && echo aarch64-unknown-linux-musl ;;
-        esac
-    fi
     case "${system}:${machine}" in
-        Linux:x86_64) echo "x86_64-unknown-linux-gnu x86_64-unknown-linux-musl" ;;
-        Linux:aarch64 | Linux:arm64) echo "aarch64-unknown-linux-gnu aarch64-unknown-linux-musl" ;;
+        Linux:x86_64) echo x86_64-unknown-linux ;;
+        Linux:aarch64 | Linux:arm64) echo aarch64-unknown-linux ;;
         Darwin:arm64) echo aarch64-apple-darwin ;;
         Darwin:x86_64) echo x86_64-apple-darwin ;;
         *) fail "no archive for ${system} ${machine}; see the releases page, or build from source" ;;
     esac
 }
+
+# Linux ships two archives, in order of preference: the glibc build is the smaller one and comes
+# first when the host's libc can run it, and the static musl build follows so a host that cannot,
+# can. `THINPACK_STATIC=1` narrows that to the static build alone, with no glibc fallback: it is
+# what makes the artifacts you pack run on older distributions, at about 1 MiB per artifact.
+platform=$(platform)
+case "${platform}" in
+    *-unknown-linux)
+        if [ "${THINPACK_STATIC:-}" = "1" ]; then
+            targets="${platform}-musl"
+        else
+            targets="${platform}-gnu ${platform}-musl"
+        fi
+        ;;
+    *) targets="${platform}" ;;
+esac
 
 # The glibc archive carries the runner's floor (Ubuntu 24.04 → 2.39). A host below it skips that
 # candidate instead of being told to go away, because the static archive is right there.
@@ -122,17 +130,22 @@ work=$(mktemp -d)
 trap 'rm -rf "${work}"' EXIT
 
 say "installing thinpack ${version}"
-for candidate in $(candidates); do
+tried=""
+for candidate in ${targets}; do
     case "${candidate}" in
-        *-gnu) [ "$(uname -s)" != Linux ] || runs_glibc || continue ;;
+        *-gnu) runs_glibc || continue ;;
     esac
+    tried="${tried} ${candidate}"
+    # No `2>/dev/null`: the fetcher's own message is the difference between a network failure
+    # and a release that has no archive for this target.
     if download "${base}/thinpack-${version}-${candidate}.tar.gz" \
-        "${work}/thinpack-${version}-${candidate}.tar.gz" 2>/dev/null; then
+        "${work}/thinpack-${version}-${candidate}.tar.gz"; then
         target="${candidate}"
         break
     fi
 done
-[ -n "${target:-}" ] || fail "no archive this host can run at ${base}; build from source"
+[ -n "${target:-}" ] ||
+    fail "no archive this host can run at ${base} (tried${tried:- nothing}); build from source"
 asset="thinpack-${version}-${target}.tar.gz"
 staging="thinpack-${version}-${target}"
 say "downloaded ${asset}"

@@ -34,8 +34,10 @@ carries only that app's capability set, which is where the smallest artifacts co
 
 The glibc artifacts are the smaller ones and are linked against the runner's glibc (Ubuntu 24.04,
 2.39). The static musl artifacts link no libc and run anywhere, Alpine included, at about 1 MiB
-more per artifact you pack; `dlopen` through `node:ffi` is the one thing they cannot do, because a
-static binary has no dynamic loader. `scripts/install.sh` picks between them by the host's libc,
-and `THINPACK_STATIC=1` forces the static one.
+more per artifact you pack. They also carry musl's resolver, which reads `/etc/hosts` and
+`/etc/resolv.conf` only, so `dns.lookup` sees no NSS entries (LDAP, sssd, NIS) and no mDNS; and
+`dlopen` through `node:ffi` is the one thing they cannot do at all, because a static binary has no
+dynamic loader. `scripts/install.sh` picks between them by the host's libc, and `THINPACK_STATIC=1`
+(Linux only) forces the static one.
 
 Verify a download against `SHA256SUMS`.

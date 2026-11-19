@@ -34,7 +34,9 @@ CLI loads its template from next to itself. Archives with `SHA256SUMS` are on th
 a static one with no libc floor at all, which costs about 1 MiB per packed artifact. The installer
 takes the glibc build when the host can run it and the static one otherwise; `THINPACK_STATIC=1`
 asks for static regardless, which is what you want when the binary you pack has to run on a
-distribution older than your own.
+distribution older than your own (the flag is Linux-only, and ignored elsewhere). The static build
+also resolves names with musl's resolver, which reads `/etc/hosts` and `/etc/resolv.conf` only:
+`dns.lookup` on such a binary sees no NSS entries (LDAP, sssd, NIS) and no mDNS.
 
 The archive carries one template with every built-in module, so any app packs. `--rebuild` builds a
 template that carries only the app's own capability set, which is where the smallest artifacts in

@@ -10,8 +10,8 @@ use thinpack_caps::Module;
 use crate::options::{DEFAULT_BACKEND, Options};
 
 /// Templates are built the way `cargo xtask size --profile small` measures them
-/// (`xtask/src/size.rs` holds the same flags): without unwind tables, and on ELF
-/// with packed relative relocations. The same runtime keeps 6% more size and
+/// (`xtask/src/size.rs` holds the same flags): without unwind tables, and on `x86_64`
+/// glibc with packed relative relocations. The same runtime keeps 6% more size and
 /// runs no faster, so size wins by default here.
 const UNWIND_ARGS: &str = "-C force-unwind-tables=no";
 const ELF_LINK_ARGS: &str = "-C force-unwind-tables=no -C link-arg=-Wl,-z,pack-relative-relocs";
@@ -23,11 +23,17 @@ fn runtime_binary() -> String {
     format!("thinpack-rt{}", std::env::consts::EXE_SUFFIX)
 }
 
-/// `pack-relative-relocs` is `x86_64` GNU `ld` only, and MSVC rejects `force-unwind-tables=no`.
+/// `pack-relative-relocs` is `x86_64` GNU `ld` only, and a static musl `static-pie` needs
+/// musl ≥ 1.2.4 for `DT_RELR` startup relocation, so a musl host gets the same flags the musl
+/// archive was built with (`xtask/src/dist.rs`); MSVC rejects `force-unwind-tables=no`.
 const fn rust_flags() -> &'static str {
     if cfg!(target_env = "msvc") {
         ""
-    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+    } else if cfg!(all(
+        target_os = "linux",
+        target_arch = "x86_64",
+        not(target_env = "musl")
+    )) {
         ELF_LINK_ARGS
     } else {
         UNWIND_ARGS
