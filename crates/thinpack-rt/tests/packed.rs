@@ -221,11 +221,54 @@ console.log(readFileSync);
 import assert from 'node:assert/strict';
 
 await assert.rejects(import('./missing.mjs'), {
+  name: 'Error',
   code: 'ERR_MODULE_NOT_FOUND',
   message: "Cannot find module '/app/missing.mjs' imported from /app/main.mjs",
+  url: 'file:///app/missing.mjs',
+});
+await assert.rejects(import('node:thinpack-missing'), {
+  name: 'Error',
+  code: 'ERR_UNKNOWN_BUILTIN_MODULE',
+  message: 'No such built-in module: node:thinpack-missing',
 });
 "#,
         )],
+        capabilities: &["assert"],
+        error: None,
+    },
+    PackedTest {
+        name: "packed::esm-dynamic-link-error",
+        directory: "esm-dynamic-link-error",
+        entry: "/app/main.mjs",
+        files: &[
+            (
+                "/app/main.mjs",
+                r#"
+import assert from 'node:assert/strict';
+
+for (let i = 0; i < 2; i++) {
+  await assert.rejects(import('./root.mjs'), (error) => {
+    assert.ok(error instanceof SyntaxError);
+    assert.equal(error.message,
+      "The requested module './dependency.mjs' does not provide an export named 'missing'");
+    assert.equal(error.code, undefined);
+    assert.match(error.stack, /file:\/\/\/app\/importer\.mjs:1/);
+    return true;
+  });
+}
+assert.equal(globalThis.dependencyEvaluated, undefined);
+"#,
+            ),
+            ("/app/root.mjs", "import './importer.mjs';"),
+            (
+                "/app/importer.mjs",
+                "import { missing } from './dependency.mjs';",
+            ),
+            (
+                "/app/dependency.mjs",
+                "globalThis.dependencyEvaluated = true; export const present = 1;",
+            ),
+        ],
         capabilities: &["assert"],
         error: None,
     },
