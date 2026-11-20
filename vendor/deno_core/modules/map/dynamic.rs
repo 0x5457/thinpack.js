@@ -556,7 +556,6 @@ impl ModuleMap {
                             let result = self.instantiate_module(scope, module_id);
                             if let Err(exception) = result {
                                 self.dynamic_import_reject(scope, dyn_import_id, exception);
-                                continue;
                             }
                             self.dynamic_import_module_evaluate(
                                 scope,

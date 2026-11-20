@@ -2,6 +2,7 @@ use std::error::Error as StdError;
 use std::fmt;
 
 use deno_core::error::{CoreError, CoreErrorKind};
+use deno_core::url::Url;
 use deno_error::{JsErrorClass, PropertyValue};
 
 #[derive(Debug)]
@@ -10,6 +11,19 @@ pub struct Error(Box<dyn StdError + Send + Sync>);
 impl Error {
     pub fn new(error: impl Into<Box<dyn StdError + Send + Sync>>) -> Self {
         Self(error.into())
+    }
+
+    pub(crate) fn esm_load(specifier: &Url, error: CoreError) -> Self {
+        if let CoreErrorKind::Js(exception) = error.as_kind()
+            && exception.name.as_deref() == Some("Error")
+            && exception.message.as_deref() == Some("module instantiation failed")
+            && exception.frames.is_empty()
+        {
+            return Self::new(format!(
+                "{error}\nESM graph entry: {specifier}\nThe JavaScript engine did not report an underlying exception."
+            ));
+        }
+        Self::from(error)
     }
 }
 

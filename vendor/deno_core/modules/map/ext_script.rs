@@ -453,13 +453,18 @@ impl ModuleMap {
         ))
     }
 
-    /// Returns a registered synthetic module's V8 handle. Throws into `scope`
-    /// on evaluation failure.
-    pub(super) fn resolve_synthetic_esm<'s, 'i>(
+    /// Convenience wrapper around `build_synthetic_esm_module` for the V8
+    /// `module_resolve_callback` path: returns the module's V8 handle if
+    /// `specifier` is registered as a `synthetic_esm` target, or `None` if
+    /// not. Throws into `scope` on evaluation failure.
+    pub(super) fn try_resolve_synthetic_esm<'s, 'i>(
         &self,
         scope: &mut v8::PinScope<'s, 'i>,
         specifier: &str,
     ) -> Option<v8::Local<'s, v8::Module>> {
+        if !self.has_synthetic_esm_module(specifier) {
+            return None;
+        }
         match self.build_synthetic_esm_module(scope, specifier) {
             Ok(module_id) => {
                 let handle = self.get_handle(module_id)?;
