@@ -126,8 +126,6 @@ pub(crate) struct ModuleMap {
     code_cache_ready_futs: TrackedFutures<Pin<Box<CodeCacheReadyFuture>>>,
     module_waker: AtomicWaker,
     data: RefCell<ModuleMapData>,
-    // QuickJS can mark a module errored without retaining its linking exception.
-    instantiation_errors: RefCell<HashMap<ModuleId, v8::Global<v8::Value>>>,
     will_snapshot: bool,
     loading_internal_modules: Cell<bool>,
 
@@ -183,7 +181,6 @@ impl ModuleMap {
         self.pending_dyn_mod_evaluations.clear();
         self.pending_tla_waiters.borrow_mut().clear();
         self.code_cache_ready_futs.clear();
-        self.instantiation_errors.borrow_mut().clear();
         std::mem::take(&mut *self.data.borrow_mut());
     }
 
@@ -249,7 +246,6 @@ impl ModuleMap {
             code_cache_ready_futs: Default::default(),
             module_waker: Default::default(),
             data: Default::default(),
-            instantiation_errors: Default::default(),
             loading_internal_modules: Default::default(),
             import_sync_eval_stack: Default::default(),
         }
@@ -1104,9 +1100,6 @@ impl ModuleMap {
         scope: &mut v8::PinScope<'s, 'i>,
         id: ModuleId,
     ) -> Result<(), v8::Global<v8::Value>> {
-        if let Some(exception) = self.instantiation_errors.borrow().get(&id) {
-            return Err(exception.clone());
-        }
         v8::tc_scope!(let tc_scope, scope);
 
         let module = self
@@ -1144,24 +1137,15 @@ impl ModuleMap {
             Self::module_source_callback,
         );
         tc_scope.remove_slot::<*const Self>();
-        if instantiate_result != Some(true) {
-            if tc_scope.has_terminated() {
-                let undefined: v8::Local<v8::Value> = v8::undefined(tc_scope).into();
-                return Err(v8::Global::new(tc_scope, undefined));
-            }
-            let exception = tc_scope.exception().unwrap_or_else(|| {
-                let name = self.get_name_by_id(id).expect("ModuleInfo not found");
-                let message = format!(
-                    "Failed to instantiate ES module '{name}': the JavaScript engine did not return an exception"
-                );
-                let message = v8::String::new(tc_scope, &message).unwrap();
-                v8::Exception::error(tc_scope, message)
-            });
-            let exception = v8::Global::new(tc_scope, exception);
-            self.instantiation_errors
-                .borrow_mut()
-                .insert(id, exception.clone());
-            return Err(exception);
+        if instantiate_result.is_none() {
+            let exception = match tc_scope.exception() {
+                Some(exception) => exception,
+                None => v8::Exception::error(
+                    tc_scope,
+                    v8::String::new(tc_scope, "module instantiation failed").unwrap(),
+                ),
+            };
+            return Err(v8::Global::new(tc_scope, exception));
         }
 
         self.drop_instantiated_requests(tc_scope, id);
@@ -1296,13 +1280,24 @@ impl ModuleMap {
         // Dynamic `import()` of a computed specifier is not part of the
         // statically registered request graph, so a miss is normal; fall through
         // to the loader's full resolution below.
-        module_map.resolve_callback(
+        let maybe_module = module_map.resolve_callback(
             scope,
             &specifier_str,
             &referrer_name,
             attributes,
             pre_resolved_specifier,
-        )
+        );
+        if let Some(module) = maybe_module {
+            return Some(module);
+        }
+
+        crate::error::throw_js_error_class(
+            scope,
+            &JsErrorBox::type_error(format!(
+                r#"Cannot resolve module "{specifier_str}" from "{referrer_name}""#
+            )),
+        );
+        None
     }
 
     fn module_source_callback<'s>(
@@ -1487,7 +1482,9 @@ impl ModuleMap {
             {
                 return Some(v8::Local::new(scope, handle));
             }
-            return self.resolve_synthetic_esm(scope, specifier);
+            if let Some(module) = self.try_resolve_synthetic_esm(scope, specifier) {
+                return Some(module);
+            }
         }
 
         let module_type = get_requested_module_type_from_attributes(&import_attributes);
@@ -1529,8 +1526,8 @@ impl ModuleMap {
         // Synthetic ESM dispatch (post-resolve): in case the loader returned
         // a redirected/normalized form, also check here. Most callers hit
         // the pre-resolve branch above.
-        if self.has_synthetic_esm_module(resolved_specifier.as_str()) {
-            return self.resolve_synthetic_esm(scope, resolved_specifier.as_str());
+        if let Some(module) = self.try_resolve_synthetic_esm(scope, resolved_specifier.as_str()) {
+            return Some(module);
         }
 
         // Fallback: check lazy-loaded ESM sources (modules embedded in the
@@ -1550,25 +1547,14 @@ impl ModuleMap {
                         return Some(v8::Local::new(scope, handle));
                     }
                 }
-                Err(ModuleError::Exception(exception)) => {
-                    let exception = v8::Local::new(scope, exception);
-                    scope.throw_exception(exception);
-                    return None;
-                }
-                Err(error) => {
-                    let error = error.into_error(scope, false, true);
-                    crate::error::throw_js_error_class(scope, &error);
+                Err(e) => {
+                    let err = e.into_error(scope, false, true);
+                    crate::error::throw_js_error_class(scope, &err);
                     return None;
                 }
             }
         }
 
-        crate::error::throw_js_error_class(
-            scope,
-            &JsErrorBox::type_error(format!(
-                r#"Cannot resolve module "{specifier}" from "{referrer}""#
-            )),
-        );
         None
     }
 

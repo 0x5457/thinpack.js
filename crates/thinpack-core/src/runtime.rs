@@ -77,7 +77,11 @@ impl Runtime {
     /// to load, or rejects while evaluating.
     pub async fn run_esm_file(&mut self, path: &Path) -> Result<(), Error> {
         let specifier = file_url(path)?;
-        let module = self.inner.load_main_es_module(&specifier).await?;
+        let module = self
+            .inner
+            .load_main_es_module(&specifier)
+            .await
+            .map_err(|error| Error::esm_load(&specifier, error))?;
         let evaluated = self.inner.mod_evaluate(module);
         self.inner
             .run_event_loop(PollEventLoopOptions::default())
@@ -92,7 +96,10 @@ impl Runtime {
     /// to compile.
     pub async fn precompile_esm(&mut self, path: &Path) -> Result<(), Error> {
         let specifier = file_url(path)?;
-        self.inner.load_side_es_module(&specifier).await?;
+        self.inner
+            .load_side_es_module(&specifier)
+            .await
+            .map_err(|error| Error::esm_load(&specifier, error))?;
         Ok(())
     }
 

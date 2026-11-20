@@ -1254,7 +1254,10 @@ pub fn host_import_module_with_phase_dynamically_callback<'s, 'i>(
 
         state.notify_new_dynamic_import();
     }
-    // Add the dynamic import call site to legacy loader errors.
+    // Map errors from module resolution (not JS errors from module execution) to
+    // ones rethrown from this scope, so they include the call stack of the
+    // dynamic import site. Error objects without any stack frames are assumed to
+    // be module resolution errors, other exception values are left as they are.
     let builder = v8::FunctionBuilder::new(catch_dynamic_import_promise_error);
 
     let map_err = v8::FunctionBuilder::<v8::Function>::build(builder, tc_scope).unwrap();
@@ -1566,20 +1569,14 @@ fn catch_dynamic_import_promise_error<'s, 'i>(
     let arg = args.get(0);
     if is_instance_of_error(scope, arg) {
         let e: crate::error::NativeJsError = serde_v8::from_v8(scope, arg).unwrap_or_default();
-        let object: v8::Local<v8::Object> = arg.try_into().unwrap();
-        if e.name.as_deref() == Some(deno_error::builtin_classes::SYNTAX_ERROR) {
-            add_module_link_location(scope, object);
-        }
-        let code_key = CODE.v8_string(scope).unwrap();
-        if e.name.as_deref() == Some(deno_error::builtin_classes::TYPE_ERROR)
-            && object
-                .get(scope, code_key.into())
-                .is_some_and(|code| code.is_undefined())
-            && !has_call_site(scope, arg)
-        {
+        let name = e
+            .name
+            .unwrap_or_else(|| deno_error::builtin_classes::GENERIC_ERROR.to_string());
+        if !has_call_site(scope, arg) {
             let msg = v8::Exception::create_message(scope, arg);
+            let arg: v8::Local<v8::Object> = arg.try_into().unwrap();
             let message_key = MESSAGE.v8_string(scope).unwrap();
-            let message = object.get(scope, message_key.into()).unwrap();
+            let message = arg.get(scope, message_key.into()).unwrap();
             let mut message: v8::Local<v8::String> = message.try_into().unwrap();
             if let Some(stack_frame) = JsStackFrame::from_v8_message(scope, msg)
                 && let Some(location) = stack_frame.maybe_format_location()
@@ -1587,42 +1584,35 @@ fn catch_dynamic_import_promise_error<'s, 'i>(
                 let str = format!("{} at {location}", message.to_rust_string_lossy(scope));
                 message = v8::String::new(scope, &str).unwrap();
             }
-            let exception = v8::Exception::type_error(scope, message);
-            let code_value = ERR_MODULE_NOT_FOUND.v8_string(scope).unwrap();
-            let exception_obj = exception.to_object(scope).unwrap();
-            exception_obj.set(scope, code_key.into(), code_value.into());
+            let exception = match name.as_str() {
+                deno_error::builtin_classes::RANGE_ERROR => {
+                    v8::Exception::range_error(scope, message)
+                }
+                deno_error::builtin_classes::TYPE_ERROR => {
+                    v8::Exception::type_error(scope, message)
+                }
+                deno_error::builtin_classes::SYNTAX_ERROR => {
+                    v8::Exception::syntax_error(scope, message)
+                }
+                deno_error::builtin_classes::REFERENCE_ERROR => {
+                    v8::Exception::reference_error(scope, message)
+                }
+                _ => v8::Exception::error(scope, message),
+            };
+            // V8 module linking errors (e.g. a missing named export) are
+            // spec-defined `SyntaxError`s and must not carry a host-defined `code`.
+            // Only genuine resolution/loading failures get `ERR_MODULE_NOT_FOUND`.
+            if name.as_str() != deno_error::builtin_classes::SYNTAX_ERROR {
+                let code_key = CODE.v8_string(scope).unwrap();
+                let code_value = ERR_MODULE_NOT_FOUND.v8_string(scope).unwrap();
+                let exception_obj = exception.to_object(scope).unwrap();
+                exception_obj.set(scope, code_key.into(), code_value.into());
+            }
             scope.throw_exception(exception);
             return;
         }
     }
     scope.throw_exception(arg);
-}
-
-fn add_module_link_location<'s, 'i>(
-    scope: &mut v8::PinScope<'s, 'i>,
-    exception: v8::Local<'s, v8::Object>,
-) {
-    v8::tc_scope!(let scope, scope);
-    let key = STACK.v8_string(scope).unwrap();
-    let Some(stack) = exception
-        .get(scope, key.into())
-        .and_then(|stack| stack.try_cast::<v8::String>().ok())
-    else {
-        return;
-    };
-    let stack = stack.to_rust_string_lossy(scope);
-    if stack.lines().nth(1).is_some() {
-        return;
-    }
-
-    // V8 can report the import location in its message without a JS stack frame.
-    let message = v8::Exception::create_message(scope, exception.into());
-    if let Some(location) = JsStackFrame::from_v8_message(scope, message)
-        .and_then(|frame| frame.maybe_format_location())
-    {
-        let stack = v8::String::new(scope, &format!("{stack}\n    at {location}")).unwrap();
-        exception.set(scope, key.into(), stack.into());
-    }
 }
 
 pub extern "C" fn promise_reject_callback(message: v8::PromiseRejectMessage) {

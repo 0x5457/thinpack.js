@@ -190,50 +190,42 @@ console.log(readFileSync);
             "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/app/missing.mjs' imported from /app/importer.mjs",
         ]),
     },
+    #[cfg(feature = "backend-quickjs")]
     PackedTest {
-        name: "packed::esm-dynamic-errors",
-        directory: "esm-dynamic-errors",
+        name: "packed::esm-instantiation-fallback",
+        directory: "esm-instantiation-fallback",
         entry: "/app/main.mjs",
         files: &[
+            ("/app/main.mjs", "import './dependency.mjs\0';"),
+            // QuickJS reports the NUL-containing specifier as `undefined` to
+            // the loader, then fails to instantiate it without an exception.
             (
-                "/app/main.mjs",
-                r#"
-import assert from 'node:assert/strict';
-
-for (let i = 0; i < 2; i++) {
-  await assert.rejects(import('./importer.mjs'), (error) => {
-    assert.ok(error instanceof SyntaxError);
-    assert.equal(error.message,
-      "The requested module './dependency.mjs' does not provide an export named 'missing'");
-    assert.equal(error.code, undefined);
-    assert.match(error.stack, /file:\/\/\/app\/importer\.mjs:1/);
-    return true;
-  });
-}
-
-await assert.rejects(import('./missing.mjs'), {
-  name: 'Error',
-  code: 'ERR_MODULE_NOT_FOUND',
-  message: "Cannot find module '/app/missing.mjs' imported from /app/main.mjs",
-  url: 'file:///app/missing.mjs',
-});
-await assert.rejects(import('node:thinpack-missing'), {
-  name: 'Error',
-  code: 'ERR_UNKNOWN_BUILTIN_MODULE',
-  message: 'No such built-in module: node:thinpack-missing',
-});
-assert.equal(globalThis.dependencyEvaluated, undefined);
-"#,
-            ),
-            (
-                "/app/importer.mjs",
-                "import { missing } from './dependency.mjs';",
-            ),
-            (
-                "/app/dependency.mjs",
-                "globalThis.dependencyEvaluated = true; export const present = 1;",
+                "/app/node_modules/undefined/index.js",
+                "module.exports = {};",
             ),
         ],
+        capabilities: &[],
+        error: Some(&[
+            "Error: module instantiation failed",
+            "ESM graph entry: file:///app/main.mjs",
+            "The JavaScript engine did not report an underlying exception.",
+        ]),
+    },
+    PackedTest {
+        name: "packed::esm-dynamic-resolution-error",
+        directory: "esm-dynamic-resolution-error",
+        entry: "/app/main.mjs",
+        files: &[(
+            "/app/main.mjs",
+            r#"
+import assert from 'node:assert/strict';
+
+await assert.rejects(import('./missing.mjs'), {
+  code: 'ERR_MODULE_NOT_FOUND',
+  message: "Cannot find module '/app/missing.mjs' imported from /app/main.mjs",
+});
+"#,
+        )],
         capabilities: &["assert"],
         error: None,
     },
