@@ -1,6 +1,9 @@
 use std::error::Error as StdError;
 use std::fmt;
 
+use deno_core::error::{CoreError, CoreErrorKind};
+use deno_error::{JsErrorClass, PropertyValue};
+
 #[derive(Debug)]
 pub struct Error(Box<dyn StdError + Send + Sync>);
 
@@ -12,6 +15,14 @@ impl Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(error) = self.0.downcast_ref::<CoreError>()
+            && let CoreErrorKind::JsBox(error) = error.as_kind()
+            && let Some(PropertyValue::String(code)) = error
+                .get_additional_properties()
+                .find_map(|(key, value)| (key == "code").then_some(value))
+        {
+            return write!(formatter, "{} [{code}]: {error}", error.get_class());
+        }
         fmt::Display::fmt(&self.0, formatter)
     }
 }
@@ -34,8 +45,8 @@ impl From<std::io::Error> for Error {
     }
 }
 
-impl From<deno_core::error::CoreError> for Error {
-    fn from(error: deno_core::error::CoreError) -> Self {
+impl From<CoreError> for Error {
+    fn from(error: CoreError) -> Self {
         Self::new(error)
     }
 }

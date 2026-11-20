@@ -17,9 +17,8 @@ struct PackedTest {
     entry: &'static str,
     files: &'static [(&'static str, &'static str)],
     capabilities: &'static [&'static str],
-    /// A case that must fail: the app exits non-zero and writes this substring
-    /// to its output (stdout or stderr).
-    error: Option<&'static str>,
+    /// An expected failure must exit non-zero and print every listed fragment.
+    error: Option<&'static [&'static str]>,
 }
 
 const TESTS: &[PackedTest] = &[
@@ -155,10 +154,88 @@ console.log(readFileSync);
 ",
         )],
         capabilities: &[],
-        error: Some(
+        error: Some(&[
             "/app/main.js is loaded as CommonJS; if it is an ES module, rename it to .mjs \
              or add \"type\": \"module\" to the nearest package.json.",
-        ),
+        ]),
+    },
+    PackedTest {
+        name: "packed::esm-link-error",
+        directory: "esm-link-error",
+        entry: "/app/main.mjs",
+        files: &[
+            ("/app/main.mjs", "import './importer.mjs';"),
+            (
+                "/app/importer.mjs",
+                "import { missing } from './dependency.mjs';",
+            ),
+            ("/app/dependency.mjs", "export const present = 1;"),
+        ],
+        capabilities: &[],
+        error: Some(&[
+            "SyntaxError: The requested module './dependency.mjs' does not provide an export named 'missing'",
+            "file:///app/importer.mjs:1",
+        ]),
+    },
+    PackedTest {
+        name: "packed::esm-resolution-error",
+        directory: "esm-resolution-error",
+        entry: "/app/main.mjs",
+        files: &[
+            ("/app/main.mjs", "import './importer.mjs';"),
+            ("/app/importer.mjs", "import './missing.mjs';"),
+        ],
+        capabilities: &[],
+        error: Some(&[
+            "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/app/missing.mjs' imported from /app/importer.mjs",
+        ]),
+    },
+    PackedTest {
+        name: "packed::esm-dynamic-errors",
+        directory: "esm-dynamic-errors",
+        entry: "/app/main.mjs",
+        files: &[
+            (
+                "/app/main.mjs",
+                r#"
+import assert from 'node:assert/strict';
+
+for (let i = 0; i < 2; i++) {
+  await assert.rejects(import('./importer.mjs'), (error) => {
+    assert.ok(error instanceof SyntaxError);
+    assert.equal(error.message,
+      "The requested module './dependency.mjs' does not provide an export named 'missing'");
+    assert.equal(error.code, undefined);
+    assert.match(error.stack, /file:\/\/\/app\/importer\.mjs:1/);
+    return true;
+  });
+}
+
+await assert.rejects(import('./missing.mjs'), {
+  name: 'Error',
+  code: 'ERR_MODULE_NOT_FOUND',
+  message: "Cannot find module '/app/missing.mjs' imported from /app/main.mjs",
+  url: 'file:///app/missing.mjs',
+});
+await assert.rejects(import('node:thinpack-missing'), {
+  name: 'Error',
+  code: 'ERR_UNKNOWN_BUILTIN_MODULE',
+  message: 'No such built-in module: node:thinpack-missing',
+});
+assert.equal(globalThis.dependencyEvaluated, undefined);
+"#,
+            ),
+            (
+                "/app/importer.mjs",
+                "import { missing } from './dependency.mjs';",
+            ),
+            (
+                "/app/dependency.mjs",
+                "globalThis.dependencyEvaluated = true; export const present = 1;",
+            ),
+        ],
+        capabilities: &["assert"],
+        error: None,
     },
     PackedTest {
         name: "packed::zlib-constructors",
@@ -295,7 +372,7 @@ setTimeout(() => {
 ",
         )],
         capabilities: &["test"],
-        error: Some("late boom"),
+        error: Some(&["late boom"]),
     },
 ];
 
@@ -452,7 +529,7 @@ fn capabilities(roots: &[&str]) -> Vec<String> {
     names.into_iter().collect()
 }
 
-fn run_binary(binary: &Path, directory: &Path, expected: Option<&str>) -> super::Outcome {
+fn run_binary(binary: &Path, directory: &Path, expected: Option<&[&str]>) -> super::Outcome {
     let mut command = Command::new(binary);
     command
         .current_dir(directory)
@@ -514,7 +591,10 @@ fn run_binary(binary: &Path, directory: &Path, expected: Option<&str>) -> super:
     let output = format!("{stdout}{stderr}");
     if !timed_out {
         match expected {
-            Some(fragment) if !status.success() && output.contains(fragment) => {
+            Some(fragments)
+                if !status.success()
+                    && fragments.iter().all(|fragment| output.contains(fragment)) =>
+            {
                 return super::Outcome::Passed;
             }
             None if status.success() => return super::Outcome::Passed,
@@ -524,9 +604,9 @@ fn run_binary(binary: &Path, directory: &Path, expected: Option<&str>) -> super:
 
     let reason = if timed_out {
         format!("timed out after {} ms", TEST_TIMEOUT.as_millis())
-    } else if let Some(fragment) = expected {
+    } else if let Some(fragments) = expected {
         format!(
-            "expected a failure whose output contains {fragment:?}, got {}",
+            "expected a failure whose output contains {fragments:?}, got {}",
             super::describe_status(status)
         )
     } else {

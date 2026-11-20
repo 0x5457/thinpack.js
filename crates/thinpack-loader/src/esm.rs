@@ -1,5 +1,7 @@
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap};
+use std::fmt;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -8,7 +10,7 @@ use deno_core::{
     ModuleSourceCode, ModuleSpecifier, ModuleType, ResolutionKind,
 };
 
-use deno_error::JsErrorBox;
+use deno_error::{AdditionalProperties, JsErrorBox, JsErrorClass, PropertyValue};
 use thinpack_core::BuiltinSources;
 use thinpack_core::js_string_literal;
 use thinpack_resolve::{FileSystem, Format};
@@ -21,6 +23,41 @@ use crate::ops::{file_url, path_from_url};
 struct HookLoad {
     format: String,
     source: String,
+}
+
+#[derive(Debug)]
+struct EsmLoaderError {
+    code: &'static str,
+    message: String,
+    url: Option<String>,
+}
+
+impl fmt::Display for EsmLoaderError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for EsmLoaderError {}
+
+impl JsErrorClass for EsmLoaderError {
+    fn get_class(&self) -> Cow<'static, str> {
+        "Error".into()
+    }
+
+    fn get_message(&self) -> Cow<'static, str> {
+        self.message.clone().into()
+    }
+
+    fn get_additional_properties(&self) -> AdditionalProperties {
+        let code = ("code".into(), PropertyValue::from(self.code));
+        let url = self.url.clone().map(|url| ("url".into(), url.into()));
+        Box::new(std::iter::once(code).chain(url))
+    }
+
+    fn get_ref(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+        self
+    }
 }
 
 #[derive(Debug)]
@@ -50,7 +87,7 @@ impl ModuleLoader for EsmLoader {
         referrer: &str,
         _kind: ResolutionKind,
     ) -> Result<ModuleSpecifier, JsErrorBox> {
-        resolve(&self.fs, specifier, referrer).map_err(JsErrorBox::generic)
+        resolve(&self.fs, specifier, referrer)
     }
 
     fn resolve_with_scope(
@@ -98,7 +135,7 @@ impl ModuleLoader for EsmLoader {
     fn load(
         &self,
         module_specifier: &ModuleSpecifier,
-        _maybe_referrer: Option<&ModuleLoadReferrer>,
+        maybe_referrer: Option<&ModuleLoadReferrer>,
         _options: ModuleLoadOptions,
     ) -> ModuleLoadResponse {
         if let Some(hook_load) = self.hook_loads.borrow().get(module_specifier.as_str()) {
@@ -113,7 +150,13 @@ impl ModuleLoader for EsmLoader {
                 hook_load,
             ));
         }
-        ModuleLoadResponse::Sync(load(&self.fs, &self.builtins, module_specifier))
+        let referrer = maybe_referrer.map(|referrer| &referrer.specifier);
+        let result = default_source(&self.fs, &self.builtins, module_specifier, referrer).and_then(
+            |(format, source)| {
+                module_from_format(&self.fs, &self.builtins, module_specifier, format, source)
+            },
+        );
+        ModuleLoadResponse::Sync(result)
     }
 }
 
@@ -192,42 +235,77 @@ pub(crate) fn resolve(
     fs: &ModuleFs,
     specifier: &str,
     referrer: &str,
-) -> Result<ModuleSpecifier, String> {
-    if specifier.starts_with("node:") {
-        return ModuleSpecifier::parse(specifier).map_err(|error| error.to_string());
-    }
-    if specifier.starts_with("file:") {
-        return ModuleSpecifier::parse(specifier).map_err(|error| error.to_string());
+) -> Result<ModuleSpecifier, JsErrorBox> {
+    let parse_url = |url: &str| {
+        ModuleSpecifier::parse(url).map_err(|error| JsErrorBox::generic(error.to_string()))
+    };
+    if specifier.starts_with("node:") || specifier.starts_with("file:") {
+        return parse_url(specifier);
     }
     if thinpack_caps::module_for_builtin(specifier).is_some() {
-        return ModuleSpecifier::parse(&format!("node:{specifier}"))
-            .map_err(|error| error.to_string());
+        return parse_url(&format!("node:{specifier}"));
     }
 
-    let parent = if referrer.is_empty() {
-        None
-    } else {
-        let url = ModuleSpecifier::parse(referrer).map_err(|error| error.to_string())?;
-        Some(
-            path_from_url(&url)
-                .ok_or_else(|| format!("cannot resolve `{specifier}` from `{referrer}`"))?,
-        )
-    };
-
+    let parent_url = (!referrer.is_empty())
+        .then(|| parse_url(referrer))
+        .transpose()?;
+    let parent = parent_url
+        .as_ref()
+        .map(|url| {
+            path_from_url(url).ok_or_else(|| {
+                JsErrorBox::generic(format!("cannot resolve `{specifier}` from `{referrer}`"))
+            })
+        })
+        .transpose()?;
     let base = parent.as_deref().unwrap_or_else(|| Path::new("/"));
     let resolved = thinpack_resolve::resolve_import(specifier, base, fs).map_err(|error| {
-        format!(
-            "cannot resolve `{specifier}`: {}",
+        if let (thinpack_resolve::Error::NotFound, Some(parent_url)) = (&error, &parent_url)
+            && !specifier.starts_with('#')
+        {
+            let is_path = matches!(specifier, "." | "..")
+                || specifier.starts_with("./")
+                || specifier.starts_with("../")
+                || specifier.starts_with('/');
+            let url = is_path.then(|| parent_url.join(specifier).ok()).flatten();
+            return module_not_found(fs, specifier, url.as_ref(), Some(parent_url));
+        }
+        JsErrorBox::generic(format!(
+            "cannot resolve `{specifier}` from `{referrer}`: {}",
             error.message(|path| fs.js_path(path))
-        )
+        ))
     })?;
     let url = file_url(&resolved.path).ok_or_else(|| {
-        format!(
+        JsErrorBox::generic(format!(
             "{} cannot be represented as a URL",
             fs.js_path(&resolved.path)
-        )
+        ))
     })?;
-    ModuleSpecifier::parse(&url).map_err(|error| error.to_string())
+    parse_url(&url)
+}
+
+fn module_not_found(
+    fs: &ModuleFs,
+    specifier: &str,
+    url: Option<&ModuleSpecifier>,
+    referrer: Option<&ModuleSpecifier>,
+) -> JsErrorBox {
+    let mut message = url.map_or_else(
+        || format!("Cannot find package '{specifier}'"),
+        |url| {
+            let path = path_from_url(url).map_or_else(|| url.to_string(), |path| fs.js_path(&path));
+            format!("Cannot find module '{path}'")
+        },
+    );
+    if let Some(referrer) = referrer {
+        let importer =
+            path_from_url(referrer).map_or_else(|| referrer.to_string(), |path| fs.js_path(&path));
+        write!(message, " imported from {importer}").unwrap();
+    }
+    JsErrorBox::from_err(EsmLoaderError {
+        code: "ERR_MODULE_NOT_FOUND",
+        message,
+        url: url.map(ToString::to_string),
+    })
 }
 
 fn collect_reexports(
@@ -280,18 +358,29 @@ pub(crate) fn default_source(
     fs: &ModuleFs,
     builtins: &BuiltinSources,
     specifier: &ModuleSpecifier,
+    referrer: Option<&ModuleSpecifier>,
 ) -> Result<(&'static str, String), JsErrorBox> {
     match specifier.scheme() {
         "node" => builtins
             .get(specifier.as_str())
             .map(|source| ("builtin", source.to_owned()))
-            .ok_or_else(|| JsErrorBox::generic(crate::missing_builtin_message(specifier.as_str()))),
+            .ok_or_else(|| {
+                JsErrorBox::from_err(EsmLoaderError {
+                    code: "ERR_UNKNOWN_BUILTIN_MODULE",
+                    message: crate::missing_builtin_message(specifier.as_str()),
+                    url: None,
+                })
+            }),
         "file" => {
             let path = path_from_url(specifier)
                 .ok_or_else(|| JsErrorBox::generic(format!("{specifier}: not a file URL")))?;
-            let bytes = fs
-                .read(&path)
-                .map_err(|error| JsErrorBox::generic(format!("{}: {error}", fs.js_path(&path))))?;
+            let bytes = fs.read(&path).map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    module_not_found(fs, specifier.as_str(), Some(specifier), referrer)
+                } else {
+                    JsErrorBox::generic(format!("{}: {error}", fs.js_path(&path)))
+                }
+            })?;
             let source = String::from_utf8(bytes).map_err(|_| {
                 JsErrorBox::generic(format!("{}: module is not valid UTF-8", fs.js_path(&path)))
             })?;
@@ -309,15 +398,6 @@ pub(crate) fn default_source(
             "{specifier}: unsupported module scheme `{scheme}`"
         ))),
     }
-}
-
-fn load(
-    fs: &ModuleFs,
-    builtins: &BuiltinSources,
-    specifier: &ModuleSpecifier,
-) -> Result<ModuleSource, JsErrorBox> {
-    let (format, source) = default_source(fs, builtins, specifier)?;
-    module_from_format(fs, builtins, specifier, format, source)
 }
 
 fn load_from_hook(
