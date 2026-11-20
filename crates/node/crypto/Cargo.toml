@@ -11,6 +11,8 @@ deno_core.workspace = true
 deno_error.workspace = true
 tokio.workspace = true
 ring = "0.17"
+openssl = { version = "0.10", features = ["vendored"] }
+base64 = "0.22"
 md-5 = "0.10"
 aes = "0.8"
 aes-gcm = "0.10"

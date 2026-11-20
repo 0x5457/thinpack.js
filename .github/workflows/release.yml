@@ -123,6 +123,11 @@ jobs:
         shell: bash
         run: cargo xtask dist --target ${{ matrix.target }} --out dist
 
+      - name: Build, verify, and archive V8
+        if: ${{ !matrix.musl }}
+        shell: bash
+        run: cargo xtask dist --backend v8 --target ${{ matrix.target }} --out dist
+
       - uses: actions/upload-artifact@v4
         with:
           name: thinpack-${{ matrix.target }}

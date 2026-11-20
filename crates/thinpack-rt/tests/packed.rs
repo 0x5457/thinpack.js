@@ -21,6 +21,57 @@ struct PackedTest {
     error: Option<&'static [&'static str]>,
 }
 
+const LARGE_ESM_FILES: &[(&str, &str)] = &[
+    (
+        "/app/main.mjs",
+        "import { total } from './esm/registry.mjs';\nif (total !== 120) throw new Error(`unexpected total: ${total}`);\n",
+    ),
+    (
+        "/app/main-error.mjs",
+        "import { total } from './esm/registry.mjs';\nimport './esm/missing-export.mjs';\nif (total !== 120) throw new Error(`unexpected total: ${total}`);\n",
+    ),
+    (
+        "/app/esm/registry.mjs",
+        "import { groupA } from './groups/a.mjs';\nimport { groupB } from './groups/b.mjs';\nimport { groupC } from './groups/c.mjs';\nimport { groupD } from './groups/d.mjs';\nexport const total = groupA + groupB + groupC + groupD;\n",
+    ),
+    (
+        "/app/esm/groups/a.mjs",
+        "import { part00 } from '../parts/part-00.mjs';\nimport { part01 } from '../parts/part-01.mjs';\nimport { part02 } from '../parts/part-02.mjs';\nimport { part03 } from '../parts/part-03.mjs';\nexport const groupA = part00 + part01 + part02 + part03;\n",
+    ),
+    (
+        "/app/esm/groups/b.mjs",
+        "import { part04 } from '../parts/part-04.mjs';\nimport { part05 } from '../parts/part-05.mjs';\nimport { part06 } from '../parts/part-06.mjs';\nimport { part07 } from '../parts/part-07.mjs';\nexport const groupB = part04 + part05 + part06 + part07;\n",
+    ),
+    (
+        "/app/esm/groups/c.mjs",
+        "import { part08 } from '../parts/part-08.mjs';\nimport { part09 } from '../parts/part-09.mjs';\nimport { part10 } from '../parts/part-10.mjs';\nimport { part11 } from '../parts/part-11.mjs';\nexport const groupC = part08 + part09 + part10 + part11;\n",
+    ),
+    (
+        "/app/esm/groups/d.mjs",
+        "import { part12 } from '../parts/part-12.mjs';\nimport { part13 } from '../parts/part-13.mjs';\nimport { part14 } from '../parts/part-14.mjs';\nimport { part15 } from '../parts/part-15.mjs';\nexport const groupD = part12 + part13 + part14 + part15;\n",
+    ),
+    ("/app/esm/parts/part-00.mjs", "export const part00 = 0;\n"),
+    ("/app/esm/parts/part-01.mjs", "export const part01 = 1;\n"),
+    ("/app/esm/parts/part-02.mjs", "export const part02 = 2;\n"),
+    ("/app/esm/parts/part-03.mjs", "export const part03 = 3;\n"),
+    ("/app/esm/parts/part-04.mjs", "export const part04 = 4;\n"),
+    ("/app/esm/parts/part-05.mjs", "export const part05 = 5;\n"),
+    ("/app/esm/parts/part-06.mjs", "export const part06 = 6;\n"),
+    ("/app/esm/parts/part-07.mjs", "export const part07 = 7;\n"),
+    ("/app/esm/parts/part-08.mjs", "export const part08 = 8;\n"),
+    ("/app/esm/parts/part-09.mjs", "export const part09 = 9;\n"),
+    ("/app/esm/parts/part-10.mjs", "export const part10 = 10;\n"),
+    ("/app/esm/parts/part-11.mjs", "export const part11 = 11;\n"),
+    ("/app/esm/parts/part-12.mjs", "export const part12 = 12;\n"),
+    ("/app/esm/parts/part-13.mjs", "export const part13 = 13;\n"),
+    ("/app/esm/parts/part-14.mjs", "export const part14 = 14;\n"),
+    ("/app/esm/parts/part-15.mjs", "export const part15 = 15;\n"),
+    (
+        "/app/esm/missing-export.mjs",
+        "// The error variant reaches the full graph before this deliberate link error.\nimport { missingPart } from './parts/part-15.mjs';\nexport const value = missingPart;\n",
+    ),
+];
+
 const TESTS: &[PackedTest] = &[
     PackedTest {
         name: "packed::stat-mode-birthtime",
@@ -178,6 +229,25 @@ console.log(readFileSync);
         ]),
     },
     PackedTest {
+        name: "packed::esm-large-bundle",
+        directory: "esm-large-bundle",
+        entry: "/app/main.mjs",
+        files: LARGE_ESM_FILES,
+        capabilities: &[],
+        error: None,
+    },
+    PackedTest {
+        name: "packed::esm-large-link-error",
+        directory: "esm-large-link-error",
+        entry: "/app/main-error.mjs",
+        files: LARGE_ESM_FILES,
+        capabilities: &[],
+        error: Some(&[
+            "The requested module './parts/part-15.mjs' does not provide an export named 'missingPart'",
+            "file:///app/esm/missing-export.mjs:2",
+        ]),
+    },
+    PackedTest {
         name: "packed::esm-resolution-error",
         directory: "esm-resolution-error",
         entry: "/app/main.mjs",
@@ -190,26 +260,59 @@ console.log(readFileSync);
             "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/app/missing.mjs' imported from /app/importer.mjs",
         ]),
     },
-    #[cfg(feature = "backend-quickjs")]
     PackedTest {
-        name: "packed::esm-instantiation-fallback",
-        directory: "esm-instantiation-fallback",
+        name: "packed::esm-invalid-specifier-raw-nul",
+        directory: "esm-invalid-specifier-raw-nul",
         entry: "/app/main.mjs",
         files: &[
-            ("/app/main.mjs", "import './dependency.mjs\0';"),
-            // QuickJS reports the NUL-containing specifier as `undefined` to
-            // the loader, then fails to instantiate it without an exception.
+            ("/app/main.mjs", "import './importer.mjs';"),
+            (
+                "/app/importer.mjs",
+                "// Keep the invalid import on line two.\nimport './dependency.mjs\0';",
+            ),
             (
                 "/app/node_modules/undefined/index.js",
                 "module.exports = {};",
             ),
         ],
         capabilities: &[],
-        error: Some(&[
-            "Error: module instantiation failed",
-            "ESM graph entry: file:///app/main.mjs",
-            "The JavaScript engine did not report an underlying exception.",
-        ]),
+        error: Some(&["Invalid ESM import specifier", "file:///app/importer.mjs:2"]),
+    },
+    PackedTest {
+        name: "packed::esm-invalid-specifier-escaped-nul",
+        directory: "esm-invalid-specifier-escaped-nul",
+        entry: "/app/main.mjs",
+        files: &[
+            ("/app/main.mjs", "import './importer.mjs';"),
+            (
+                "/app/importer.mjs",
+                r"// Keep the invalid import on line two.
+import './dependency.mjs\u0000';",
+            ),
+            (
+                "/app/node_modules/undefined/index.js",
+                "module.exports = {};",
+            ),
+        ],
+        capabilities: &[],
+        error: Some(&["Invalid ESM import specifier", "file:///app/importer.mjs:2"]),
+    },
+    PackedTest {
+        name: "packed::esm-valid-undefined-package",
+        directory: "esm-valid-undefined-package",
+        entry: "/app/main.mjs",
+        files: &[
+            (
+                "/app/main.mjs",
+                "import value from 'undefined';\nif (value !== 'resolved package') throw new Error('wrong package value');\n",
+            ),
+            (
+                "/app/node_modules/undefined/index.js",
+                "module.exports = 'resolved package';",
+            ),
+        ],
+        capabilities: &[],
+        error: None,
     },
     PackedTest {
         name: "packed::esm-dynamic-resolution-error",
@@ -270,6 +373,80 @@ assert.equal(globalThis.dependencyEvaluated, undefined);
             ),
         ],
         capabilities: &["assert"],
+        error: None,
+    },
+    PackedTest {
+        name: "packed::crypto-keypair-diffie-hellman",
+        directory: "crypto-keypair-diffie-hellman",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r"
+(async () => {
+  const assert = require('node:assert/strict');
+  const crypto = require('node:crypto');
+  const { promisify } = require('node:util');
+  const generateKeyPair = promisify(crypto.generateKeyPair);
+
+  function callbackKeyPair(type, options) {
+    return new Promise((resolve, reject) => {
+      crypto.generateKeyPair(type, options, (error, publicKey, privateKey) => {
+        if (error) reject(error);
+        else resolve({ publicKey, privateKey });
+      });
+    });
+  }
+
+  function importPair(pair) {
+    assert.equal(pair.publicKey.type, 'public');
+    assert.equal(pair.privateKey.type, 'private');
+    const publicPem = pair.publicKey.export({ type: 'spki', format: 'pem' });
+    const privatePem = pair.privateKey.export({ type: 'pkcs8', format: 'pem' });
+    return {
+      publicKey: crypto.createPublicKey(publicPem),
+      privateKey: crypto.createPrivateKey(privatePem),
+    };
+  }
+
+  function assertSharedSecret(left, right) {
+    const leftSecret = crypto.diffieHellman({
+      privateKey: left.privateKey,
+      publicKey: right.publicKey,
+    });
+    const rightSecret = crypto.diffieHellman({
+      privateKey: right.privateKey,
+      publicKey: left.publicKey,
+    });
+    assert.ok(leftSecret.equals(rightSecret));
+    assert.ok(leftSecret.length > 0);
+  }
+
+  const ecOptions = { namedCurve: 'prime256v1' };
+  const ecSync = crypto.generateKeyPairSync('ec', ecOptions);
+  const ecCallback = await callbackKeyPair('ec', ecOptions);
+  const ecLeft = importPair(ecSync);
+  const ecRight = importPair(ecCallback);
+  assertSharedSecret(ecLeft, ecRight);
+
+  const message = Buffer.from('packed EC signing compatibility');
+  const signature = crypto.createSign('SHA256').update(message).sign(ecLeft.privateKey);
+  assert.equal(
+    crypto.createVerify('SHA256').update(message).verify(ecLeft.publicKey, signature),
+    true,
+  );
+
+  const x25519Sync = crypto.generateKeyPairSync('x25519');
+  const x25519Promisified = await generateKeyPair('x25519');
+  const x25519Left = importPair(x25519Sync);
+  const x25519Right = importPair(x25519Promisified);
+  assertSharedSecret(x25519Left, x25519Right);
+})().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});
+",
+        )],
+        capabilities: &["assert", "crypto", "util"],
         error: None,
     },
     PackedTest {

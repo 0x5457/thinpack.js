@@ -10,6 +10,8 @@ use ring::digest;
 use ring::hmac;
 use ring::rand::{SecureRandom, SystemRandom};
 
+mod keys;
+
 pub(crate) const OPS: &[OpDecl] = &[
     op_crypto_random(),
     op_crypto_hash(),
@@ -24,6 +26,14 @@ pub(crate) const OPS: &[OpDecl] = &[
     op_crypto_scrypt_async(),
     op_crypto_hkdf(),
     op_crypto_hkdf_async(),
+    keys::op_crypto_generate_key_pair(),
+    keys::op_crypto_generate_key_pair_async(),
+    keys::op_crypto_import_key(),
+    keys::op_crypto_export_key(),
+    keys::op_crypto_import_jwk(),
+    keys::op_crypto_export_jwk(),
+    keys::op_crypto_diffie_hellman(),
+    keys::op_crypto_diffie_hellman_async(),
 ];
 
 fn crypto_error(message: &str) -> JsErrorBox {

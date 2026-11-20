@@ -17,10 +17,13 @@ pub fn init() -> Extension {
         "thinpack:node-crypto-globals",
         thinpack_js::js!("crypto_globals.js"),
     )];
-    const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new_compressed(
-        "node:crypto",
-        thinpack_js::js!("crypto.js"),
-    )];
+    const BUILTINS: &[ExtensionFileSource] = &[
+        ExtensionFileSource::new_compressed("node:crypto", thinpack_js::js!("crypto.js")),
+        ExtensionFileSource::new_compressed(
+            "node:thinpack/internal/crypto/keypair",
+            thinpack_js::js!("keypair.js"),
+        ),
+    ];
 
     Extension {
         name: "thinpack_node_crypto",

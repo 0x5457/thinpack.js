@@ -7,6 +7,9 @@ pub const MAGIC: u64 = u64::from_le_bytes(*b"THINPACK");
 
 pub const FORMAT_VERSION: u32 = 4;
 
+/// Runtime API level used when selecting templates with the same package version.
+pub const TEMPLATE_API: &str = "1";
+
 pub const TRAILER_LEN: usize = 24;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

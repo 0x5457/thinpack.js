@@ -4,13 +4,14 @@
 #   curl -fsSL https://raw.githubusercontent.com/0x5457/thinpack.js/main/scripts/install.sh | sh
 #
 # The two binaries land in the same directory because that is where the CLI looks for its
-# template: `thinpack` resolves `thinpack-rt` next to itself before it consults the cache.
+# fallback template after consulting the cache.
 #
 # Environment:
 #   THINPACK_VERSION      version or tag to install (default: the latest release)
 #   THINPACK_INSTALL_DIR  where the binaries go (default: ~/.local/bin)
 #   THINPACK_BASE_URL     download location with the release assets (default: the GitHub release)
 #   THINPACK_STATIC       1 forces the static Linux build; ignored on other platforms
+#   THINPACK_BACKEND      quickjs (default) or v8
 set -eu
 
 REPOSITORY="0x5457/thinpack.js"
@@ -54,10 +55,19 @@ platform() {
 # first when the host's libc can run it, and the static musl build follows so a host that cannot,
 # can. `THINPACK_STATIC=1` narrows that to the static build alone, with no glibc fallback: it is
 # what makes the artifacts you pack run on older distributions, at about 1 MiB per artifact.
+backend=${THINPACK_BACKEND:-quickjs}
+case "${backend}" in
+    quickjs) suffix="" ;;
+    v8) suffix="-v8" ;;
+    *) fail "unknown THINPACK_BACKEND '${backend}'; expected quickjs or v8" ;;
+esac
 platform=$(platform)
 case "${platform}" in
     *-unknown-linux)
-        if [ "${THINPACK_STATIC:-}" = "1" ]; then
+        if [ "${backend}" = v8 ]; then
+            [ "${THINPACK_STATIC:-}" != 1 ] || fail "V8 release archives on Linux require glibc 2.39 or newer"
+            targets="${platform}-gnu"
+        elif [ "${THINPACK_STATIC:-}" = "1" ]; then
             targets="${platform}-musl"
         else
             targets="${platform}-gnu ${platform}-musl"
@@ -138,16 +148,16 @@ for candidate in ${targets}; do
     tried="${tried} ${candidate}"
     # No `2>/dev/null`: the fetcher's own message is the difference between a network failure
     # and a release that has no archive for this target.
-    if download "${base}/thinpack-${version}-${candidate}.tar.gz" \
-        "${work}/thinpack-${version}-${candidate}.tar.gz"; then
+    if download "${base}/thinpack-${version}${suffix}-${candidate}.tar.gz" \
+        "${work}/thinpack-${version}${suffix}-${candidate}.tar.gz"; then
         target="${candidate}"
         break
     fi
 done
 [ -n "${target:-}" ] ||
     fail "no archive this host can run at ${base} (tried${tried:- nothing}); build from source"
-asset="thinpack-${version}-${target}.tar.gz"
-staging="thinpack-${version}-${target}"
+staging="thinpack-${version}${suffix}-${target}"
+asset="${staging}.tar.gz"
 say "downloaded ${asset}"
 
 expected=$(fetch "${base}/SHA256SUMS" | grep -F "  ${asset}" | cut -d' ' -f1)

@@ -11,12 +11,13 @@ mod templates;
 const USAGE: &str = "\
 Usage: thinpack pack <entry.js> [-o <output>] [--template <thinpack-rt>] [--rebuild]
                       [--backend <quickjs|v8>] [--source <checkout>]
-                      [--asset <key>=<path>]... [--with <module>]...
-                      [--without <module>]... [--include <path>]... [--strict] [--list-capabilities]
+                      [--asset <key>=<path>]... [--with <module[,module...]>]...
+                      [--without <module[,module...]>]... [--include <path>]... [--strict] [--list-capabilities]
        thinpack run <entry.js> [--template <thinpack-rt>] [--rebuild]
                      [--backend <quickjs|v8>] [--source <checkout>]
-                     [--with <module>]... [--without <module>]... [-- <args>...]
+                     [--with <module[,module...]>]... [--without <module[,module...]>]... [-- <args>...]
        thinpack templates
+       thinpack capabilities
        thinpack --version
 
 Packages the entry's module graph into a single executable based on a runtime
@@ -39,6 +40,12 @@ fn main() -> std::process::ExitCode {
         "run" => commands::run_command(args.collect())
             .map(|code| std::process::ExitCode::from(u8::try_from(code).unwrap_or(1))),
         "templates" => commands::templates_command().map(|()| std::process::ExitCode::SUCCESS),
+        "capabilities" => {
+            for module in thinpack_caps::MODULES {
+                println!("{}", module.name);
+            }
+            Ok(std::process::ExitCode::SUCCESS)
+        }
         "-V" | "--version" => {
             println!("thinpack {}", env!("CARGO_PKG_VERSION"));
             Ok(std::process::ExitCode::SUCCESS)

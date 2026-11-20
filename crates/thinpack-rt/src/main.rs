@@ -160,6 +160,7 @@ fn print_template_info() {
     let hash = thinpack_caps::capabilities_hash(&registry::enabled());
     println!("version {}", env!("CARGO_PKG_VERSION"));
     println!("backend {BACKEND}");
+    println!("template-api {}", thinpack_pack::TEMPLATE_API);
     println!("capabilities-hash {hash:#018x}");
 }
 

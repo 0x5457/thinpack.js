@@ -3,6 +3,16 @@
   const { Transform } = require("node:stream");
   const { codes, opError, opErrorParts } = require("node:thinpack/internal/errors");
 
+  const {
+    KeyObject,
+    createPrivateKey,
+    createPublicKey,
+    diffieHellman,
+    generateKeyPair,
+    generateKeyPairSync,
+    keyDer,
+  } = require("node:thinpack/internal/crypto/keypair");
+
   const notImplemented = (name) => new codes.ERR_NOT_IMPLEMENTED(`crypto.${name}`);
 
   class CryptoKey {
@@ -468,7 +478,7 @@
   }
 
   const toDer = (key) => {
-    if (key instanceof KeyObject) return Buffer.from(key._der);
+    if (key instanceof KeyObject) return keyDer(key);
     if (typeof key !== "string") return Buffer.from(key);
     const match = /-----BEGIN [^-]+-----([\s\S]*?)-----END [^-]+-----/.exec(key);
     if (match === null) return Buffer.from(key);
@@ -763,47 +773,6 @@
     return randomIntSync(min, max);
   };
 
-  class KeyObject {
-    constructor(type, der, pem) {
-      this.type = type;
-      this._der = Buffer.from(der);
-      this._pem = pem ?? null;
-      this.extractable = true;
-    }
-
-    export(options = {}) {
-      const format = options?.format ?? "pem";
-      if (format === "der") {
-        return this._der.buffer.slice(this._der.byteOffset, this._der.byteOffset + this._der.byteLength);
-      }
-      if (format === "pem") {
-        if (this._pem !== null) return this._pem;
-        const label = this.type === "private" ? "PRIVATE KEY" : "PUBLIC KEY";
-        const body = this._der.toString("base64").match(/.{1,64}/g).join("\n");
-        return `-----BEGIN ${label}-----\n${body}\n-----END ${label}-----\n`;
-      }
-      throw notImplemented(`KeyObject.export(${format})`);
-    }
-  }
-
-  const keyObjectFrom = (type, value, options) => {
-    const source = value !== null && typeof value === "object" && !ArrayBuffer.isView(value)
-      ? value.key ?? value
-      : value;
-    const pemText = typeof source === "string" && source.includes("-----BEGIN")
-      ? source
-      : options?.key;
-    return new KeyObject(type, toDer(source), typeof pemText === "string" ? pemText : null);
-  };
-
-  const createPrivateKey = (value, options) => keyObjectFrom("private", value, options);
-  const createPublicKey = (value, options) => {
-    if (value instanceof KeyObject && value.type === "private") {
-      throw notImplemented("crypto.createPublicKey(privateKey)");
-    }
-    return keyObjectFrom("public", value, options);
-  };
-
   class X509Certificate {
     constructor(buffer) {
       if (buffer === undefined || buffer === null) {
@@ -846,6 +815,9 @@
     X509Certificate,
     createPrivateKey,
     createPublicKey,
+    diffieHellman,
+    generateKeyPair,
+    generateKeyPairSync,
     getRandomValues: (array) => {
       randomFillSync(new Uint8Array(array.buffer, array.byteOffset, array.byteLength));
       return array;

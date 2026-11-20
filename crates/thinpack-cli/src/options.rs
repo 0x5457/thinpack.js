@@ -56,8 +56,12 @@ pub(crate) fn parse_options(args: Vec<String>, pack: bool) -> Result<Parsed, Usa
             }
             "--template" => options.template = Some(PathBuf::from(value(&mut args, &arg)?)),
             "--asset" if pack => options.assets.push(parse_asset(&value(&mut args, &arg)?)?),
-            "--with" => options.with.push(value(&mut args, &arg)?),
-            "--without" => options.without.push(value(&mut args, &arg)?),
+            "--with" => options
+                .with
+                .extend(module_list(&value(&mut args, &arg)?, &arg)?),
+            "--without" => options
+                .without
+                .extend(module_list(&value(&mut args, &arg)?, &arg)?),
             "--backend" => {
                 let backend = value(&mut args, &arg)?;
                 if backend != "quickjs" && backend != "v8" {
@@ -117,4 +121,20 @@ fn parse_asset(value: &str) -> Result<AssetInput, Usage> {
 fn value(args: &mut impl Iterator<Item = String>, option: &str) -> Result<String, Usage> {
     args.next()
         .ok_or_else(|| Usage(format!("`{option}` needs a value")))
+}
+
+fn module_list(value: &str, option: &str) -> Result<Vec<String>, Usage> {
+    value
+        .split(',')
+        .map(str::trim)
+        .map(|module| {
+            if module.is_empty() {
+                Err(Usage(format!(
+                    "`{option}` contains an empty module name in `{value}`"
+                )))
+            } else {
+                Ok(module.to_owned())
+            }
+        })
+        .collect()
 }

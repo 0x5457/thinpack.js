@@ -1,8 +1,9 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
 use oxc_ast::AstKind;
 use oxc_ast::ast::{BinaryOperator, Expression, IdentifierReference, Statement};
 use oxc_semantic::{IsGlobalReference, Scoping, Semantic, SymbolId};
+use oxc_str::JSStr;
 
 pub(super) fn bindings(semantic: &Semantic<'_>) -> BTreeSet<SymbolId> {
     semantic
@@ -25,6 +26,64 @@ pub(super) fn referenced_symbol(
     scoping
         .get_reference(identifier.reference_id.get()?)
         .symbol_id()
+}
+
+enum PendingSpecifier<'a, 'e> {
+    Expression(&'e Expression<'a>),
+    Resolved(SymbolId),
+}
+
+pub(super) fn specifiers<'a>(
+    argument: &Expression<'a>,
+    semantic: &Semantic<'a>,
+    mut add: impl FnMut(JSStr<'a>),
+) -> bool {
+    let argument = argument.without_parentheses();
+    if let Expression::StringLiteral(literal) = argument {
+        add(literal.value);
+        return true;
+    }
+
+    let mut pending = vec![PendingSpecifier::Expression(argument)];
+    let mut bindings = BTreeMap::new();
+    let mut complete = true;
+    while let Some(next) = pending.pop() {
+        let expression = match next {
+            PendingSpecifier::Expression(expression) => expression.without_parentheses(),
+            PendingSpecifier::Resolved(symbol) => {
+                bindings.insert(symbol, true);
+                continue;
+            }
+        };
+        match expression {
+            Expression::StringLiteral(literal) => add(literal.value),
+            Expression::ConditionalExpression(branch) => {
+                pending.push(PendingSpecifier::Expression(&branch.alternate));
+                pending.push(PendingSpecifier::Expression(&branch.consequent));
+            }
+            Expression::Identifier(identifier) => {
+                let Some(symbol) = referenced_symbol(identifier, semantic.scoping()) else {
+                    complete = false;
+                    continue;
+                };
+                match bindings.entry(symbol) {
+                    // A binding already on this path makes the candidate set incomplete.
+                    Entry::Occupied(entry) => complete &= *entry.get(),
+                    Entry::Vacant(entry) => {
+                        let Some(init) = initializer(symbol, semantic) else {
+                            complete = false;
+                            continue;
+                        };
+                        entry.insert(false);
+                        pending.push(PendingSpecifier::Resolved(symbol));
+                        pending.push(PendingSpecifier::Expression(init));
+                    }
+                }
+            }
+            _ => complete = false,
+        }
+    }
+    complete
 }
 
 fn initializer<'a>(symbol: SymbolId, semantic: &Semantic<'a>) -> Option<&'a Expression<'a>> {
