@@ -76,7 +76,7 @@ impl Runtime {
     /// Returns an error when the file cannot be turned into a specifier, fails
     /// to load, or rejects while evaluating.
     pub async fn run_esm_file(&mut self, path: &Path) -> Result<(), Error> {
-        let specifier = file_url(path)?;
+        let specifier = esm_specifier(path)?;
         let module = self
             .inner
             .load_main_es_module(&specifier)
@@ -95,7 +95,7 @@ impl Runtime {
     /// Returns an error when the file cannot be turned into a specifier or fails
     /// to compile.
     pub async fn precompile_esm(&mut self, path: &Path) -> Result<(), Error> {
-        let specifier = file_url(path)?;
+        let specifier = esm_specifier(path)?;
         self.inner
             .load_side_es_module(&specifier)
             .await
@@ -114,7 +114,35 @@ impl Runtime {
     }
 }
 
-fn file_url(path: &Path) -> Result<Url, Error> {
+fn esm_specifier(path: &Path) -> Result<Url, Error> {
+    file_url(path).ok_or_else(|| Error::new(format!("{} is not a valid file path", path.display())))
+}
+
+/// Converts a host path or a drive-less virtual payload path to a file URL.
+#[must_use]
+pub fn file_url(path: &Path) -> Option<Url> {
     Url::from_file_path(path)
-        .map_err(|()| Error::new(format!("{} is not a valid file path", path.display())))
+        .ok()
+        .or_else(|| virtual_file_url(path))
+}
+
+#[cfg(windows)]
+fn virtual_file_url(path: &Path) -> Option<Url> {
+    if !matches!(
+        path.components().next(),
+        Some(std::path::Component::RootDir)
+    ) {
+        return None;
+    }
+    // Use a drive to encode the path for Windows and then restore the portable URL.
+    let mut prefixed = std::ffi::OsString::from("C:");
+    prefixed.push(path.as_os_str());
+    let url = Url::from_file_path(Path::new(&prefixed)).ok()?;
+    let encoded_path = url.path().strip_prefix("/C:")?;
+    Url::parse(&format!("file://{encoded_path}")).ok()
+}
+
+#[cfg(not(windows))]
+const fn virtual_file_url(_path: &Path) -> Option<Url> {
+    None
 }

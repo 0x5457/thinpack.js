@@ -11,13 +11,13 @@ use deno_core::{
 };
 
 use deno_error::{AdditionalProperties, JsErrorBox, JsErrorClass, PropertyValue};
-use thinpack_core::BuiltinSources;
 use thinpack_core::js_string_literal;
+use thinpack_core::{BuiltinSources, file_url};
 use thinpack_resolve::{FileSystem, Format};
 
 use crate::ModuleFs;
 use crate::cjs_exports;
-use crate::ops::{file_url, path_from_url};
+use crate::ops::path_from_url;
 
 #[derive(Debug)]
 struct HookLoad {
@@ -274,13 +274,12 @@ pub(crate) fn resolve(
             error.message(|path| fs.js_path(path))
         ))
     })?;
-    let url = file_url(&resolved.path).ok_or_else(|| {
+    file_url(&resolved.path).ok_or_else(|| {
         JsErrorBox::generic(format!(
             "{} cannot be represented as a URL",
             fs.js_path(&resolved.path)
         ))
-    })?;
-    parse_url(&url)
+    })
 }
 
 fn module_not_found(
