@@ -285,7 +285,7 @@ pub(crate) fn default_source(
         "node" => builtins
             .get(specifier.as_str())
             .map(|source| ("builtin", source.to_owned()))
-            .ok_or_else(|| JsErrorBox::generic(format!("No such built-in module: {specifier}"))),
+            .ok_or_else(|| JsErrorBox::generic(crate::missing_builtin_message(specifier.as_str()))),
         "file" => {
             let path = path_from_url(specifier)
                 .ok_or_else(|| JsErrorBox::generic(format!("{specifier}: not a file URL")))?;

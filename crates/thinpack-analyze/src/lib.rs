@@ -1,3 +1,5 @@
+mod require;
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -5,11 +7,12 @@ use std::path::{Path, PathBuf};
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
     Argument, CallExpression, ExportAllDeclaration, ExportFromDeclaration, Expression,
-    ImportDeclaration, ImportExpression, NewExpression, TryStatement,
+    IdentifierReference, ImportDeclaration, ImportExpression, NewExpression, TryStatement,
 };
 
 use oxc_ast_visit::{VisitJs, walk_js};
 use oxc_parser::Parser;
+use oxc_semantic::{Scoping, SemanticBuilder, SymbolId};
 use oxc_span::SourceType;
 use thinpack_resolve::FileSystem;
 
@@ -228,10 +231,16 @@ fn parse_specifiers(
         });
     }
 
+    let semantic = SemanticBuilder::new()
+        .with_build_nodes(true)
+        .build(&parsed.program)
+        .semantic;
     let mut collector = SpecifierCollector {
         path,
         specifiers: BTreeMap::new(),
         try_depth: 0,
+        scoping: semantic.scoping(),
+        require_bindings: require::bindings(&semantic),
         warnings,
     };
     collector.visit_program(&parsed.program);
@@ -303,6 +312,8 @@ struct SpecifierCollector<'a, 'w> {
     path: &'a Path,
     specifiers: BTreeMap<(String, bool), bool>,
     try_depth: usize,
+    scoping: &'a Scoping,
+    require_bindings: BTreeSet<SymbolId>,
     warnings: &'w mut Vec<Warning>,
 }
 
@@ -328,26 +339,33 @@ impl SpecifierCollector<'_, '_> {
         }
     }
 
+    fn is_require_binding(&self, identifier: &IdentifierReference<'_>) -> bool {
+        identifier.name == "require"
+            || require::referenced_symbol(identifier, self.scoping)
+                .is_some_and(|symbol| self.require_bindings.contains(&symbol))
+    }
+
     fn require_call(&mut self, call: &CallExpression<'_>) {
-        // (target, resolves as import, never throws in Node)
-        let target = match &call.callee {
-            Expression::Identifier(identifier) => match identifier.name.as_str() {
-                "require" => Some(("require", false, false)),
-                _ => None,
-            },
+        // (receiver or callee, member suffix, resolves as import, never throws in Node)
+        let target = match call.callee.without_parentheses() {
+            Expression::Identifier(identifier) if self.is_require_binding(identifier) => {
+                Some((identifier.name.as_str(), "", false, false))
+            }
             Expression::StaticMemberExpression(member) => match &member.object {
                 Expression::ImportMeta(_) if member.property.name == "resolve" => {
-                    Some(("import.meta.resolve", true, false))
+                    Some(("import.meta", ".resolve", true, false))
                 }
                 Expression::Identifier(object) => {
                     match (object.name.as_str(), member.property.name.as_str()) {
-                        ("require", "resolve") => Some(("require.resolve", false, false)),
-                        ("module", "require") => Some(("module.require", false, false)),
+                        (name, "resolve") if self.is_require_binding(object) => {
+                            Some((name, ".resolve", false, false))
+                        }
+                        ("module", "require") => Some(("module", ".require", false, false)),
                         // `getBuiltinModule` returns `null` for a missing module
                         // instead of throwing; a failed lookup is a warning,
                         // not a pack error.
                         ("process", "getBuiltinModule") => {
-                            Some(("process.getBuiltinModule", false, true))
+                            Some(("process", ".getBuiltinModule", false, true))
                         }
                         _ => None,
                     }
@@ -356,7 +374,7 @@ impl SpecifierCollector<'_, '_> {
             },
             _ => None,
         };
-        let Some((target, is_import, optional)) = target else {
+        let Some((target, member, is_import, optional)) = target else {
             return;
         };
 
@@ -371,7 +389,7 @@ impl SpecifierCollector<'_, '_> {
             }
             Some(_) => self.warnings.push(Warning {
                 message: format!(
-                    "{}: `{target}(...)` with a non-literal argument cannot be analyzed",
+                    "{}: `{target}{member}(...)` with a non-literal argument cannot be analyzed. Add any required builtin capabilities with `--with <module>`.",
                     self.path.display()
                 ),
                 strict: true,
@@ -584,6 +602,73 @@ mod tests {
                 "missing {name}: {capabilities:?}"
             );
         }
+    }
+
+    #[test]
+    fn follows_esbuild_require_wrapper() {
+        let source = include_str!("../../../tests/esbuild/require-wrapper.mjs");
+        let fs = MemoryFs::new(&[("/app/main.mjs", source)]);
+        let analysis = analyze(Path::new("/app/main.mjs"), &fs).unwrap();
+        assert!(analysis.warnings.is_empty(), "{:?}", analysis.warnings);
+        assert!(analysis.builtins.contains_key("tty"));
+        assert!(analysis.builtins.contains_key("constants"));
+    }
+
+    #[test]
+    fn follows_require_aliases_and_minified_wrappers() {
+        let cases = [
+            ("const load = require;\nload('node:tty');\n", "tty"),
+            (
+                "function startup() { r.resolve('constants'); } var r = (e => typeof require < 'u' ? require : e)(null); startup();",
+                "constants",
+            ),
+            (
+                "var r = (function(e) { return typeof require < 'u' ? require : e; })(null); r('tty');",
+                "tty",
+            ),
+        ];
+        for (source, expected) in cases {
+            let fs = MemoryFs::new(&[("/app/main.js", source)]);
+            let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
+            let capabilities = capabilities(&analysis);
+            assert!(
+                capabilities.iter().any(|capability| capability == expected),
+                "{source} did not pull {expected}: {capabilities:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_local_require_lookalike_is_not_a_loader() {
+        for source in [
+            "function __require(specifier) { return specifier; }\n__require('node:tty');\n",
+            "const __require = (specifier) => [require, specifier]; __require('node:tty');",
+            "const __require = require; (__require => __require('node:tty'))(x => x);",
+            "function wrap(require) { const load = require; load('node:tty'); } wrap(x => x);",
+            "function wrap(require) { const load = (e => typeof require !== 'undefined' ? require : e)(null); load('node:tty'); } wrap(x => x);",
+            "let __require = require; __require = x => x; __require('node:tty');",
+        ] {
+            let fs = MemoryFs::new(&[("/app/main.js", source)]);
+            let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
+            assert!(
+                !analysis.builtins.contains_key("tty"),
+                "{source} pulled tty: {:?}",
+                analysis.builtins
+            );
+        }
+    }
+
+    #[test]
+    fn warns_about_dynamic_wrapper_requests() {
+        let source = "var load = (e => typeof require !== 'undefined' ? require : e)(null); load(process.argv[2]);";
+        let fs = MemoryFs::new(&[("/app/main.cjs", source)]);
+        let analysis = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+        let [warning] = analysis.warnings.as_slice() else {
+            panic!("expected one warning, got {:?}", analysis.warnings);
+        };
+        assert!(warning.strict);
+        assert!(warning.message.contains("`load(...)`"));
+        assert!(warning.message.contains("`--with <module>`"));
     }
 
     #[test]

@@ -17,7 +17,7 @@ use thinpack_core::BuiltinSources;
 use thinpack_resolve::{FileSystem, Format, Resolved};
 use url::Url;
 
-use crate::{Main, ModuleFs};
+use crate::{Main, ModuleFs, missing_builtin_message};
 
 pub(crate) const OPS: &[OpDecl] = &[
     op_require(),
@@ -40,6 +40,9 @@ fn op_require_resolve(
     let builtins = op_state.borrow::<BuiltinSources>();
     if let Some(name) = builtin_specifier(builtins, specifier) {
         return Ok(name);
+    }
+    if thinpack_caps::module_for_builtin(specifier).is_some() {
+        return Err(JsErrorBox::generic(missing_builtin_message(specifier)));
     }
     let fs = op_state.borrow::<ModuleFs>();
     match thinpack_resolve::resolve(specifier, Path::new(parent), fs) {
@@ -122,7 +125,10 @@ fn op_require(
         return format!("b\0{name}\0{name}\0{source}");
     }
     if specifier.starts_with("node:") || thinpack_caps::module_for_builtin(specifier).is_some() {
-        return format!("e\0ERR_UNKNOWN_BUILTIN_MODULE\0No such built-in module: {specifier}\0");
+        return format!(
+            "e\0ERR_UNKNOWN_BUILTIN_MODULE\0{}\0",
+            missing_builtin_message(specifier)
+        );
     }
 
     match thinpack_resolve::resolve(specifier, Path::new(parent), fs) {
