@@ -17,6 +17,18 @@ use crate::ops::OPS;
 
 pub use crate::esm::{EsmLoader, is_esm};
 
+fn missing_builtin_message(specifier: &str) -> String {
+    let message = format!("No such built-in module: {specifier}");
+    if let Some(module) = thinpack_caps::module_for_builtin(specifier) {
+        format!(
+            "{message}. This template omits it. Re-pack with --with {}.",
+            module.name
+        )
+    } else {
+        message
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Main {
     File(PathBuf),

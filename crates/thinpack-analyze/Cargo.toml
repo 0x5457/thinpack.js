@@ -12,6 +12,7 @@ oxc_allocator = "0.158"
 oxc_ast = "0.158"
 oxc_ast_visit = "0.158"
 oxc_parser = "0.158"
+oxc_semantic = "0.158"
 oxc_span = "0.158"
 oxc_str = "0.158"
 
