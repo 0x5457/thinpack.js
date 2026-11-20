@@ -38,12 +38,12 @@
     const signal = validateSignal(options);
     if (signal === undefined || !signal.aborted) {
       return new Promise((resolve, reject) => {
-        const timer = timers.setTimeout(() => {
+        const timer = timers.setImmediate(() => {
           signal?.removeEventListener("abort", onAbort);
           resolve(value);
-        }, 0);
+        });
         const onAbort = () => {
-          timers.clearTimeout(timer);
+          timers.clearImmediate(timer);
           reject(new AbortError(undefined, { cause: signal.reason }));
         };
         signal?.addEventListener("abort", onAbort, { once: true });
