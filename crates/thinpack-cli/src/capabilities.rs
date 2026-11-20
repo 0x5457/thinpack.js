@@ -124,8 +124,8 @@ fn apply_overrides(
     roots.extend(thinpack_caps::baseline().map(|module| module.name.to_owned()));
 
     for module_name in &options.without {
-        let module = thinpack_caps::module(module_name)
-            .ok_or_else(|| format!("unknown module `{module_name}`"))?;
+        let module =
+            thinpack_caps::module(module_name).ok_or_else(|| unknown_module(module_name))?;
         if module.ambient {
             return Err(format!("cannot remove ambient module `{module_name}`").into());
         }
@@ -164,13 +164,19 @@ fn apply_overrides(
 
     for module_name in &options.with {
         if thinpack_caps::module(module_name).is_none() {
-            return Err(format!("unknown module `{module_name}`").into());
+            return Err(unknown_module(module_name).into());
         }
         roots.insert(module_name.clone());
     }
 
     let roots: Vec<String> = roots.into_iter().collect();
     Ok(thinpack_caps::closure(&roots)?)
+}
+
+fn unknown_module(name: &str) -> String {
+    format!(
+        "unknown module `{name}`\nRun `thinpack capabilities` to see the modules supported by this CLI."
+    )
 }
 
 pub(crate) fn print_capabilities(

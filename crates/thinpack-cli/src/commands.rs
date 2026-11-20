@@ -21,19 +21,19 @@ pub(crate) fn pack_command(args: Vec<String>) -> Result<(), Box<dyn Error>> {
     }
 
     let template = resolve_template(&options, &analyzed.capabilities)?;
-    let info = templates::inspect(&template)?;
     let bundle = bundle::build(
         &analyzed.root,
         &analyzed.entry,
         &analyzed.capabilities,
-        &info,
+        &template.info,
         &analyzed.analysis,
         &options.assets,
     )?;
     let output = options
         .output
         .unwrap_or_else(|| bundle::default_output(&analyzed.entry));
-    let (payload_len, total) = bundle::write(&template, &bundle.manifest, &bundle.blob, &output)?;
+    let (payload_len, total) =
+        bundle::write(&template.path, &bundle.manifest, &bundle.blob, &output)?;
 
     println!(
         "packed {} files, {} capabilities ({} bytes payload, {} bytes total) -> {}",
@@ -55,11 +55,11 @@ pub(crate) fn run_command(args: Vec<String>) -> Result<i32, Box<dyn Error>> {
     let options = parsed.options;
     let analyzed = analyze_entry(&options)?;
     let template = resolve_template(&options, &analyzed.capabilities)?;
-    let status = std::process::Command::new(&template)
+    let status = std::process::Command::new(&template.path)
         .arg(&analyzed.entry)
         .args(&parsed.rest)
         .status()
-        .map_err(|error| format!("{}: {error}", template.display()))?;
+        .map_err(|error| format!("{}: {error}", template.path.display()))?;
     Ok(exit_code(status))
 }
 

@@ -6,13 +6,13 @@ use std::path::{Path, PathBuf};
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    Argument, CallExpression, ExportAllDeclaration, ExportFromDeclaration, Expression,
-    IdentifierReference, ImportDeclaration, ImportExpression, NewExpression, TryStatement,
+    CallExpression, ExportAllDeclaration, ExportFromDeclaration, Expression, IdentifierReference,
+    ImportDeclaration, ImportExpression, NewExpression, TryStatement,
 };
 
 use oxc_ast_visit::{VisitJs, walk_js};
 use oxc_parser::Parser;
-use oxc_semantic::{Scoping, SemanticBuilder, SymbolId};
+use oxc_semantic::{Semantic, SemanticBuilder, SymbolId};
 use oxc_span::SourceType;
 use thinpack_resolve::FileSystem;
 
@@ -239,7 +239,7 @@ fn parse_specifiers(
         path,
         specifiers: BTreeMap::new(),
         try_depth: 0,
-        scoping: semantic.scoping(),
+        semantic: &semantic,
         require_bindings: require::bindings(&semantic),
         warnings,
     };
@@ -308,13 +308,13 @@ fn referenced_global<'a>(expression: &'a Expression<'_>) -> Option<&'a str> {
     }
 }
 
-struct SpecifierCollector<'a, 'w> {
-    path: &'a Path,
+struct SpecifierCollector<'a, 's> {
+    path: &'s Path,
     specifiers: BTreeMap<(String, bool), bool>,
     try_depth: usize,
-    scoping: &'a Scoping,
+    semantic: &'s Semantic<'a>,
     require_bindings: BTreeSet<SymbolId>,
-    warnings: &'w mut Vec<Warning>,
+    warnings: &'s mut Vec<Warning>,
 }
 
 impl SpecifierCollector<'_, '_> {
@@ -341,7 +341,7 @@ impl SpecifierCollector<'_, '_> {
 
     fn is_require_binding(&self, identifier: &IdentifierReference<'_>) -> bool {
         identifier.name == "require"
-            || require::referenced_symbol(identifier, self.scoping)
+            || require::referenced_symbol(identifier, self.semantic.scoping())
                 .is_some_and(|symbol| self.require_bindings.contains(&symbol))
     }
 
@@ -378,23 +378,26 @@ impl SpecifierCollector<'_, '_> {
             return;
         };
 
-        match call.arguments.first() {
-            Some(Argument::StringLiteral(literal)) => {
-                let specifier = js_string(literal.value);
-                if optional {
-                    self.add_optional_specifier(specifier, is_import);
-                } else {
-                    self.add_specifier(specifier, is_import);
-                }
-            }
-            Some(_) => self.warnings.push(Warning {
+        let Some(argument) = call.arguments.first() else {
+            return;
+        };
+        let complete = argument.as_expression().is_some_and(|argument| {
+            require::specifiers(argument, self.semantic, |specifier| {
+                self.add(
+                    js_string(specifier),
+                    is_import,
+                    optional || self.try_depth > 0,
+                );
+            })
+        });
+        if !complete {
+            self.warnings.push(Warning {
                 message: format!(
                     "{}: `{target}{member}(...)` with a non-literal argument cannot be analyzed. Add any required builtin capabilities with `--with <module>`.",
                     self.path.display()
                 ),
                 strict: true,
-            }),
-            None => {}
+            });
         }
     }
 }
@@ -584,7 +587,10 @@ mod tests {
 
     #[test]
     fn warns_about_dynamic_requires() {
-        let fs = MemoryFs::new(&[("/app/main.js", "const name = './x';\nrequire(name);\n")]);
+        let fs = MemoryFs::new(&[(
+            "/app/main.js",
+            "const name = process.argv[2];\nrequire(name);\n",
+        )]);
         let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
         assert_eq!(analysis.warnings.len(), 1);
         assert!(analysis.warnings[0].message.contains("non-literal"));

@@ -86,6 +86,33 @@ pub(crate) fn is_internal_module_specifier(specifier: &str) -> bool {
     is_internal_scheme(specifier.scheme())
 }
 
+// The QuickJS adapter's import scanner can also report the raw literal text.
+fn has_nul_escape(specifier: &str) -> bool {
+    let mut bytes = specifier.as_bytes().iter();
+    while let Some(byte) = bytes.next() {
+        if *byte != b'\\' {
+            continue;
+        }
+        let escape = bytes.next();
+        let tail = bytes.as_slice();
+        let nul = match escape {
+            Some(b'0') => !tail.first().is_some_and(u8::is_ascii_digit),
+            Some(b'x') => tail.starts_with(b"00"),
+            Some(b'u') if tail.starts_with(b"{") => {
+                let digits = &tail[1..];
+                let zeros = digits.iter().take_while(|digit| **digit == b'0').count();
+                zeros > 0 && digits.get(zeros) == Some(&b'}')
+            }
+            Some(b'u') => tail.starts_with(b"0000"),
+            _ => false,
+        };
+        if nul {
+            return true;
+        }
+    }
+    false
+}
+
 type CodeCacheReadyFuture = dyn Future<Output = ()>;
 
 type CodeCacheReadyCallback = Box<dyn FnOnce(&[u8]) -> Pin<Box<dyn Future<Output = ()>>>>;
@@ -915,9 +942,31 @@ impl ModuleMap {
                     .unwrap();
             let mut import_specifier_buf: [std::mem::MaybeUninit<u8>; 1024] =
                 [std::mem::MaybeUninit::uninit(); 1024];
-            let import_specifier = module_request
-                .get_specifier()
-                .to_rust_cow_lossy(tc_scope, &mut import_specifier_buf);
+            let specifier = module_request.get_specifier();
+            let import_specifier = specifier.to_rust_cow_lossy(tc_scope, &mut import_specifier_buf);
+            // The QuickJS adapter can return `undefined` for a request whose
+            // specifier contains a NUL. Resolving it as text loads the wrong module.
+            let invalid_reason = if !specifier.is_string() {
+                Some("the engine did not provide a string")
+            } else if import_specifier.contains('\0')
+                || cfg!(feature = "quickjs") && has_nul_escape(&import_specifier)
+            {
+                Some("the specifier contains a NUL character")
+            } else {
+                None
+            };
+            if let Some(reason) = invalid_reason {
+                let location = module.source_offset_to_location(module_request.get_source_offset());
+                return Err(ModuleError::Core(
+                    JsErrorBox::type_error(format!(
+                        "Invalid ESM import specifier at {}:{}:{}: {reason}",
+                        name.as_str(),
+                        location.get_line_number() + 1,
+                        location.get_column_number() + 1,
+                    ))
+                    .into(),
+                ));
+            }
 
             let import_attributes = module_request.get_import_attributes();
 

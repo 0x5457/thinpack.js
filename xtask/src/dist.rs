@@ -246,7 +246,7 @@ fn verify(config: &Config, stage: &Path, table: &[capabilities::Module]) -> Resu
         Command::new(stage.join(config.file_name("thinpack", true)))
             .current_dir(crate::repo_root())
             .env("THINPACK_CACHE", &cache)
-            .args(["pack", PROBE, "-o"])
+            .args(["pack", PROBE, "--backend", config.backend.name(), "-o"])
             .arg(&artifact),
     )?;
 
@@ -301,10 +301,17 @@ fn archive(config: &Config, stage: &Path) -> Result<PathBuf, String> {
 }
 
 impl Config {
-    /// `thinpack-<version>-<triple>`: the staging directory, the archive stem, and the directory
-    /// inside the archive.
+    /// The same name for the staging directory, archive stem and archive contents.
     fn stem(&self) -> String {
-        format!("thinpack-{}-{}", env!("CARGO_PKG_VERSION"), self.target)
+        let suffix = match self.backend {
+            Backend::QuickJs => "",
+            Backend::V8 => "-v8",
+        };
+        format!(
+            "thinpack-{}{suffix}-{}",
+            env!("CARGO_PKG_VERSION"),
+            self.target
+        )
     }
 
     fn exe_suffix(&self) -> &'static str {

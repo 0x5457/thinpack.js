@@ -66,6 +66,13 @@ the divergence, why it exists, and where it lives.
   their work inside a microtask, so a large tree blocks the event loop for the
   duration (`crates/node/zlib/src/zlib.js`, `crates/node/fs/src/fs_rimraf.js`).
 
+## Crypto
+
+- `generateKeyPair` and `generateKeyPairSync` support RSA, RSA-PSS, DSA, EC, Ed25519, Ed448,
+  X25519, X448 and DH. Selecting the RSA-PSS hash, MGF1 hash or salt length, or selecting a DSA
+  divisor length, throws `ERR_NOT_IMPLEMENTED`. Post-quantum key types are unsupported
+  (`crates/node/crypto/src/keypair.js`).
+
 ## File system
 
 - `readdir` returns entries sorted by byte order rather than the directory

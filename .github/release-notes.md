@@ -7,8 +7,8 @@ thinpack packs a Node.js app into a single executable: `deno_core` provides the 
 curl -fsSL https://raw.githubusercontent.com/0x5457/thinpack.js/main/scripts/install.sh | sh
 ```
 
-Or unpack the archive for your platform and keep `thinpack` and `thinpack-rt` in the same
-directory — the CLI loads its runtime template from next to itself.
+Set `THINPACK_BACKEND=v8` for the V8 build. You can also unpack the archive for your
+platform and keep `thinpack` and `thinpack-rt` in the same directory.
 
 ```sh
 thinpack pack app.js -o app
@@ -27,10 +27,10 @@ thinpack pack app.js -o app
 | `x86_64-apple-darwin` | Intel macOS |
 | `x86_64-pc-windows-msvc` | 64-bit Windows |
 
-Every archive carries the same two binaries: `thinpack` (the packer, links no JS engine) and
-`thinpack-rt` (the runtime template, QuickJS backend, every built-in module). The template is
-a superset, so any app packs; `thinpack pack --rebuild` from a source checkout builds one that
-carries only that app's capability set, which is where the smallest artifacts come from.
+Each archive includes `thinpack` and a runtime template with every built-in module. Archives
+with `-v8-` in their names use V8 and are available for glibc Linux, macOS and Windows.
+The default archives use QuickJS. `thinpack pack --rebuild` from a source checkout builds a
+template with the app's own capabilities.
 
 The glibc artifacts are the smaller ones and are linked against the runner's glibc (Ubuntu 24.04,
 2.39). The static musl artifacts link no libc and run anywhere, Alpine included, at about 1 MiB

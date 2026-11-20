@@ -38,6 +38,11 @@ distribution older than your own (the flag is Linux-only, and ignored elsewhere)
 also resolves names with musl's resolver, which reads `/etc/hosts` and `/etc/resolv.conf` only:
 `dns.lookup` on such a binary sees no NSS entries (LDAP, sssd, NIS) and no mDNS.
 
+Set `THINPACK_BACKEND=v8` when running the installer to install a V8 pair. V8 archives
+have `-v8-` in their names and are available for glibc Linux, macOS and Windows. On Linux
+they require glibc 2.39 or newer. Extract a V8 archive to use it directly, or pass its
+runtime with `--template <path>` to an existing CLI.
+
 The archive carries one template with every built-in module, so any app packs. `--rebuild` builds a
 template that carries only the app's own capability set, which is where the smallest artifacts in
 the table below come from; it compiles the runtime, so it needs a source checkout (`--source
@@ -45,8 +50,8 @@ the table below come from; it compiles the runtime, so it needs a source checkou
 
 ## Build from source
 
-Requires Rust 1.99.1 (pinned by `rust-toolchain.toml`) and, for the vendored C in QuickJS/WAMR and
-sqlite, a C toolchain and cmake.
+Requires Rust 1.99.1 (pinned by `rust-toolchain.toml`), a C toolchain and CMake.
+Templates with `node:crypto` also need Perl and Make (`nmake` on Windows) to build OpenSSL.
 
 ```sh
 cargo build --release -p thinpack-rt -p thinpack-cli
@@ -64,20 +69,27 @@ cargo build --release -p thinpack-rt -p thinpack-cli
 | `pack <entry> [-o <out>]` | analyze the module graph, trim capabilities, write a single-file artifact |
 | `run <entry> [-- <args>...]` | run with a matching template without packing |
 | `templates` | list the template cache |
+| `capabilities` | list the module names accepted by this CLI |
 | `--template <path>` | use the given runtime template |
-| `--backend <quickjs\|v8>` | pick the template backend, `quickjs` by default |
+| `--backend <quickjs\|v8>` | pick the template backend |
 | `--rebuild` `--source <checkout>` | build a template for this app's own capability set and cache it |
 | `--asset <key>=<path>` | embed an asset, readable through `node:sea` |
 | `--include <path>` | pack extra data files (`.d.ts`, templates); JavaScript is analyzed too |
-| `--with <module>` `--without <module>` | override the derived capability set; ambient modules cannot be removed |
+| `--with <module>` `--without <module>` | override the derived capability set. Both accept comma-separated lists or repeated flags. |
 | `--strict` | a `require`/`import` that cannot be statically evaluated is an error; missing optional dependencies only warn |
 | `--list-capabilities` | print the derived capability set and exit |
 
-The payload records version, backend and capability-set hash, and the runtime verifies them at
-startup. Templates live under `$THINPACK_CACHE` (then `$XDG_CACHE_HOME/thinpack`, then
+The CLI checks the template API before packing, and the runtime verifies the payload's version,
+backend and capability-set hash at startup. Templates live under `$THINPACK_CACHE` (then `$XDG_CACHE_HOME/thinpack`, then
 `~/.cache/thinpack`) as `templates/<version>/<backend>/<caps-hash>`, and resolve `--template` →
 `--rebuild` → exact hit → smallest superset → the `thinpack-rt` next to the CLI. `--rebuild`
-comes before the cache so an app always packs against its own closure.
+comes before the cache so an app always packs against its own closure and uses QuickJS by default.
+For ordinary packing, `--backend` takes precedence over the backend of an installed template.
+When no matching installed template is available and the cache has both backends, pass `--backend`.
+
+The analyzer follows conditional `require` calls when both branches name modules. For module names
+supplied at runtime, use `--with` to include the required built-ins explicitly. `--strict` makes
+unresolved dynamic requests an error during packing.
 
 Compiled module bytecode is cached under `<cache-root>/bytecode`, which makes a warm start
 about 29% faster (pi: 983 ms → 702 ms); `V82JSC_NO_BC_CACHE=1` disables it, and
