@@ -13,7 +13,7 @@ use deno_core::v8;
 use deno_core::{ModuleSpecifier, OpDecl, OpState, op2};
 use deno_error::JsErrorBox;
 use percent_encoding::percent_decode_str;
-use thinpack_core::BuiltinSources;
+use thinpack_core::{BuiltinSources, file_url};
 use thinpack_resolve::{FileSystem, Format, Resolved};
 use url::Url;
 
@@ -168,7 +168,7 @@ fn op_entry(state: Rc<RefCell<OpState>>) -> String {
         Main::Eval(source) => {
             let filename = std::env::current_dir()
                 .map_or_else(|_| "[eval]".into(), |directory| directory.join("[eval]"));
-            let url = file_url(&filename).unwrap_or_else(|| "thinpack:eval".to_owned());
+            let url = file_url(&filename).map_or_else(|| "thinpack:eval".to_owned(), String::from);
             format!("v\0{}\0{url}\0{source}", fs.js_path(&filename))
         }
     }
@@ -217,30 +217,6 @@ fn strip_hashbang(source: &str) -> std::borrow::Cow<'_, str> {
         || std::borrow::Cow::Borrowed(source),
         |rest| std::borrow::Cow::Owned(format!("//{rest}")),
     )
-}
-
-/// Virtual payload paths keep the platform-independent `/app` root. On
-/// Windows that is not a host-absolute path, so `Url::from_file_path` rejects
-/// it; add a synthetic drive, then remove it from the resulting URL so the
-/// specifier stays identical to the Unix one.
-#[cfg(windows)]
-fn virtual_file_url(path: &Path) -> Option<String> {
-    let mut prefixed = std::ffi::OsString::from("C:");
-    prefixed.push(path.as_os_str());
-    let url = Url::from_file_path(Path::new(&prefixed)).ok()?;
-    Some(url.as_str().replace("file:///C:", "file://"))
-}
-
-#[cfg(not(windows))]
-const fn virtual_file_url(_path: &Path) -> Option<String> {
-    None
-}
-
-pub(crate) fn file_url(path: &Path) -> Option<String> {
-    Url::from_file_path(path)
-        .ok()
-        .map(String::from)
-        .or_else(|| virtual_file_url(path))
 }
 
 /// Inverse of [`file_url`] for the virtual `/app` paths that
