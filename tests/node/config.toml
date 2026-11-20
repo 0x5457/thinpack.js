@@ -1086,7 +1086,6 @@ module = "timers"
 
 [tests."parallel/test-timers-immediate-unref.js"]
 module = "timers"
-ignore = "immediate objects do not implement hasRef()"
 
 [tests."parallel/test-timers-immediate.js"]
 module = "timers"
