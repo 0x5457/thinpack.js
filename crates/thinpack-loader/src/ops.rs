@@ -81,9 +81,7 @@ fn op_esm_resolve_default(
     } else {
         parent.to_owned()
     };
-    crate::esm::resolve(fs, specifier, &referrer)
-        .map(|url| url.to_string())
-        .map_err(JsErrorBox::generic)
+    crate::esm::resolve(fs, specifier, &referrer).map(|url| url.to_string())
 }
 
 #[op2]
@@ -97,7 +95,7 @@ fn op_esm_load_default(
     let op_state = state.borrow();
     let fs = op_state.borrow::<ModuleFs>();
     let builtins = op_state.borrow::<BuiltinSources>();
-    let (format, source) = crate::esm::default_source(fs, builtins, &specifier)?;
+    let (format, source) = crate::esm::default_source(fs, builtins, &specifier, None)?;
     Ok(format!("{format}\0{source}"))
 }
 
