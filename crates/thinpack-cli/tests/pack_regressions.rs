@@ -11,11 +11,16 @@ mod unix {
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::process::{Command, Output, Stdio};
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;
     use std::time::{Duration, Instant};
 
     const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+
+    // A concurrent fork can keep a fixture executable's writer open until exec,
+    // causing ETXTBSY when another test tries to run that executable.
+    static EXECUTABLE_FIXTURES: Mutex<()> = Mutex::new(());
 
     #[test]
     fn cjs_top_level_return_can_be_packed() {
@@ -507,6 +512,9 @@ module.exports = function loadSystemModule(networkEnabled) {
         let script = format!(
             "#!/bin/sh\ncase \"$1\" in\n  --template-info)\n    printf 'version {version}\\nbackend {backend}\\n{template_api}capabilities-hash 0x0000000000000000\\n'\n    ;;\n  --capabilities)\n{module_output}    ;;\n  *) exit 2 ;;\nesac\n",
         );
+        let _guard = EXECUTABLE_FIXTURES
+            .lock()
+            .expect("lock executable fixtures");
         fs::write(path, script).expect("write fake runtime template");
         fs::set_permissions(path, fs::Permissions::from_mode(0o755))
             .expect("make fake runtime template executable");
@@ -548,6 +556,9 @@ module.exports = function loadSystemModule(networkEnabled) {
     fn copy_cli(directory: &TempDir) -> PathBuf {
         let source = Path::new(env!("CARGO_BIN_EXE_thinpack"));
         let destination = directory.path().join("thinpack");
+        let _guard = EXECUTABLE_FIXTURES
+            .lock()
+            .expect("lock executable fixtures");
         fs::copy(source, &destination).expect("copy thinpack CLI into isolated directory");
         fs::set_permissions(
             &destination,
@@ -559,7 +570,12 @@ module.exports = function loadSystemModule(networkEnabled) {
 
     fn run_with_timeout(command: &mut Command) -> Output {
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
-        let mut child = command.spawn().expect("spawn thinpack CLI");
+        let mut child = {
+            let _guard = EXECUTABLE_FIXTURES
+                .lock()
+                .expect("lock executable fixtures");
+            command.spawn().expect("spawn thinpack CLI")
+        };
         let stdout = child.stdout.take().expect("capture CLI stdout");
         let stderr = child.stderr.take().expect("capture CLI stderr");
         let stdout = thread::spawn(move || {

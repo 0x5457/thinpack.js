@@ -3,3 +3,7 @@ CFLAGS_x86_64_unknown_linux_gnu = { value = "-Os", force = false }
 
 [alias]
 xtask = "run --quiet --package xtask --"
+
+[target.'cfg(target_env = "msvc")']
+# Vendored OpenSSL installs its PDB separately from the objects that Rust bundles into the rlib.
+rustflags = ["-C", "link-arg=/IGNORE:4099"]
