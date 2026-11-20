@@ -126,6 +126,8 @@ pub(crate) struct ModuleMap {
     code_cache_ready_futs: TrackedFutures<Pin<Box<CodeCacheReadyFuture>>>,
     module_waker: AtomicWaker,
     data: RefCell<ModuleMapData>,
+    // QuickJS marks failed links as errored without retaining their exceptions.
+    instantiation_errors: RefCell<HashMap<ModuleId, v8::Global<v8::Value>>>,
     will_snapshot: bool,
     loading_internal_modules: Cell<bool>,
 
@@ -181,6 +183,7 @@ impl ModuleMap {
         self.pending_dyn_mod_evaluations.clear();
         self.pending_tla_waiters.borrow_mut().clear();
         self.code_cache_ready_futs.clear();
+        self.instantiation_errors.borrow_mut().clear();
         std::mem::take(&mut *self.data.borrow_mut());
     }
 
@@ -246,6 +249,7 @@ impl ModuleMap {
             code_cache_ready_futs: Default::default(),
             module_waker: Default::default(),
             data: Default::default(),
+            instantiation_errors: Default::default(),
             loading_internal_modules: Default::default(),
             import_sync_eval_stack: Default::default(),
         }
@@ -1100,6 +1104,9 @@ impl ModuleMap {
         scope: &mut v8::PinScope<'s, 'i>,
         id: ModuleId,
     ) -> Result<(), v8::Global<v8::Value>> {
+        if let Some(exception) = self.instantiation_errors.borrow().get(&id) {
+            return Err(exception.clone());
+        }
         v8::tc_scope!(let tc_scope, scope);
 
         let module = self
@@ -1145,7 +1152,13 @@ impl ModuleMap {
                     v8::String::new(tc_scope, "module instantiation failed").unwrap(),
                 ),
             };
-            return Err(v8::Global::new(tc_scope, exception));
+            let exception = v8::Global::new(tc_scope, exception);
+            if !tc_scope.has_terminated() {
+                self.instantiation_errors
+                    .borrow_mut()
+                    .insert(id, exception.clone());
+            }
+            return Err(exception);
         }
 
         self.drop_instantiated_requests(tc_scope, id);
