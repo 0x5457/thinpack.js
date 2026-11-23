@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -10,6 +11,8 @@ use std::time::{Duration, Instant};
 use thinpack_pack::{Compression, FileRecord, Manifest, Template};
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+const STARTUP_LIMIT: Duration = Duration::from_secs(1);
+const STARTUP_MARKER: &str = "startup complete";
 
 struct PackedTest {
     name: &'static str,
@@ -153,6 +156,46 @@ assert.deepEqual(
 ",
         )],
         capabilities: &["assert"],
+        error: None,
+    },
+    PackedTest {
+        name: "packed::lexical-scope-lookup-semantics",
+        directory: "lexical-scope-lookup-semantics",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r"
+const captured = (() => {
+  const value = 'outer';
+  return () => value;
+})();
+if (captured() !== 'outer') throw new Error('closure lookup failed');
+
+function blockShadowing() {
+  const value = 'function';
+  {
+    const value = 'block';
+    if (value !== 'block') throw new Error('block lookup failed');
+  }
+  return value;
+}
+if (blockShadowing() !== 'function') throw new Error('shadowing failed');
+
+function defaultParameter(value = 5) {
+  const result = value + 2;
+  return () => result;
+}
+if (defaultParameter()() !== 7) throw new Error('parameter scope lookup failed');
+
+const environment = { value: 'with' };
+let withClosure;
+with (environment) {
+  withClosure = () => value;
+}
+if (withClosure() !== 'with') throw new Error('with scope lookup failed');
+",
+        )],
+        capabilities: &[],
         error: None,
     },
     PackedTest {
@@ -588,8 +631,33 @@ setTimeout(() => {
     },
 ];
 
+/// Packed startup cases whose source is generated because the payload is large.
+struct StartupTest {
+    name: &'static str,
+    directory: &'static str,
+    source: fn() -> String,
+}
+
+const STARTUP_TESTS: &[StartupTest] = &[
+    StartupTest {
+        name: "packed::large-lexical-scope-startup",
+        directory: "large-lexical-scope-startup",
+        source: large_scope_source,
+    },
+    StartupTest {
+        name: "packed::minified-cold-startup",
+        directory: "minified-cold-startup",
+        source: minified_source,
+    },
+];
+
 pub(super) fn print_list(cli: &super::Cli) {
     for test in TESTS {
+        if cli.matches(test.name) {
+            println!("{}", test.name);
+        }
+    }
+    for test in STARTUP_TESTS {
         if cli.matches(test.name) {
             println!("{}", test.name);
         }
@@ -602,36 +670,59 @@ pub(super) fn execute(cli: &super::Cli) -> bool {
     }
 
     let selected: Vec<&PackedTest> = TESTS.iter().filter(|test| cli.matches(test.name)).collect();
-    if selected.is_empty() {
+    let startup: Vec<&StartupTest> = STARTUP_TESTS
+        .iter()
+        .filter(|test| cli.matches(test.name))
+        .collect();
+    let test_count = selected.len() + startup.len();
+    if test_count == 0 {
         return true;
     }
 
     println!(
-        "running {} packed test{}",
-        selected.len(),
-        if selected.len() == 1 { "" } else { "s" }
+        "running {test_count} packed test{}",
+        if test_count == 1 { "" } else { "s" }
     );
     let mut passed = 0;
     let mut failed = 0;
     for test in selected {
         let started = Instant::now();
-        match run_test(test) {
-            super::Outcome::Passed => {
-                passed += 1;
-                println!("ok {} ({:.2}s)", test.name, started.elapsed().as_secs_f64());
-            }
-            super::Outcome::Failed(report) => {
-                failed += 1;
-                println!(
-                    "FAILED {} ({:.2}s)\n{report}",
-                    test.name,
-                    started.elapsed().as_secs_f64()
-                );
-            }
-        }
+        report(test.name, run_test(test), started, &mut passed, &mut failed);
+    }
+    for test in startup {
+        let started = Instant::now();
+        report(
+            test.name,
+            run_startup_test(test),
+            started,
+            &mut passed,
+            &mut failed,
+        );
     }
     println!("packed test result: {passed} passed; {failed} failed");
     failed == 0
+}
+
+fn report(
+    name: &str,
+    outcome: super::Outcome,
+    started: Instant,
+    passed: &mut usize,
+    failed: &mut usize,
+) {
+    match outcome {
+        super::Outcome::Passed => {
+            *passed += 1;
+            println!("ok {name} ({:.2}s)", started.elapsed().as_secs_f64());
+        }
+        super::Outcome::Failed(report) => {
+            *failed += 1;
+            println!(
+                "FAILED {name} ({:.2}s)\n{report}",
+                started.elapsed().as_secs_f64()
+            );
+        }
+    }
 }
 
 fn run_test(test: &PackedTest) -> super::Outcome {
@@ -641,38 +732,91 @@ fn run_test(test: &PackedTest) -> super::Outcome {
             return super::Outcome::Failed(format!("cannot create test directory: {error}"));
         }
     };
-    let binary = match build_packed_binary(test, directory.path()) {
+    let binary =
+        match build_packed_payload(test.entry, test.files, test.capabilities, directory.path()) {
+            Ok(binary) => binary,
+            Err(error) => {
+                return super::Outcome::Failed(format!(
+                    "cannot build packed test executable: {error}"
+                ));
+            }
+        };
+    run_binary(&binary, directory.path(), test.error, None)
+}
+
+fn run_startup_test(test: &StartupTest) -> super::Outcome {
+    let directory = match TempDir::new(test.directory) {
+        Ok(directory) => directory,
+        Err(error) => {
+            return super::Outcome::Failed(format!("cannot create test directory: {error}"));
+        }
+    };
+    let source = (test.source)();
+    let files = [("/app/main.js", source.as_str())];
+    let binary = match build_packed_payload("/app/main.js", &files, &[], directory.path()) {
         Ok(binary) => binary,
         Err(error) => {
             return super::Outcome::Failed(format!("cannot build packed test executable: {error}"));
         }
     };
-    run_binary(&binary, directory.path(), test.error)
+
+    let started = Instant::now();
+    match run_binary(&binary, directory.path(), None, Some(STARTUP_MARKER)) {
+        super::Outcome::Passed if started.elapsed() <= STARTUP_LIMIT => super::Outcome::Passed,
+        super::Outcome::Passed => super::Outcome::Failed(format!(
+            "startup took {:.2}s, exceeding {} ms",
+            started.elapsed().as_secs_f64(),
+            STARTUP_LIMIT.as_millis()
+        )),
+        outcome @ super::Outcome::Failed(_) => outcome,
+    }
 }
 
-fn build_packed_binary(
-    test: &PackedTest,
+fn large_scope_source() -> String {
+    let mut source = String::with_capacity(1_100_000);
+    source.push_str("function require_coreV1Api(){if(false){\n");
+    for index in 0..50_000 {
+        writeln!(source, "const value_{index}=0;").expect("writing to a String cannot fail");
+    }
+    source.push_str("}}\nconsole.log('startup complete');\n");
+    source
+}
+
+fn minified_source() -> String {
+    let mut source = String::with_capacity(700_000);
+    source.push_str("function require_coreV1Api(){if(false){");
+    for index in 0..50_000 {
+        write!(source, "value_{}({index});", index % 16).expect("writing to a String cannot fail");
+    }
+    source.push_str("}}\nconsole.log('startup complete');\n");
+    source
+}
+
+fn build_packed_payload(
+    entry: &str,
+    source_files: &[(&str, &str)],
+    capability_roots: &[&str],
     directory: &Path,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let runtime = Path::new(env!("CARGO_BIN_EXE_thinpack-rt"));
     let template = inspect_template(runtime)?;
     let mut blob = Vec::new();
-    let mut files = Vec::with_capacity(test.files.len());
-    for (path, source) in test.files {
+    let mut files = Vec::with_capacity(source_files.len());
+    for &(path, source) in source_files {
         let offset = u64::try_from(blob.len())?;
         let contents = source.as_bytes();
         let length = u32::try_from(contents.len())?;
         files.push(FileRecord {
-            path: (*path).to_owned(),
+            path: path.to_owned(),
             offset,
             length,
         });
         blob.extend_from_slice(contents);
     }
 
-    let capabilities = capabilities(test.capabilities);
+    let capabilities = capabilities(capability_roots);
     let manifest = Manifest {
-        entry: test.entry.to_owned(),
+        entry: entry.to_owned(),
         capabilities,
         template,
         files,
@@ -741,7 +885,12 @@ fn capabilities(roots: &[&str]) -> Vec<String> {
     names.into_iter().collect()
 }
 
-fn run_binary(binary: &Path, directory: &Path, expected: Option<&[&str]>) -> super::Outcome {
+fn run_binary(
+    binary: &Path,
+    directory: &Path,
+    expected: Option<&[&str]>,
+    expected_stdout: Option<&str>,
+) -> super::Outcome {
     let mut command = Command::new(binary);
     command
         .current_dir(directory)
@@ -809,7 +958,11 @@ fn run_binary(binary: &Path, directory: &Path, expected: Option<&[&str]>) -> sup
             {
                 return super::Outcome::Passed;
             }
-            None if status.success() => return super::Outcome::Passed,
+            None if status.success()
+                && expected_stdout.is_none_or(|fragment| stdout.contains(fragment)) =>
+            {
+                return super::Outcome::Passed;
+            }
             _ => {}
         }
     }
@@ -821,6 +974,8 @@ fn run_binary(binary: &Path, directory: &Path, expected: Option<&[&str]>) -> sup
             "expected a failure whose output contains {fragments:?}, got {}",
             super::describe_status(status)
         )
+    } else if let Some(fragment) = expected_stdout.filter(|_| status.success()) {
+        format!("expected stdout to contain {fragment:?}")
     } else {
         format!("exited with {}", super::describe_status(status))
     };
