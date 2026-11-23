@@ -138,3 +138,6 @@ lto = true
 codegen-units = 1
 strip = true
 panic = "abort"
+
+[patch.crates-io]
+v8x = { path = "vendor/v8x" }

@@ -1,0 +1,358 @@
+--- a/vendor/quickjs-ng/quickjs.c	2026-11-23 22:11:53.217443114 +0800
++++ b/vendor/quickjs-ng/quickjs.c	2026-11-23 22:11:53.219443115 +0800
+@@ -23845,6 +23845,7 @@
+     bool need_home_object : 1;
+     bool use_short_opcodes : 1; /* true if short opcodes are used in byte_code */
+     bool has_await : 1; /* true if await is used (used in module eval) */
++    bool has_with : 1; /* true if a with scope occurs in this function or its parents */
+ 
+     JSFunctionKindEnum func_kind : 8;
+     JSParseFunctionEnum func_type : 7;
+@@ -23934,6 +23935,7 @@
+     int line_num;   /* line number of token start */
+     int col_num;    /* column number of token start */
+     const uint8_t *ptr;
++    const uint8_t *line_start; /* first character of the line of token start */
+     union {
+         struct {
+             JSValue str;
+@@ -23967,6 +23969,7 @@
+     const uint8_t *buf_start;
+     const uint8_t *buf_ptr;
+     const uint8_t *buf_end;
++    const uint8_t *line_start; /* first character of the current line */
+     const uint8_t *eol;  // most recently seen end-of-line character
+     const uint8_t *mark; // first token character, invariant: eol < mark
+ 
+@@ -24127,13 +24130,8 @@
+     /* s->col_num is not advanced during token scanning, so derive the column
+        as the 1-based offset of the token from the start of its line. */
+     int err_col_num = s->token.col_num;
+-    if (s->token.ptr && s->token.ptr >= s->buf_start) {
+-        const uint8_t *line_start = s->token.ptr;
+-        while (line_start > s->buf_start &&
+-               line_start[-1] != '\n' && line_start[-1] != '\r')
+-            line_start--;
+-        err_col_num = (int)(s->token.ptr - line_start) + 1;
+-    }
++    if (s->token.ptr && s->token.ptr >= s->token.line_start)
++        err_col_num = (int)(s->token.ptr - s->token.line_start) + 1;
+     /* V8 folds this dynamic-module parse location into the SyntaxError message
+        and does not expose it as a stack frame. Async import stitching can then
+        append the awaiting caller as the first structured frame. */
+@@ -24244,6 +24242,7 @@
+         }
+         if (c == '\n') {
+             s->line_num++;
++            s->line_start = p;
+             s->eol = &p[-1];
+             s->mark = p;
+         } else if (c >= 0x80) {
+@@ -24337,6 +24336,7 @@
+                 p++;
+                 if (sep != '`') {
+                     s->line_num++;
++                    s->line_start = p;
+                     s->eol = &p[-1];
+                     s->mark = p;
+                 }
+@@ -24664,6 +24664,7 @@
+     s->token.line_num = s->line_num;
+     s->token.col_num = s->col_num;
+     s->token.ptr = p;
++    s->token.line_start = s->line_start;
+     c = *p;
+     switch(c) {
+     case 0:
+@@ -24691,6 +24692,7 @@
+     case '\n':
+         p++;
+     line_terminator:
++        s->line_start = p;
+         s->eol = &p[-1];
+         s->mark = p;
+         s->got_lf = true;
+@@ -24719,10 +24721,12 @@
+                     s->line_num++;
+                     s->got_lf = true; /* considered as LF for ASI */
+                     s->eol = p++;
++                    s->line_start = p;
+                     s->mark = p;
+                 } else if (*p == '\r') {
+                     s->got_lf = true; /* considered as LF for ASI */
+                     p++;
++                    s->line_start = p;
+                 } else if (*p >= 0x80) {
+                     c = utf8_decode(p, &p);
+                     /* ignore invalid UTF-8 in comments */
+@@ -25310,6 +25314,7 @@
+     s->token.line_num = s->line_num;
+     s->token.col_num = s->col_num;
+     s->token.ptr = p;
++    s->token.line_start = s->line_start;
+     c = *p;
+     switch(c) {
+     case 0:
+@@ -25335,6 +25340,7 @@
+     case '\n':
+         s->line_num++;
+         s->eol = p++;
++        s->line_start = p;
+         s->mark = p;
+         goto redo;
+     case '\f':
+@@ -25874,14 +25880,28 @@
+                                    JSAtom name, int scope_level)
+ {
+     int i;
+-    for(i = 0; i < fd->var_count; i++) {
+-        JSVarDef *vd = &fd->vars[i];
+-        if (vd->var_name == name && vd->scope_level == 0) {
+-            if (is_child_scope(ctx, fd, vd->scope_next,
+-                               scope_level))
+-                return i;
++    if (fd->vars_htab) {
++        uint32_t hash = hash32(name);
++        uint32_t step = 1;
++        uint32_t mask = fd->var_count + fd->var_count / 5;
++        mask = UINT32_MAX >> clz32(mask);
++        for (;;) {
++            uint32_t index = fd->vars_htab[hash & mask];
++            if (index == UINT32_MAX)
++                return -1;
++            JSVarDef *vd = &fd->vars[index];
++            if (vd->var_name == name && vd->scope_level == 0 &&
++                is_child_scope(ctx, fd, vd->scope_next, scope_level))
++                return index;
++            hash += step++;
+         }
+     }
++    for (i = 0; i < fd->var_count; i++) {
++        JSVarDef *vd = &fd->vars[i];
++        if (vd->var_name == name && vd->scope_level == 0 &&
++            is_child_scope(ctx, fd, vd->scope_next, scope_level))
++            return i;
++    }
+     return -1;
+ }
+ 
+@@ -25910,13 +25930,37 @@
+ static int find_lexical_decl(JSContext *ctx, JSFunctionDef *fd, JSAtom name,
+                              int scope_idx, bool check_catch_var)
+ {
+-    while (scope_idx >= 0) {
+-        JSVarDef *vd = &fd->vars[scope_idx];
+-        if (vd->var_name == name &&
+-            (vd->is_lexical || (vd->var_kind == JS_VAR_CATCH &&
+-                                check_catch_var)))
+-            return scope_idx;
+-        scope_idx = vd->scope_next;
++    if (fd->vars_htab && scope_idx == fd->scope_first) {
++        uint32_t mask = fd->var_count + fd->var_count / 5;
++        mask = UINT32_MAX >> clz32(mask);
++        for (int scope = fd->scope_level; scope >= 0;
++             scope = fd->scopes[scope].parent) {
++            uint32_t hash = hash32(name);
++            uint32_t step = 1;
++            int found = -1;
++            for (;;) {
++                uint32_t index = fd->vars_htab[hash & mask];
++                if (index == UINT32_MAX)
++                    break;
++                JSVarDef *vd = &fd->vars[index];
++                if (vd->var_name == name && vd->scope_level == scope &&
++                    (vd->is_lexical || (vd->var_kind == JS_VAR_CATCH &&
++                                        check_catch_var)))
++                    found = index;
++                hash += step++;
++            }
++            if (found >= 0)
++                return found;
++        }
++    } else {
++        while (scope_idx >= 0) {
++            JSVarDef *vd = &fd->vars[scope_idx];
++            if (vd->var_name == name &&
++                (vd->is_lexical || (vd->var_kind == JS_VAR_CATCH &&
++                                    check_catch_var)))
++                return scope_idx;
++            scope_idx = vd->scope_next;
++        }
+     }
+ 
+     if (fd->is_eval && fd->eval_type == JS_EVAL_TYPE_GLOBAL) {
+@@ -26583,6 +26627,7 @@
+     int col_num;
+     bool got_lf;
+     const uint8_t *ptr;
++    const uint8_t *line_start;
+     const uint8_t *eol;
+     const uint8_t *mark;
+ } JSParsePos;
+@@ -26594,6 +26639,7 @@
+     sp->line_num = s->token.line_num;
+     sp->col_num = s->token.col_num;
+     sp->ptr = s->token.ptr;
++    sp->line_start = s->line_start;
+     sp->eol = s->eol;
+     sp->mark = s->mark;
+     sp->got_lf = s->got_lf;
+@@ -26607,6 +26653,7 @@
+     s->line_num = sp->line_num;
+     s->col_num = sp->col_num;
+     s->buf_ptr = sp->ptr;
++    s->line_start = sp->line_start;
+     s->eol = sp->eol;
+     s->mark = sp->mark;
+     s->got_lf = sp->got_lf;
+@@ -28781,13 +28828,8 @@
+         {
+             JSAtom name;
+             int identifier_line_num = s->token.line_num;
+-            const uint8_t *identifier_line_start = s->token.ptr;
+-            while (identifier_line_start > s->buf_start &&
+-                   identifier_line_start[-1] != '\n' &&
+-                   identifier_line_start[-1] != '\r')
+-                identifier_line_start--;
+             int identifier_col_num =
+-                (int)(s->token.ptr - identifier_line_start) + 1;
++                (int)(s->token.ptr - s->line_start) + 1;
+             call_line_num = identifier_line_num;
+             call_col_num = identifier_col_num;
+             if (s->token.u.ident.is_reserved) {
+@@ -29285,17 +29327,12 @@
+                 emit_atom(s, s->token.u.ident.atom);
+                 emit_u16(s, s->cur_func->scope_level);
+             } else {
+-                const uint8_t *property_line_start = s->token.ptr;
+                 if (!token_is_ident(s->token.val)) {
+                     return js_parse_error(s, "expecting field name");
+                 }
+-                while (property_line_start > s->buf_start &&
+-                       property_line_start[-1] != '\n' &&
+-                       property_line_start[-1] != '\r')
+-                    property_line_start--;
+                 call_line_num = s->token.line_num;
+                 call_col_num =
+-                    (int)(s->token.ptr - property_line_start) + 1;
++                    (int)(s->token.ptr - s->line_start) + 1;
+                 if (get_prev_opcode(fd) == OP_get_super) {
+                     JSValue val;
+                     int ret;
+@@ -31832,6 +31869,7 @@
+                                   JS_VAR_DEF_WITH);
+             if (with_idx < 0)
+                 goto fail;
++            s->cur_func->has_with = true;
+             emit_op(s, OP_to_object);
+             emit_op(s, OP_put_loc);
+             emit_u16(s, with_idx);
+@@ -34692,6 +34730,7 @@
+         list_add_tail(&fd->link, &parent->child_list);
+         fd->is_strict_mode = parent->is_strict_mode;
+         fd->parent_scope_level = parent->scope_level;
++        fd->has_with = parent->has_with;
+     }
+ 
+     fd->is_eval = is_eval;
+@@ -35584,6 +35623,40 @@
+     }
+ }
+ 
++static int find_local_scope_var(JSFunctionDef *s, JSAtom var_name,
++                                int scope_level)
++{
++    int idx;
++    if (!s->vars_htab) {
++        for (idx = s->scopes[scope_level].first; idx >= 0;
++             idx = s->vars[idx].scope_next) {
++            if (s->vars[idx].var_name == var_name)
++                return idx;
++        }
++        return -1;
++    }
++
++    uint32_t mask = s->var_count + s->var_count / 5;
++    mask = UINT32_MAX >> clz32(mask);
++    for (int scope = scope_level; scope >= 0; scope = s->scopes[scope].parent) {
++        uint32_t hash = hash32(var_name);
++        uint32_t step = 1;
++        int found = -1;
++        for (;;) {
++            uint32_t index = s->vars_htab[hash & mask];
++            if (index == UINT32_MAX)
++                break;
++            JSVarDef *vd = &s->vars[index];
++            if (vd->var_name == var_name && vd->scope_level == scope)
++                found = index;
++            hash += step++;
++        }
++        if (found >= 0)
++            return found;
++    }
++    return -1;
++}
++
+ /* return the position of the next opcode */
+ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
+                              JSAtom var_name, int scope_level, int op,
+@@ -35607,28 +35680,33 @@
+ 
+     /* resolve local scoped variables */
+     var_idx = -1;
+-    for (idx = s->scopes[scope_level].first; idx >= 0;) {
+-        vd = &s->vars[idx];
+-        if (vd->var_name == var_name) {
+-            if (op == OP_scope_put_var || op == OP_scope_make_ref) {
+-                if (vd->is_const) {
+-                    dbuf_putc(bc, OP_throw_error);
+-                    dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
+-                    dbuf_putc(bc, JS_THROW_VAR_RO);
+-                    goto done;
++    if (!s->has_with && !s->has_parameter_expressions) {
++        var_idx = find_local_scope_var(s, var_name, scope_level);
++        is_arg_scope = false;
++    } else {
++        for (idx = s->scopes[scope_level].first; idx >= 0;) {
++            vd = &s->vars[idx];
++            if (vd->var_name == var_name) {
++                if (op == OP_scope_put_var || op == OP_scope_make_ref) {
++                    if (vd->is_const) {
++                        dbuf_putc(bc, OP_throw_error);
++                        dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
++                        dbuf_putc(bc, JS_THROW_VAR_RO);
++                        goto done;
++                    }
+                 }
++                var_idx = idx;
++                break;
++            } else
++            if (vd->var_name == JS_ATOM__with_ && !is_pseudo_var) {
++                dbuf_putc(bc, OP_get_loc);
++                dbuf_put_u16(bc, idx);
++                var_object_test(ctx, s, var_name, op, bc, &label_done, 1);
+             }
+-            var_idx = idx;
+-            break;
+-        } else
+-        if (vd->var_name == JS_ATOM__with_ && !is_pseudo_var) {
+-            dbuf_putc(bc, OP_get_loc);
+-            dbuf_put_u16(bc, idx);
+-            var_object_test(ctx, s, var_name, op, bc, &label_done, 1);
++            idx = vd->scope_next;
+         }
+-        idx = vd->scope_next;
++        is_arg_scope = (idx == ARG_SCOPE_END);
+     }
+-    is_arg_scope = (idx == ARG_SCOPE_END);
+     if (var_idx < 0) {
+         /* argument scope: variables are not visible but pseudo
+            variables are visible */
+@@ -39838,6 +39916,7 @@
+     s->col_num = 1;
+     s->buf_start = s->buf_ptr = (const uint8_t *)input;
+     s->buf_end = s->buf_ptr + input_len;
++    s->line_start = s->buf_ptr;
+     s->mark = s->buf_ptr + min_int(1, input_len);
+     s->eol = s->buf_ptr;
+     s->token.val = ' ';
