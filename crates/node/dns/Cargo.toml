@@ -10,7 +10,7 @@ thinpack-js.workspace = true
 deno_core.workspace = true
 deno_error.workspace = true
 tokio.workspace = true
-hickory-resolver = "0.25"
+hickory-resolver = "0.26"
 
 # Only the unix getaddrinfo path calls into the host libc directly.
 [target.'cfg(unix)'.dependencies]
