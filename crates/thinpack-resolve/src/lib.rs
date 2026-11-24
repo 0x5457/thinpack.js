@@ -322,10 +322,6 @@ fn load_index(directory: &Path, fs: &impl FileSystem) -> Option<PathBuf> {
     None
 }
 
-/// # Errors
-///
-/// Returns [`Error::Unsupported`] for native addons and the manifest errors
-/// raised while looking for the nearest `package.json`.
 /// Whether the loader can execute this file as JavaScript. JSON and native
 /// addons are separate formats; TypeScript is not a language the loader runs.
 #[must_use]
@@ -336,6 +332,10 @@ pub fn is_javascript(path: &Path) -> bool {
     )
 }
 
+/// # Errors
+///
+/// Returns [`Error::Unsupported`] for native addons and the manifest errors
+/// raised while looking for the nearest `package.json`.
 pub fn format_of(path: &Path, fs: &impl FileSystem) -> Result<Format, Error> {
     match path.extension().and_then(|extension| extension.to_str()) {
         Some("json") => Ok(Format::Json),
