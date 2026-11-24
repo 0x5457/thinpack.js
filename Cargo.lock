@@ -3996,6 +3996,7 @@ name = "thinpack-node-internals"
 version = "0.2.0"
 dependencies = [
  "deno_core",
+ "libc",
  "thinpack-js",
 ]
 
