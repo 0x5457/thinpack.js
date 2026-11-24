@@ -53,7 +53,7 @@ jobs:
           cache: false
 
       # The six `--rebuild` templates share `target/templates`; caching it keeps the C
-      # dependencies (QuickJS/WAMR, OpenSSL, sqlite) from compiling once per app on every
+      # dependencies (QuickJS/WAMR, sqlite) from compiling once per app on every
       # run.
       - uses: Swatinem/rust-cache@v2
 

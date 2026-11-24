@@ -10,7 +10,9 @@ use std::time::{Duration, Instant};
 
 use thinpack_pack::{Compression, FileRecord, Manifest, Template};
 
-const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+// A packed test normally finishes in under a second, but a debug-build RSA key generation
+// can spend several seconds searching for primes.
+const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 const STARTUP_LIMIT: Duration = Duration::from_secs(1);
 const STARTUP_MARKER: &str = "startup complete";
 
@@ -490,6 +492,112 @@ assert.equal(globalThis.dependencyEvaluated, undefined);
 ",
         )],
         capabilities: &["assert", "crypto", "util"],
+        error: None,
+    },
+    PackedTest {
+        name: "packed::crypto-key-formats",
+        directory: "crypto-key-formats",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r"
+const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
+
+const keyTypes = [
+  ['rsa', { modulusLength: 2048 }],
+  ['ec', { namedCurve: 'prime256v1' }],
+  ['ec', { namedCurve: 'secp384r1' }],
+  ['ec', { namedCurve: 'secp521r1' }],
+  ['ec', { namedCurve: 'secp256k1' }],
+  ['ed25519', {}],
+  ['x25519', {}],
+];
+
+let rsaPair;
+for (const [type, options] of keyTypes) {
+  const pair = crypto.generateKeyPairSync(type, options);
+  if (type === 'rsa') rsaPair = pair;
+  const privateDer = pair.privateKey.export({ format: 'der', type: 'pkcs8' });
+  const publicDer = pair.publicKey.export({ format: 'der', type: 'spki' });
+  assert.ok(privateDer.length > 0);
+  assert.ok(publicDer.length > 0);
+  assert.ok(crypto.createPrivateKey({ key: privateDer, format: 'der', type: 'pkcs8' })
+    .export({ format: 'der', type: 'pkcs8' }).equals(privateDer));
+  assert.ok(crypto.createPublicKey({ key: publicDer, format: 'der', type: 'spki' })
+    .export({ format: 'der', type: 'spki' }).equals(publicDer));
+  assert.ok(crypto.createPublicKey(pair.privateKey).export({ format: 'der', type: 'spki' }).equals(publicDer));
+
+  const jwk = pair.privateKey.export({ format: 'jwk' });
+  const imported = crypto.createPrivateKey({ key: jwk, format: 'jwk' });
+  assert.equal(imported.asymmetricKeyType, pair.privateKey.asymmetricKeyType);
+  assert.deepEqual(imported.export({ format: 'jwk' }), jwk);
+  assert.ok(crypto.createPublicKey({ key: pair.publicKey.export({ format: 'jwk' }), format: 'jwk' })
+    .export({ format: 'der', type: 'spki' }).equals(publicDer));
+
+  if (type === 'ec') {
+    const sec1 = pair.privateKey.export({ format: 'pem', type: 'sec1' });
+    assert.ok(sec1.includes('BEGIN EC PRIVATE KEY'));
+    const sec1Key = crypto.createPrivateKey(sec1);
+    assert.equal(sec1Key.asymmetricKeyDetails.namedCurve, pair.privateKey.asymmetricKeyDetails.namedCurve);
+    assert.ok(sec1Key.export({ format: 'der', type: 'pkcs8' }).equals(privateDer));
+  }
+
+  const encrypted = pair.privateKey.export({
+    format: 'pem', type: 'pkcs8', cipher: 'aes-256-cbc', passphrase: 'secret',
+  });
+  assert.ok(crypto.createPrivateKey({ key: encrypted, passphrase: 'secret' })
+    .export({ format: 'der', type: 'pkcs8' }).equals(privateDer));
+}
+
+const rsa = rsaPair;
+const rsaSignature = crypto.sign('RSA-SHA256', Buffer.from('hello'), rsa.privateKey);
+assert.equal(crypto.verify('RSA-SHA256', Buffer.from('hello'), rsa.publicKey, rsaSignature), true);
+assert.equal(rsa.privateKey.asymmetricKeyDetails.modulusLength, 2048);
+assert.equal(rsa.privateKey.asymmetricKeyDetails.publicExponent, 65537n);
+
+const ec = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+const ecSignature = crypto.sign('SHA256', Buffer.from('hello'), ec.privateKey);
+assert.equal(crypto.verify('SHA256', Buffer.from('hello'), ec.publicKey, ecSignature), true);
+assert.equal(ec.privateKey.asymmetricKeyDetails.namedCurve, 'prime256v1');
+assert.ok(ec.privateKey.export({ format: 'pem', type: 'sec1' }).includes('BEGIN EC PRIVATE KEY'));
+
+const other = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+const otherJwk = other.publicKey.export({ format: 'jwk' });
+assert.throws(() => crypto.createPrivateKey({
+  key: { ...ec.privateKey.export({ format: 'jwk' }), x: otherJwk.x, y: otherJwk.y },
+  format: 'jwk',
+}));
+
+const alice = crypto.generateKeyPairSync('x25519');
+const bob = crypto.generateKeyPairSync('x25519');
+assert.ok(crypto.diffieHellman({ privateKey: alice.privateKey, publicKey: bob.publicKey })
+  .equals(crypto.diffieHellman({ privateKey: bob.privateKey, publicKey: alice.publicKey })));
+
+const lowOrder = Buffer.from(bob.publicKey.export({ format: 'der', type: 'spki' }));
+lowOrder.fill(0, lowOrder.length - 32);
+const lowOrderKey = crypto.createPublicKey({ key: lowOrder, format: 'der', type: 'spki' });
+assert.throws(() => crypto.diffieHellman({ privateKey: alice.privateKey, publicKey: lowOrderKey }));
+
+for (const [type, options] of [
+  ['dsa', { modulusLength: 2048 }],
+  ['dh', { group: 'modp14' }],
+  ['ed448', {}],
+  ['x448', {}],
+]) {
+  let thrown;
+  try {
+    crypto.generateKeyPairSync(type, options);
+  } catch (error) {
+    thrown = error;
+  }
+  assert.ok(thrown, `${type} key generation must fail`);
+  assert.match(thrown.message, /not supported/);
+  assert.equal(thrown.code, 'ERR_CRYPTO_OPERATION_FAILED');
+}
+",
+        )],
+        capabilities: &["assert", "crypto"],
         error: None,
     },
     PackedTest {

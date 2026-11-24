@@ -84,10 +84,23 @@ the divergence, why it exists, and where it lives.
 
 ## Crypto
 
-- `generateKeyPair` and `generateKeyPairSync` support RSA, RSA-PSS, DSA, EC, Ed25519, Ed448,
-  X25519, X448 and DH. Selecting the RSA-PSS hash, MGF1 hash or salt length, or selecting a DSA
-  divisor length, throws `ERR_NOT_IMPLEMENTED`. Post-quantum key types are unsupported
-  (`crates/node/crypto/src/keypair.js`).
+- Key material is handled by RustCrypto key crates, not OpenSSL.
+  `generateKeyPair`/`generateKeyPairSync`, `createPrivateKey`/`createPublicKey`,
+  `KeyObject.export`, JWK import/export and `diffieHellman` support RSA/RSA-PSS, EC
+  (P-256/P-384/P-521/secp256k1), Ed25519 and X25519. DSA, DH, Ed448 and X448 throw
+  `ERR_CRYPTO_OPERATION_FAILED` instead of being fabricated; post-quantum key types are
+  unsupported. Selecting the RSA-PSS hash, MGF1 hash or salt length, or selecting a DSA
+  divisor length, throws `ERR_NOT_IMPLEMENTED` (`crates/node/crypto/src/keypair.js`).
+- An `rsa-pss` key is stored as RSA key material: a PSS-parameterized PKCS#8 import is
+  accepted and normalized, and export writes `rsaEncryption`. The JS signing surface still
+  rejects `RSA-PSS` (`crates/node/crypto/src/ops/keys.rs`).
+- EC key generation accepts `paramEncoding: 'explicit'` but always writes named-curve
+  parameters, and only P-256, P-384, P-521 and secp256k1 are available (P-192 and P-224
+  throw `ERR_CRYPTO_INVALID_CURVE`); `crates/node/crypto/src/ops/keys/ec.rs` carries the
+  curve table.
+- PKCS#8 encryption supports `aes-128-cbc`, `aes-192-cbc` and `aes-256-cbc`. Encrypting
+  PKCS#1 or SEC1 PEM needs OpenSSL's `DEK-Info` scheme and fails loudly instead
+  (`crates/node/crypto/src/ops/keys.rs`).
 
 ## File system
 

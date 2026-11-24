@@ -8,8 +8,8 @@ profile = "small"
 [apps.eslint]
 package = "eslint"
 version = "10.15.0"
-bytes = 10722545
-gzip_bytes = 5090937
+bytes = 7929297
+gzip_bytes = 4096138
 payload_bytes = 752377
 files = 621
 capabilities = 19
@@ -26,8 +26,8 @@ capabilities = 14
 [apps.pi]
 package = "@earendil-works/pi-coding-agent"
 version = "1.5.0"
-bytes = 16621565
-gzip_bytes = 8965727
+bytes = 13819933
+gzip_bytes = 7960926
 payload_bytes = 2694405
 files = 2377
 capabilities = 34
@@ -35,8 +35,8 @@ capabilities = 34
 [apps.prettier]
 package = "prettier"
 version = "3.10.1"
-bytes = 11189523
-gzip_bytes = 5625394
+bytes = 8388275
+gzip_bytes = 4630221
 payload_bytes = 1289595
 files = 21
 capabilities = 20
@@ -53,8 +53,8 @@ capabilities = 14
 [apps.tsc]
 package = "typescript"
 version = "5.9.3"
-bytes = 10950572
-gzip_bytes = 5398144
+bytes = 8153356
+gzip_bytes = 4400134
 payload_bytes = 1091892
 files = 107
 capabilities = 18

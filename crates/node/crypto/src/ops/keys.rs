@@ -1,22 +1,28 @@
+//! Node's `KeyObject` surface over `RustCrypto` key material.
+//!
+//! Private keys are stored as PKCS#8 DER and public keys as SPKI DER, the same contract the
+//! previous OpenSSL implementation used: the signing ops hand those bytes to ring, and the JS
+//! side only ever sees the normalized DER plus the asymmetric-key metadata.
+//!
+//! RSA, EC, Ed25519 and X25519 are implemented; DSA, DH, Ed448 and X448 are not available in
+//! this build and report `ERR_CRYPTO_OPERATION_FAILED` instead of pulling a second crypto
+//! library in.
+
+use std::fmt::Display;
+
 use deno_core::serde::{Deserialize, Serialize};
 use deno_core::{JsBuffer, ToJsBuffer, op2};
 use deno_error::JsErrorBox;
-use openssl::asn1::Asn1Object;
-use openssl::bn::BigNum;
-use openssl::derive::Deriver;
-use openssl::dh::Dh;
-use openssl::dsa::Dsa;
-use openssl::ec::{Asn1Flag, EcGroup, EcKey};
-use openssl::error::ErrorStack;
-use openssl::pkey::{HasPublic, Id, PKey, PKeyRef, Private, Public};
-use openssl::pkey_ctx::PkeyCtx;
-use openssl::rsa::Rsa;
-use openssl::symm::Cipher;
-use openssl::x509::X509;
+use der::Decode as _;
+use der::Encode as _;
+use rand_core::RngCore as _;
 
 use super::join_error;
 
+mod ec;
 mod jwk;
+mod okp;
+mod rsa;
 
 #[derive(Deserialize)]
 #[serde(crate = "deno_core::serde", tag = "type", rename_all = "kebab-case")]
@@ -48,129 +54,111 @@ enum KeyGeneration {
     },
 }
 
-impl KeyGeneration {
-    fn generate(self) -> Result<PKey<Private>, JsErrorBox> {
-        let key = match self {
-            Self::Rsa { bits, exponent } => (|| {
-                let exponent = BigNum::from_u32(exponent)?;
-                PKey::from_rsa(Rsa::generate_with_e(bits, &exponent)?)
-            })(),
-            Self::RsaPss { bits, exponent } => rsa_pss_key(bits, exponent),
-            Self::Dsa { bits } => Dsa::generate(bits).and_then(PKey::from_dsa),
-            Self::Ec { curve, explicit } => {
-                let mut group = named_group(&curve)?;
-                if explicit {
-                    group.set_asn1_flag(Asn1Flag::EXPLICIT_CURVE);
-                }
-                EcKey::generate(&group).and_then(PKey::from_ec_key)
-            }
-            Self::Ed25519 => PKey::generate_ed25519(),
-            Self::Ed448 => PKey::generate_ed448(),
-            Self::X25519 => PKey::generate_x25519(),
-            Self::X448 => PKey::generate_x448(),
-            Self::Dh {
-                group,
-                bits,
-                prime,
-                generator,
-            } => group
-                .as_deref()
-                .map_or_else(|| dh_key(bits, prime.as_deref(), generator), dh_group)?
-                .generate_key()
-                .and_then(PKey::from_dh),
-        };
-        key.map_err(|error| crypto_error("ERR_CRYPTO_KEYGEN_FAILED", &error))
+#[derive(Clone, Copy)]
+enum KeyKind {
+    Rsa,
+    RsaPss,
+    Ec,
+    Ed25519,
+    X25519,
+}
+
+impl KeyKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Rsa => "rsa",
+            Self::RsaPss => "rsa-pss",
+            Self::Ec => "ec",
+            Self::Ed25519 => "ed25519",
+            Self::X25519 => "x25519",
+        }
     }
 }
 
-fn rsa_pss_key(bits: u32, exponent: u32) -> Result<PKey<Private>, ErrorStack> {
-    let mut context = PkeyCtx::new_id(Id::RSA_PSS)?;
-    context.keygen_init()?;
-    context.set_rsa_keygen_bits(bits)?;
-    let exponent = BigNum::from_u32(exponent)?;
-    context.set_rsa_keygen_pubexp(&exponent)?;
-    context.keygen()
+enum PrivateKey {
+    Rsa { key: rsa::Private, pss: bool },
+    Ec(ec::Private),
+    Ed25519(ed25519_dalek::SigningKey),
+    X25519(x25519_dalek::StaticSecret),
 }
 
-fn named_group(curve: &str) -> Result<EcGroup, JsErrorBox> {
-    let alias = match curve {
-        "P-192" | "secp192r1" => "prime192v1",
-        "P-224" => "secp224r1",
-        "P-256" | "secp256r1" => "prime256v1",
-        "P-384" => "secp384r1",
-        "P-521" => "secp521r1",
-        name => name,
-    };
-    let group = (!alias.contains('\0'))
-        .then(|| Asn1Object::from_str(alias))
-        .and_then(Result::ok)
-        .and_then(|object| EcGroup::from_curve_name(object.nid()).ok());
-    group.ok_or_else(|| {
-        coded_error(
-            "ERR_CRYPTO_INVALID_CURVE",
-            &format!("Invalid EC curve name: {curve}"),
-        )
-    })
+enum PublicKey {
+    Rsa { key: rsa::Public, pss: bool },
+    Ec(ec::Public),
+    Ed25519(ed25519_dalek::VerifyingKey),
+    X25519(x25519_dalek::PublicKey),
 }
 
-fn dh_group(group: &str) -> Result<Dh<openssl::pkey::Params>, JsErrorBox> {
-    let prime = match group.to_ascii_lowercase().as_str() {
-        "modp1" => BigNum::get_rfc2409_prime_768(),
-        "modp2" => BigNum::get_rfc2409_prime_1024(),
-        "modp5" => BigNum::get_rfc3526_prime_1536(),
-        "modp14" => BigNum::get_rfc3526_prime_2048(),
-        "modp15" => BigNum::get_rfc3526_prime_3072(),
-        "modp16" => BigNum::get_rfc3526_prime_4096(),
-        "modp17" => BigNum::get_rfc3526_prime_6144(),
-        "modp18" => BigNum::get_rfc3526_prime_8192(),
-        _ => {
-            return Err(coded_error(
-                "ERR_CRYPTO_UNKNOWN_DH_GROUP",
-                &format!("Unknown DH group: {group}"),
-            ));
+impl PrivateKey {
+    const fn kind(&self) -> KeyKind {
+        match self {
+            Self::Rsa { pss, .. } if *pss => KeyKind::RsaPss,
+            Self::Rsa { .. } => KeyKind::Rsa,
+            Self::Ec(_) => KeyKind::Ec,
+            Self::Ed25519(_) => KeyKind::Ed25519,
+            Self::X25519(_) => KeyKind::X25519,
         }
-    };
-    prime
-        .and_then(|prime| Dh::from_pqg(prime, None, BigNum::from_u32(2)?))
-        .map_err(|error| crypto_error("ERR_CRYPTO_KEYGEN_FAILED", &error))
-}
+    }
 
-fn dh_key(
-    bits: Option<u32>,
-    prime: Option<&[u8]>,
-    generator: u32,
-) -> Result<Dh<openssl::pkey::Params>, JsErrorBox> {
-    let result = match (prime, bits) {
-        (Some(prime), None) => (|| {
-            Dh::from_pqg(
-                BigNum::from_slice(prime)?,
-                None,
-                BigNum::from_u32(generator)?,
-            )
-        })(),
-        (None, Some(bits)) => Dh::generate_params(bits, generator),
-        _ => {
-            return Err(coded_error(
-                "ERR_INVALID_ARG_VALUE",
-                "Supply a prime or a prime length",
-            ));
+    fn details(&self) -> Result<KeyDetails, JsErrorBox> {
+        match self {
+            Self::Rsa { key, .. } => KeyDetails::rsa(&key.key.to_public_key()),
+            Self::Ec(key) => Ok(KeyDetails::ec(ec::curve(key))),
+            Self::Ed25519(_) | Self::X25519(_) => Ok(KeyDetails::default()),
         }
-    };
-    result.map_err(|error| crypto_error("ERR_CRYPTO_KEYGEN_FAILED", &error))
+    }
+
+    fn to_pkcs8_der(&self) -> Result<Vec<u8>, JsErrorBox> {
+        match self {
+            Self::Rsa { key, .. } => rsa::pkcs8_der(&key.key),
+            Self::Ec(key) => ec::pkcs8_der(key),
+            Self::Ed25519(key) => okp::ed25519_private_der(key),
+            Self::X25519(key) => okp::x25519_private_der(key),
+        }
+    }
+
+    fn to_public(&self) -> PublicKey {
+        match self {
+            Self::Rsa { key, pss } => PublicKey::Rsa {
+                key: rsa::Public {
+                    key: key.key.to_public_key(),
+                    pss: *pss,
+                },
+                pss: *pss,
+            },
+            Self::Ec(key) => PublicKey::Ec(ec::public_key(key)),
+            Self::Ed25519(key) => PublicKey::Ed25519(key.verifying_key()),
+            Self::X25519(key) => PublicKey::X25519(x25519_dalek::PublicKey::from(key)),
+        }
+    }
 }
 
-const fn key_kind(id: Id) -> &'static str {
-    match id {
-        Id::RSA => "rsa",
-        Id::RSA_PSS => "rsa-pss",
-        Id::DSA => "dsa",
-        Id::DH | Id::DHX => "dh",
-        Id::EC | Id::SM2 => "ec",
-        Id::ED25519 => "ed25519",
-        Id::ED448 => "ed448",
-        Id::X25519 => "x25519",
-        Id::X448 => "x448",
-        _ => "",
+impl PublicKey {
+    const fn kind(&self) -> KeyKind {
+        match self {
+            Self::Rsa { pss, .. } if *pss => KeyKind::RsaPss,
+            Self::Rsa { .. } => KeyKind::Rsa,
+            Self::Ec(_) => KeyKind::Ec,
+            Self::Ed25519(_) => KeyKind::Ed25519,
+            Self::X25519(_) => KeyKind::X25519,
+        }
+    }
+
+    fn details(&self) -> Result<KeyDetails, JsErrorBox> {
+        match self {
+            Self::Rsa { key, .. } => KeyDetails::rsa(&key.key),
+            Self::Ec(key) => Ok(KeyDetails::ec(ec::public_curve(key))),
+            Self::Ed25519(_) | Self::X25519(_) => Ok(KeyDetails::default()),
+        }
+    }
+
+    fn to_spki_der(&self) -> Result<Vec<u8>, JsErrorBox> {
+        match self {
+            Self::Rsa { key, .. } => rsa::spki_der(&key.key),
+            Self::Ec(key) => ec::spki_der(key),
+            Self::Ed25519(key) => okp::ed25519_public_der(key),
+            Self::X25519(key) => okp::x25519_public_der(key),
+        }
     }
 }
 
@@ -197,37 +185,39 @@ struct KeyDetails {
 }
 
 impl KeyDetails {
-    fn from_key(key: &PKeyRef<impl HasPublic>) -> Result<Self, ErrorStack> {
-        let mut details = Self::default();
-        match key.id() {
-            Id::EC | Id::SM2 => {
-                details.named_curve = key
-                    .ec_key()?
-                    .group()
-                    .curve_name()
-                    .map(|nid| nid.short_name())
-                    .transpose()?;
-            }
-            Id::RSA | Id::RSA_PSS => {
-                details.modulus_length = Some(key.bits());
-                details.public_exponent = Some(key.rsa()?.e().to_vec().into());
-            }
-            Id::DSA => {
-                details.modulus_length = Some(key.bits());
-                details.divisor_length = Some(key.dsa()?.q().num_bits());
-            }
-            _ => {}
+    fn rsa(key: &::rsa::RsaPublicKey) -> Result<Self, JsErrorBox> {
+        let (_, exponent) = rsa::public_numbers(key);
+        Ok(Self {
+            modulus_length: Some(rsa::modulus_length(key)?),
+            public_exponent: Some(exponent.into()),
+            ..Self::default()
+        })
+    }
+
+    const fn ec(curve: ec::Curve) -> Self {
+        Self {
+            named_curve: Some(curve.key_name()),
+            modulus_length: None,
+            divisor_length: None,
+            public_exponent: None,
         }
-        Ok(details)
     }
 }
 
 impl KeyData {
-    fn new(key: &PKeyRef<impl HasPublic>, der: Vec<u8>) -> Result<Self, ErrorStack> {
+    fn from_private(key: &PrivateKey) -> Result<Self, JsErrorBox> {
         Ok(Self {
-            der: der.into(),
-            kind: key_kind(key.id()),
-            details: KeyDetails::from_key(key)?,
+            der: key.to_pkcs8_der()?.into(),
+            kind: key.kind().as_str(),
+            details: key.details()?,
+        })
+    }
+
+    fn from_public(key: &PublicKey) -> Result<Self, JsErrorBox> {
+        Ok(Self {
+            der: key.to_spki_der()?.into(),
+            kind: key.kind().as_str(),
+            details: key.details()?,
         })
     }
 }
@@ -239,15 +229,65 @@ struct KeyPair {
     private_key: KeyData,
 }
 
+fn generate(generation: KeyGeneration) -> Result<PrivateKey, JsErrorBox> {
+    match generation {
+        KeyGeneration::Rsa { bits, exponent } => Ok(PrivateKey::Rsa {
+            key: rsa::generate(bits, exponent, false)?,
+            pss: false,
+        }),
+        KeyGeneration::RsaPss { bits, exponent } => Ok(PrivateKey::Rsa {
+            key: rsa::generate(bits, exponent, false)?,
+            pss: true,
+        }),
+        KeyGeneration::Ec { curve, explicit } => {
+            // RustCrypto only emits named-curve parameters; `explicit` is accepted for API
+            // compatibility and ignored.
+            let _ = explicit;
+            let curve = ec::Curve::from_name(&curve).ok_or_else(|| {
+                coded_error(
+                    "ERR_CRYPTO_INVALID_CURVE",
+                    &format!("Invalid EC curve name: {curve}"),
+                )
+            })?;
+            Ok(PrivateKey::Ec(ec::generate(curve)))
+        }
+        KeyGeneration::Ed25519 => Ok(PrivateKey::Ed25519(okp::generate_ed25519())),
+        KeyGeneration::X25519 => Ok(PrivateKey::X25519(okp::generate_x25519())),
+        // The RustCrypto curve/key crates that would cover these are either pre-release or
+        // missing the ASN.1 wrappers Node needs; linking OpenSSL for them would give back the
+        // 3.8 MiB this module just removed. Record them as gaps instead.
+        KeyGeneration::Dsa { bits } => {
+            let _ = bits;
+            Err(unsupported("dsa"))
+        }
+        KeyGeneration::Ed448 => Err(unsupported("ed448")),
+        KeyGeneration::X448 => Err(unsupported("x448")),
+        KeyGeneration::Dh {
+            group,
+            bits,
+            prime,
+            generator,
+        } => {
+            let _ = (group, bits, prime, generator);
+            Err(unsupported("dh"))
+        }
+    }
+}
+
+fn unsupported(name: &str) -> JsErrorBox {
+    coded_error(
+        "ERR_CRYPTO_OPERATION_FAILED",
+        &format!("{name} keys are not supported by this runtime"),
+    )
+}
+
 fn generate_key_pair(generation: KeyGeneration) -> Result<KeyPair, JsErrorBox> {
-    let key = generation.generate()?;
-    let pair = || {
-        Ok(KeyPair {
-            public_key: KeyData::new(&key, key.public_key_to_der()?)?,
-            private_key: KeyData::new(&key, key.private_key_to_pkcs8()?)?,
-        })
-    };
-    pair().map_err(|error| crypto_error("ERR_CRYPTO_KEYGEN_FAILED", &error))
+    let key = generate(generation)?;
+    let public = key.to_public();
+    Ok(KeyPair {
+        public_key: KeyData::from_public(&public)?,
+        private_key: KeyData::from_private(&key)?,
+    })
 }
 
 #[op2]
@@ -268,44 +308,138 @@ pub(super) async fn op_crypto_generate_key_pair_async(
         .map_err(|error| join_error(&error))?
 }
 
+fn parse_private_pkcs8(der: &[u8]) -> Result<PrivateKey, JsErrorBox> {
+    if let Some(key) = rsa::parse_pkcs8_private(der)? {
+        let pss = key.pss;
+        return Ok(PrivateKey::Rsa { key, pss });
+    }
+    if let Some(key) = ec::parse_pkcs8(der) {
+        return Ok(PrivateKey::Ec(key));
+    }
+    if let Some(key) = okp::ed25519_parse_private(der)? {
+        return Ok(PrivateKey::Ed25519(key));
+    }
+    if let Some(key) = okp::x25519_parse_private(der)? {
+        return Ok(PrivateKey::X25519(key));
+    }
+    Err(invalid_key("unsupported private key"))
+}
+
+fn parse_private_der(der: &[u8], passphrase: &[u8]) -> Result<PrivateKey, JsErrorBox> {
+    if let Ok(key) = parse_private_pkcs8(der) {
+        return Ok(key);
+    }
+    if let Some(key) = rsa::parse_pkcs1_private(der) {
+        let pss = key.pss;
+        return Ok(PrivateKey::Rsa { key, pss });
+    }
+    if let Some(key) = ec::parse_sec1(der) {
+        return Ok(PrivateKey::Ec(key));
+    }
+    parse_private_pkcs8(&decrypt_pkcs8(der, passphrase)?)
+}
+
 fn read_private(
     format: &str,
     encoding: &str,
     key: &[u8],
     passphrase: &[u8],
-) -> Result<PKey<Private>, ErrorStack> {
-    let password = |output: &mut [u8]| {
-        output
-            .get_mut(..passphrase.len())
-            .ok_or_else(ErrorStack::get)?
-            .copy_from_slice(passphrase);
-        Ok(passphrase.len())
-    };
+) -> Result<PrivateKey, JsErrorBox> {
     if format == "pem" {
-        PKey::private_key_from_pem_callback(key, password)
-    } else {
-        let unencrypted = if encoding == "pkcs8" {
-            PKey::private_key_from_pkcs8(key)
-        } else {
-            PKey::private_key_from_der(key)
+        let (label, der) = pem_block(key)?;
+        return match label {
+            "PRIVATE KEY" => parse_private_pkcs8(&der),
+            "ENCRYPTED PRIVATE KEY" => parse_private_pkcs8(&decrypt_pkcs8(&der, passphrase)?),
+            "RSA PRIVATE KEY" => rsa::parse_pkcs1_private(&der)
+                .map(|key| PrivateKey::Rsa { key, pss: false })
+                .ok_or_else(|| invalid_key("invalid RSA private key")),
+            "EC PRIVATE KEY" => ec::parse_sec1(&der)
+                .map(PrivateKey::Ec)
+                .ok_or_else(|| invalid_key("invalid EC private key")),
+            other => Err(invalid_key(format!(
+                "unsupported private key PEM label `{other}`"
+            ))),
         };
-        unencrypted.or_else(|_| PKey::private_key_from_pkcs8_callback(key, password))
+    }
+
+    match encoding {
+        "pkcs8" => {
+            if let Ok(key) = parse_private_pkcs8(key) {
+                Ok(key)
+            } else {
+                parse_private_pkcs8(&decrypt_pkcs8(key, passphrase)?)
+            }
+        }
+        "pkcs1" => rsa::parse_pkcs1_private(key)
+            .map(|key| PrivateKey::Rsa { key, pss: false })
+            .ok_or_else(|| invalid_key("invalid RSA private key")),
+        "sec1" => ec::parse_sec1(key)
+            .map(PrivateKey::Ec)
+            .ok_or_else(|| invalid_key("invalid EC private key")),
+        _ => parse_private_der(key, passphrase),
     }
 }
 
-fn read_public(format: &str, encoding: &str, key: &[u8]) -> Result<PKey<Public>, ErrorStack> {
-    if format == "pem" {
-        PKey::public_key_from_pem(key)
-            .or_else(|_| Rsa::public_key_from_pem_pkcs1(key).and_then(PKey::from_rsa))
-            .or_else(|_| X509::from_pem(key).and_then(|cert| cert.public_key()))
-    } else {
-        match encoding {
-            "pkcs1" => Rsa::public_key_from_der_pkcs1(key).and_then(PKey::from_rsa),
-            "spki" => PKey::public_key_from_der(key),
-            _ => PKey::public_key_from_der(key)
-                .or_else(|_| Rsa::public_key_from_der_pkcs1(key).and_then(PKey::from_rsa)),
-        }
+fn parse_public_spki(der: &[u8]) -> Result<PublicKey, JsErrorBox> {
+    if let Some(key) = rsa::parse_spki_public(der)? {
+        let pss = key.pss;
+        return Ok(PublicKey::Rsa { key, pss });
     }
+    if let Some(key) = ec::parse_spki(der) {
+        return Ok(PublicKey::Ec(key));
+    }
+    if let Some(key) = okp::ed25519_parse_public(der)? {
+        return Ok(PublicKey::Ed25519(key));
+    }
+    if let Some(key) = okp::x25519_parse_public(der)? {
+        return Ok(PublicKey::X25519(key));
+    }
+    Err(invalid_key("unsupported public key"))
+}
+
+fn parse_public_der(der: &[u8]) -> Result<PublicKey, JsErrorBox> {
+    if let Ok(key) = parse_public_spki(der) {
+        return Ok(key);
+    }
+    if let Some(key) = rsa::parse_pkcs1_public(der) {
+        let pss = key.pss;
+        return Ok(PublicKey::Rsa { key, pss });
+    }
+    parse_certificate(der)
+}
+
+fn read_public(format: &str, encoding: &str, key: &[u8]) -> Result<PublicKey, JsErrorBox> {
+    if format == "pem" {
+        let (label, der) = pem_block(key)?;
+        return match label {
+            "PUBLIC KEY" => parse_public_spki(&der),
+            "RSA PUBLIC KEY" => rsa::parse_pkcs1_public(&der)
+                .map(|key| PublicKey::Rsa { key, pss: false })
+                .ok_or_else(|| invalid_key("invalid RSA public key")),
+            "CERTIFICATE" => parse_certificate(&der),
+            other => Err(invalid_key(format!(
+                "unsupported public key PEM label `{other}`"
+            ))),
+        };
+    }
+
+    match encoding {
+        "pkcs1" => rsa::parse_pkcs1_public(key)
+            .map(|key| PublicKey::Rsa { key, pss: false })
+            .ok_or_else(|| invalid_key("invalid RSA public key")),
+        "spki" => parse_public_spki(key),
+        _ => parse_public_der(key),
+    }
+}
+
+fn parse_certificate(der: &[u8]) -> Result<PublicKey, JsErrorBox> {
+    let certificate = x509_cert::Certificate::from_der(der).map_err(invalid_key)?;
+    let spki = certificate
+        .tbs_certificate
+        .subject_public_key_info
+        .to_der()
+        .map_err(invalid_key)?;
+    parse_public_spki(&spki)
 }
 
 #[op2]
@@ -317,23 +451,19 @@ pub(super) fn op_crypto_import_key(
     #[buffer] key: &[u8],
     #[buffer] passphrase: &[u8],
 ) -> Result<KeyData, JsErrorBox> {
-    let import = || {
-        if kind == "private" {
-            let key = read_private(format, encoding, key, passphrase)?;
-            KeyData::new(&key, key.private_key_to_pkcs8()?)
-        } else {
-            if format == "pem" || !matches!(encoding, "pkcs8" | "sec1") {
-                match read_public(format, encoding, key) {
-                    Ok(key) => return KeyData::new(&key, key.public_key_to_der()?),
-                    Err(error) if format == "der" && encoding == "spki" => return Err(error),
-                    Err(_) => {}
-                }
-            }
-            let private = read_private(format, encoding, key, passphrase)?;
-            KeyData::new(&private, private.public_key_to_der()?)
+    if kind == "private" {
+        return KeyData::from_private(&read_private(format, encoding, key, passphrase)?);
+    }
+
+    if format == "pem" || !matches!(encoding, "pkcs8" | "sec1") {
+        match read_public(format, encoding, key) {
+            Ok(public) => return KeyData::from_public(&public),
+            Err(error) if format == "der" && encoding == "spki" => return Err(error),
+            Err(_) => {}
         }
-    };
-    import().map_err(|error| crypto_error("ERR_CRYPTO_INVALID_KEY", &error))
+    }
+    let private = read_private(format, encoding, key, passphrase)?;
+    KeyData::from_public(&private.to_public())
 }
 
 #[op2]
@@ -342,7 +472,7 @@ pub(super) fn op_crypto_import_jwk(
     #[string] kind: &str,
     #[serde] jwk: jwk::Jwk,
 ) -> Result<KeyData, JsErrorBox> {
-    jwk.import(kind == "private")
+    jwk::import(jwk, kind == "private")
 }
 
 #[op2]
@@ -351,38 +481,10 @@ pub(super) fn op_crypto_export_jwk(
     #[string] kind: &str,
     #[buffer] der: &[u8],
 ) -> Result<jwk::Jwk, JsErrorBox> {
-    let invalid = |error| crypto_error("ERR_CRYPTO_INVALID_KEY", &error);
     if kind == "private" {
-        let key = PKey::private_key_from_pkcs8(der).map_err(invalid)?;
-        jwk::Jwk::export(&key, Some(&key))
+        jwk::export_private(&parse_private_pkcs8(der)?)
     } else {
-        let key = PKey::public_key_from_der(der).map_err(invalid)?;
-        jwk::Jwk::export(&key, None)
-    }
-}
-
-fn export_private(
-    key: &PKeyRef<Private>,
-    format: &str,
-    encoding: &str,
-    cipher: Option<Cipher>,
-    passphrase: &[u8],
-) -> Result<Vec<u8>, ErrorStack> {
-    match (encoding, format, cipher) {
-        ("pkcs1", "pem", Some(cipher)) => {
-            key.rsa()?.private_key_to_pem_passphrase(cipher, passphrase)
-        }
-        ("pkcs1", "pem", None) => key.rsa()?.private_key_to_pem(),
-        ("pkcs1", _, _) => key.rsa()?.private_key_to_der(),
-        ("sec1", "pem", Some(cipher)) => key
-            .ec_key()?
-            .private_key_to_pem_passphrase(cipher, passphrase),
-        ("sec1", "pem", None) => key.ec_key()?.private_key_to_pem(),
-        ("sec1", _, _) => key.ec_key()?.private_key_to_der(),
-        (_, "pem", Some(cipher)) => key.private_key_to_pem_pkcs8_passphrase(cipher, passphrase),
-        (_, "pem", None) => key.private_key_to_pem_pkcs8(),
-        (_, _, Some(cipher)) => key.private_key_to_pkcs8_passphrase(cipher, passphrase),
-        (_, _, None) => key.private_key_to_pkcs8(),
+        Ok(jwk::export_public(&parse_public_spki(der)?))
     }
 }
 
@@ -396,50 +498,182 @@ pub(super) fn op_crypto_export_key(
     #[string] cipher: &str,
     #[buffer] passphrase: &[u8],
 ) -> Result<Box<[u8]>, JsErrorBox> {
-    let cipher = if cipher.is_empty() {
-        None
+    let cipher = parse_cipher(cipher)?;
+    let exported = if kind == "private" {
+        export_private(
+            &parse_private_pkcs8(der)?,
+            format,
+            encoding,
+            cipher,
+            passphrase,
+        )?
     } else {
-        Some(
-            (!cipher.contains('\0'))
-                .then(|| Asn1Object::from_str(cipher))
-                .and_then(Result::ok)
-                .and_then(|object| Cipher::from_nid(object.nid()))
-                .ok_or_else(|| {
-                    coded_error(
-                        "ERR_CRYPTO_UNKNOWN_CIPHER",
-                        &format!("Unknown cipher: {cipher}"),
-                    )
-                })?,
-        )
+        export_public(&parse_public_spki(der)?, format, encoding)?
     };
-    let export = || {
-        if kind == "private" {
-            let key = PKey::private_key_from_pkcs8(der)?;
-            export_private(&key, format, encoding, cipher, passphrase)
-        } else {
-            let key = PKey::public_key_from_der(der)?;
-            match (encoding, format) {
-                ("pkcs1", "pem") => key.rsa()?.public_key_to_pem_pkcs1(),
-                ("pkcs1", _) => key.rsa()?.public_key_to_der_pkcs1(),
-                (_, "pem") => key.public_key_to_pem(),
-                _ => key.public_key_to_der(),
-            }
+    Ok(exported.into_boxed_slice())
+}
+
+fn export_private(
+    key: &PrivateKey,
+    format: &str,
+    encoding: &str,
+    cipher: Option<Cipher>,
+    passphrase: &[u8],
+) -> Result<Vec<u8>, JsErrorBox> {
+    match encoding {
+        "" | "pkcs8" => {
+            let der = key.to_pkcs8_der()?;
+            let (label, der) = match cipher {
+                Some(cipher) => (
+                    "ENCRYPTED PRIVATE KEY",
+                    encrypted_pkcs8(&der, cipher, passphrase)?,
+                ),
+                None => ("PRIVATE KEY", der),
+            };
+            encode(format, label, &der)
         }
+        "pkcs1" => {
+            let PrivateKey::Rsa { key, .. } = key else {
+                return Err(invalid_key("pkcs1 is only valid for RSA private keys"));
+            };
+            if cipher.is_some() {
+                return Err(legacy_cipher());
+            }
+            encode(
+                format,
+                "RSA PRIVATE KEY",
+                &rsa::pkcs1_private_der(&key.key)?,
+            )
+        }
+        "sec1" => {
+            let PrivateKey::Ec(key) = key else {
+                return Err(invalid_key("sec1 is only valid for EC private keys"));
+            };
+            if cipher.is_some() {
+                return Err(legacy_cipher());
+            }
+            encode(format, "EC PRIVATE KEY", &ec::sec1_der(key)?)
+        }
+        other => Err(invalid_key(format!(
+            "unsupported private key encoding `{other}`"
+        ))),
+    }
+}
+
+fn export_public(key: &PublicKey, format: &str, encoding: &str) -> Result<Vec<u8>, JsErrorBox> {
+    match encoding {
+        "pkcs1" => {
+            let PublicKey::Rsa { key, .. } = key else {
+                return Err(invalid_key("pkcs1 is only valid for RSA public keys"));
+            };
+            encode(format, "RSA PUBLIC KEY", &rsa::pkcs1_public_der(&key.key)?)
+        }
+        _ => encode(format, "PUBLIC KEY", &key.to_spki_der()?),
+    }
+}
+
+fn encode(format: &str, label: &str, der: &[u8]) -> Result<Vec<u8>, JsErrorBox> {
+    if format == "pem" {
+        der::pem::encode_string(label, der::pem::LineEnding::LF, der)
+            .map(String::into_bytes)
+            .map_err(invalid_key)
+    } else {
+        Ok(der.to_vec())
+    }
+}
+
+fn pem_block(bytes: &[u8]) -> Result<(&str, Vec<u8>), JsErrorBox> {
+    der::pem::decode_vec(bytes).map_err(|error| invalid_key(format!("invalid PEM: {error}")))
+}
+
+/// The cipher names Node maps to OpenSSL ciphers. Only the modern PKCS#8 path is supported;
+/// the legacy PKCS#1/SEC1 PEM encryption needs `DEK-Info` handling that `RustCrypto` does not
+/// offer.
+#[derive(Clone, Copy)]
+enum Cipher {
+    Aes128,
+    Aes192,
+    Aes256,
+}
+
+fn parse_cipher(name: &str) -> Result<Option<Cipher>, JsErrorBox> {
+    if name.is_empty() {
+        return Ok(None);
+    }
+    match name.to_ascii_lowercase().as_str() {
+        "aes-128-cbc" => Ok(Some(Cipher::Aes128)),
+        "aes-192-cbc" => Ok(Some(Cipher::Aes192)),
+        "aes-256-cbc" => Ok(Some(Cipher::Aes256)),
+        _ => Err(coded_error(
+            "ERR_CRYPTO_UNKNOWN_CIPHER",
+            &format!("Unknown cipher: {name}"),
+        )),
+    }
+}
+
+fn encrypted_pkcs8(der: &[u8], cipher: Cipher, passphrase: &[u8]) -> Result<Vec<u8>, JsErrorBox> {
+    let mut random = rand_core::OsRng;
+    let mut salt = [0u8; 16];
+    random.fill_bytes(&mut salt);
+    let mut iv = [0u8; 16];
+    random.fill_bytes(&mut iv);
+
+    let kdf = pkcs5::pbes2::Pbkdf2Params::hmac_with_sha256(2048, &salt).map_err(invalid_key)?;
+    let encryption = match cipher {
+        Cipher::Aes128 => pkcs5::pbes2::EncryptionScheme::Aes128Cbc { iv: &iv },
+        Cipher::Aes192 => pkcs5::pbes2::EncryptionScheme::Aes192Cbc { iv: &iv },
+        Cipher::Aes256 => pkcs5::pbes2::EncryptionScheme::Aes256Cbc { iv: &iv },
     };
-    export()
-        .map(Vec::into_boxed_slice)
-        .map_err(|error| crypto_error("ERR_CRYPTO_INVALID_KEY", &error))
+    let parameters = pkcs5::pbes2::Parameters {
+        kdf: pkcs5::pbes2::Kdf::Pbkdf2(kdf),
+        encryption,
+    };
+
+    pkcs8::PrivateKeyInfo::try_from(der)
+        .map_err(invalid_key)?
+        .encrypt_with_params(parameters, passphrase)
+        .map(|document| document.as_bytes().to_vec())
+        .map_err(invalid_key)
+}
+
+fn decrypt_pkcs8(der: &[u8], passphrase: &[u8]) -> Result<Vec<u8>, JsErrorBox> {
+    let encrypted = pkcs8::EncryptedPrivateKeyInfo::try_from(der).map_err(invalid_key)?;
+    encrypted
+        .decrypt(passphrase)
+        .map(|document| document.as_bytes().to_vec())
+        .map_err(invalid_key)
+}
+
+fn legacy_cipher() -> JsErrorBox {
+    coded_error(
+        "ERR_CRYPTO_OPERATION_FAILED",
+        "encrypted PKCS#1/SEC1 PEM is not supported; export pkcs8 instead",
+    )
 }
 
 fn derive_secret(private: &[u8], public: &[u8]) -> Result<Box<[u8]>, JsErrorBox> {
-    let derive = || {
-        let private = PKey::private_key_from_pkcs8(private)?;
-        let public = PKey::public_key_from_der(public)?;
-        let mut deriver = Deriver::new(&private)?;
-        deriver.set_peer(&public)?;
-        deriver.derive_to_vec().map(Vec::into_boxed_slice)
+    let private = parse_private_pkcs8(private)?;
+    let public = parse_public_spki(public)?;
+    let secret = match (&private, &public) {
+        (PrivateKey::X25519(private), PublicKey::X25519(public)) => {
+            let shared = private.diffie_hellman(public);
+            if !shared.was_contributory() {
+                return Err(coded_error(
+                    "ERR_CRYPTO_OPERATION_FAILED",
+                    "Invalid X25519 public key",
+                ));
+            }
+            shared.to_bytes().to_vec()
+        }
+        (PrivateKey::Ec(private), PublicKey::Ec(public)) => ec::diffie_hellman(private, public)?,
+        _ => {
+            return Err(coded_error(
+                "ERR_CRYPTO_INCOMPATIBLE_KEY",
+                "Incompatible key types for Diffie-Hellman",
+            ));
+        }
     };
-    derive().map_err(|error| crypto_error("ERR_CRYPTO_OPERATION_FAILED", &error))
+    Ok(secret.into_boxed_slice())
 }
 
 #[op2]
@@ -468,6 +702,10 @@ fn coded_error(code: &str, message: &str) -> JsErrorBox {
     JsErrorBox::new("Error", format!("{code}\0{message}"))
 }
 
-fn crypto_error(code: &str, error: &ErrorStack) -> JsErrorBox {
+fn crypto_error(code: &str, error: &impl Display) -> JsErrorBox {
     coded_error(code, &error.to_string())
+}
+
+fn invalid_key(error: impl Display) -> JsErrorBox {
+    coded_error("ERR_CRYPTO_INVALID_KEY", &error.to_string())
 }
