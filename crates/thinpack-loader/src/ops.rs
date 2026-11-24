@@ -208,16 +208,15 @@ fn read(resolved: &Resolved, fs: &ModuleFs) -> String {
     match fs.read(&resolved.path) {
         Ok(bytes) => String::from_utf8(bytes).map_or_else(
             |_| format!("e\0ERR_MODULE_READ\0{path}: module is not valid UTF-8\0"),
-            |source| match resolved.format {
+            |source| {
                 // JSON is parsed by the loader, not compiled; it keeps its raw text.
-                Format::Json => format!("j\0{path}\0{url}\0{source}"),
-                _ => {
-                    let Some((name, script)) = crate::commonjs_script(&resolved.path, &source)
-                    else {
-                        return invalid_url(&path);
-                    };
-                    format!("f\0{path}\0{name}\0{script}")
+                if resolved.format == Format::Json {
+                    return format!("j\0{path}\0{url}\0{source}");
                 }
+                let Some((name, script)) = crate::commonjs_script(&resolved.path, &source) else {
+                    return invalid_url(&path);
+                };
+                format!("f\0{path}\0{name}\0{script}")
             },
         ),
         Err(error) => format!("e\0ERR_MODULE_READ\0{path}: {error}\0"),
