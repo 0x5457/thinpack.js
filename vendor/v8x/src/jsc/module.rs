@@ -71,10 +71,23 @@ struct SyntheticModule {
 
   import_specifiers: Vec<std::string::String>,
 
+  // (specifier, imported name, original line) triples for the link check. A
+  // missing named export must fail instantiation, before a dependency runs.
+  import_checks: Vec<(std::string::String, std::string::String, usize)>,
+
+  // A dependency with `export *` has names the rewriter cannot list; skip the
+  // link check for it rather than reject a valid binding.
+  has_star_reexports: bool,
+
   // Byte offset of each import's specifier literal (opening quote) in the
   // original source, parallel to import_specifiers. V8's ModuleRequest
   // source_offset; deno records it as `referrer_source_offset`.
   import_offsets: Vec<i32>,
+
+  // Line start offsets of the original source, so SourceOffsetToLocation can
+  // turn a request's offset back into the line/column deno reports. The rewritten
+  // body loses those positions.
+  source_line_starts: Vec<usize>,
 
   // Import attributes (`with { type: "json", ... }`) per import, parallel to
   // import_specifiers, extracted from source. JSC's record only exposes a coarse
@@ -1369,7 +1382,10 @@ pub extern "C" fn v8__ScriptCompiler__CompileModule(
           source_map_url: extract_source_mapping_url(&text),
           import_offsets: compute_import_offsets(&text, &specs),
           import_attributes: compute_import_attributes(&text, &specs),
+          source_line_starts: line_starts(&text),
           import_specifiers: specs,
+          import_checks: Vec::new(),
+          has_star_reexports: false,
           namespace: ptr::null_mut(),
           specifier,
           dependencies: Vec::new(),
@@ -1416,6 +1432,12 @@ pub extern "C" fn v8__ScriptCompiler__CompileModule(
       return ptr::null();
     };
 
+    // The source heuristic misses top-level await inside a block (a `try`, an `if`,
+    // a loop). Parse the synchronous wrapper; a TLA module fails that parse and is
+    // wrapped in an async function instead.
+    let is_async =
+      rewrite.is_async || !sync_wrapper_parses(gctx as JSContextRef, &rewrite.body);
+
     let namespace =
       unsafe { JSObjectMake(ctx, ptr::null_mut(), ptr::null_mut()) };
     unsafe { JSValueProtect(gctx, namespace as JSValueRef) };
@@ -1438,11 +1460,14 @@ pub extern "C" fn v8__ScriptCompiler__CompileModule(
       source_map_url: extract_source_mapping_url(&text),
       import_offsets: compute_import_offsets(&text, &rewrite.imports),
       import_attributes: compute_import_attributes(&text, &rewrite.imports),
+      source_line_starts: line_starts(&text),
       import_specifiers: rewrite.imports,
+      import_checks: rewrite.import_checks,
+      has_star_reexports: rewrite.has_star_reexports,
       namespace,
       specifier,
       dependencies: Vec::new(),
-      is_async: rewrite.is_async,
+      is_async,
       native: ptr::null_mut(),
     });
     let obj =
@@ -1455,6 +1480,12 @@ struct RewrittenModule {
   body: std::string::String,
   export_names: Vec<std::string::String>,
   imports: Vec<std::string::String>,
+  /// (specifier, imported name, 1-based line in the original source). Used to
+  /// reject a missing named export before any dependency is evaluated.
+  import_checks: Vec<(std::string::String, std::string::String, usize)>,
+  /// A dependency with `export *` has names the rewriter cannot enumerate, so
+  /// the link check must not reject a binding that star re-export provides.
+  has_star_reexports: bool,
   is_async: bool,
   // (exported, source spec, source local): `export { local as exported } from
   // spec`. Installed as LIVE getters on the namespace at compile time so a
@@ -1592,6 +1623,52 @@ fn strip_js_comments(src: &str) -> std::string::String {
   std::string::String::from_utf8_lossy(&out).into_owned()
 }
 
+/// Splits a logical line where a `;` is followed by an import/export
+/// declaration. ESM hoists those declarations, and the line-oriented rewriter
+/// would otherwise leave them inside the preceding statement, which is both a
+/// syntax error and an unnoticed export (`a(); export const b = 1;`).
+fn split_module_statements(line: &str) -> Vec<std::string::String> {
+  let bytes = line.as_bytes();
+  let mut parts = Vec::new();
+  let mut start = 0usize;
+  let mut i = 0usize;
+  while i < bytes.len() {
+    match bytes[i] {
+      b'"' | b'\'' | b'`' => {
+        let quote = bytes[i];
+        i += 1;
+        while i < bytes.len() {
+          if bytes[i] == b'\\' {
+            i += 2;
+            continue;
+          }
+          if bytes[i] == quote {
+            i += 1;
+            break;
+          }
+          i += 1;
+        }
+      }
+      b';' => {
+        let rest = line[i + 1..].trim_start();
+        if rest.starts_with("export ")
+          || rest.starts_with("export{")
+          || rest.starts_with("import ")
+          || rest == "import"
+        {
+          parts.push(line[start..=i].to_string());
+          start = i + 1;
+        }
+        i += 1;
+      }
+      _ => i += 1,
+    }
+  }
+  parts.push(line[start..].to_string());
+  parts.retain(|part| !part.trim().is_empty());
+  parts
+}
+
 fn join_module_statements(src: &str) -> Vec<std::string::String> {
   let lines: Vec<&str> = src.lines().collect();
   let mut result: Vec<std::string::String> = Vec::new();
@@ -1678,6 +1755,8 @@ fn rewrite_es_module(src: &str) -> Option<RewrittenModule> {
   let mut exports_out = std::string::String::new();
   let mut export_names: Vec<std::string::String> = Vec::new();
   let mut imports: Vec<std::string::String> = Vec::new();
+  let mut import_checks: Vec<(std::string::String, std::string::String, usize)> =
+    Vec::new();
   let mut reexports: Vec<(
     std::string::String,
     std::string::String,
@@ -1696,7 +1775,10 @@ fn rewrite_es_module(src: &str) -> Option<RewrittenModule> {
   )> = Vec::new();
 
   let cleaned = strip_js_comments(src);
-  let logical = join_module_statements(&cleaned);
+  let logical = join_module_statements(&cleaned)
+    .iter()
+    .flat_map(|line| split_module_statements(line))
+    .collect::<Vec<_>>();
 
   for raw_line in logical.iter() {
     let raw_line: &str = raw_line.as_str();
@@ -1743,11 +1825,13 @@ fn rewrite_es_module(src: &str) -> Option<RewrittenModule> {
       if clause.contains('{') {
         let brace_start = clause.find('{').unwrap();
         let head = clause[..brace_start].trim().trim_end_matches(',').trim();
+        let line = line_of(src, &spec);
         if !head.is_empty() {
           imports_out
             .push_str(&format!("const {} = {}.default;\n", head, module_expr));
           import_bindings
             .insert(head.to_string(), (spec.clone(), "default".to_string()));
+          import_checks.push((spec.clone(), "default".to_string(), line));
         }
 
         let names = between(trimmed, '{', '}').unwrap_or_default();
@@ -1763,10 +1847,12 @@ fn rewrite_es_module(src: &str) -> Option<RewrittenModule> {
               r.trim().to_string(),
               (spec.clone(), l.trim().to_string()),
             );
+            import_checks.push((spec.clone(), l.trim().to_string(), line));
           } else {
             destructure.push(part.to_string());
             import_bindings
               .insert(part.to_string(), (spec.clone(), part.to_string()));
+            import_checks.push((spec.clone(), part.to_string(), line));
           }
         }
         imports_out.push_str(&format!(
@@ -1786,6 +1872,11 @@ fn rewrite_es_module(src: &str) -> Option<RewrittenModule> {
           .push_str(&format!("const {} = {}.default;\n", clause, module_expr));
         import_bindings
           .insert(clause.to_string(), (spec.clone(), "default".to_string()));
+        import_checks.push((
+          spec.clone(),
+          "default".to_string(),
+          line_of(src, &spec),
+        ));
       }
 
       continue;
@@ -1817,6 +1908,11 @@ fn rewrite_es_module(src: &str) -> Option<RewrittenModule> {
         if let Some(spec) = &reexport_spec {
           // `export { local } from spec`: live re-export to spec.
           reexports.push((exported.clone(), spec.clone(), local.clone()));
+          import_checks.push((
+            spec.clone(),
+            local.clone(),
+            line_of(src, spec),
+          ));
         } else if let Some((spec, source)) = import_bindings.get(&local) {
           // `import X from spec; export { X }` (barrel pattern): X is an
           // imported binding, so re-export LIVE to its source module instead of
@@ -1939,6 +2035,8 @@ fn rewrite_es_module(src: &str) -> Option<RewrittenModule> {
     body,
     export_names,
     imports,
+    import_checks,
+    has_star_reexports: !star_reexports.is_empty(),
     is_async: has_top_level_await(src),
     reexports,
   })
@@ -2064,6 +2162,17 @@ fn has_top_level_await(src: &str) -> bool {
     }
   }
   false
+}
+
+/// 1-based line of the first occurrence of `spec` in the original source.
+fn line_of(src: &str, spec: &str) -> usize {
+  if spec.is_empty() {
+    return 1;
+  }
+  src
+    .lines()
+    .position(|line| line.contains(spec))
+    .map_or(1, |index| index + 1)
 }
 
 fn extract_specifier(line: &str) -> Option<std::string::String> {
@@ -2653,13 +2762,41 @@ pub extern "C" fn v8__Module__GetModuleRequests(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn v8__Module__SourceOffsetToLocation(
-  _this: *const Module,
-  _offset: int,
+  this: *const Module,
+  offset: int,
   out: *mut Location,
 ) {
-  if !out.is_null() {
-    unsafe { ptr::write_bytes(out as *mut u8, 0u8, size_of::<Location>()) };
+  if out.is_null() {
+    return;
   }
+  unsafe { ptr::write_bytes(out as *mut u8, 0u8, size_of::<Location>()) };
+  let Some(m) = module_state(this) else {
+    return;
+  };
+  if m.source_line_starts.is_empty() {
+    return;
+  }
+  let offset = offset.max(0) as usize;
+  let line = m
+    .source_line_starts
+    .partition_point(|start| *start <= offset)
+    .saturating_sub(1);
+  let column = offset.saturating_sub(m.source_line_starts[line]);
+  let location = out as *mut [i32; 2];
+  unsafe {
+    (*location)[0] = line as i32;
+    (*location)[1] = column as i32;
+  }
+}
+
+fn line_starts(source: &str) -> Vec<usize> {
+  let mut starts = vec![0usize];
+  for (index, byte) in source.bytes().enumerate() {
+    if byte == b'\n' {
+      starts.push(index + 1);
+    }
+  }
+  starts
 }
 
 #[unsafe(no_mangle)]
@@ -2727,7 +2864,12 @@ pub extern "C" fn v8__Module__InstantiateModule(
   let Some(m) = module_state(this) else {
     return MaybeBool::JustFalse;
   };
-  if !matches!(m.status, ModuleStatus::Uninstantiated) {
+  if matches!(
+    m.status,
+    ModuleStatus::Instantiated
+      | ModuleStatus::Evaluated
+      | ModuleStatus::Instantiating
+  ) {
     return MaybeBool::JustTrue;
   }
 
@@ -2776,8 +2918,17 @@ pub extern "C" fn v8__Module__InstantiateModule(
     };
   }
 
-  m.status = ModuleStatus::Instantiating;
-  let specs = m.import_specifiers.clone();
+  let (specs, checks, importer) = {
+    let Some(m) = module_state(this) else {
+      return MaybeBool::JustFalse;
+    };
+    m.status = ModuleStatus::Instantiating;
+    (
+      m.import_specifiers.clone(),
+      m.import_checks.clone(),
+      m.specifier.clone(),
+    )
+  };
 
   let mut deps: Vec<*const Module> = Vec::new();
   for spec in &specs {
@@ -2788,9 +2939,40 @@ pub extern "C" fn v8__Module__InstantiateModule(
     }
 
     if let Some(dm) = module_state(dep) {
+      // ESM link errors are part of instantiation, before any dependency body
+      // runs. `export *` hides names from the rewriter, so such a dependency is
+      // always accepted.
+      if !dm.export_names.is_empty() && !dm.has_star_reexports {
+        for (check_spec, name, line) in &checks {
+          if check_spec != spec {
+            continue;
+          }
+          if dm.export_names.iter().any(|export| export == name) {
+            continue;
+          }
+          let message = format!(
+            "The requested module '{spec}' does not provide an export named '{name}'"
+          );
+          let error = unsafe {
+            make_syntax_error(ctx, &message, &importer, *line)
+          };
+          crate::jsc::core::record_pending_exception(ctx, error);
+          if let Some(m) = module_state(this) {
+            m.status = ModuleStatus::Errored;
+          }
+          return MaybeBool::Nothing;
+        }
+      }
+
       if matches!(dm.status, ModuleStatus::Uninstantiated) {
-        let _ =
+        let linked =
           v8__Module__InstantiateModule(dep, context, cb, _source_callback);
+        if matches!(linked, MaybeBool::Nothing) {
+          if let Some(m) = module_state(this) {
+            m.status = ModuleStatus::Errored;
+          }
+          return MaybeBool::Nothing;
+        }
       }
     }
     deps.push(dep);
@@ -2801,6 +2983,48 @@ pub extern "C" fn v8__Module__InstantiateModule(
     m.status = ModuleStatus::Instantiated;
   }
   MaybeBool::JustTrue
+}
+
+/// A SyntaxError whose stack points at the import statement in the importer.
+///
+/// Evaluating a throwing script with the importer as its `sourceURL` and the
+/// import line as the starting line gives JSC a real stack for the error; a
+/// Rust-constructed error has none, and assigning `.stack` is not reliable.
+unsafe fn make_syntax_error(
+  ctx: JSContextRef,
+  message: &str,
+  importer: &str,
+  line: usize,
+) -> JSValueRef {
+  let source = format!("throw new SyntaxError({message:?});");
+  let Ok(cstr) = std::ffi::CString::new(source) else {
+    return unsafe { make_generic_error(ctx, message) };
+  };
+  let source_url = std::ffi::CString::new(importer)
+    .ok()
+    .map_or(ptr::null_mut(), |url| unsafe {
+      JSStringCreateWithUTF8CString(url.as_ptr())
+    });
+  unsafe {
+    let js = JSStringCreateWithUTF8CString(cstr.as_ptr());
+    let mut exc: JSValueRef = ptr::null();
+    let value = JSEvaluateScript(
+      ctx,
+      js,
+      ptr::null_mut(),
+      source_url,
+      line as i32,
+      &mut exc,
+    );
+    JSStringRelease(js);
+    if !source_url.is_null() {
+      JSStringRelease(source_url);
+    }
+    if value.is_null() && !exc.is_null() {
+      return exc;
+    }
+    make_generic_error(ctx, message)
+  }
 }
 
 unsafe fn resolve_dependency(
@@ -3047,6 +3271,17 @@ pub extern "C" fn v8__Module__Evaluate(
       let mod_l = crate::Local::from_raw(this).unwrap();
       eval_steps(ctx_l, mod_l)
     };
+    // A throwing evaluation step (a CommonJS module with a TDZ error, for one)
+    // leaves a pending exception. Turn it into a rejected evaluation promise so
+    // the importer/`import()` sees the rejection instead of an uncaught error.
+    let pending = crate::jsc::core::peek_pending_exception(current_iso());
+    if !pending.is_null() {
+      crate::jsc::core::clear_pending_exception(current_iso());
+      if let Some(m) = module_state(this) {
+        m.status = ModuleStatus::Errored;
+      }
+      return make_rejected_promise(ctx, pending);
+    }
     if let Some(m) = module_state(this) {
       m.status = ModuleStatus::Evaluated;
     }
@@ -3133,6 +3368,23 @@ fn make_resolved_promise(ctx: JSContextRef) -> *const Value {
   intern_ctx::<Value>(ctx, p)
 }
 
+/// Whether the synchronous wrapper parses. A module with top-level await only parses as the
+/// body of an async function; JSC reports the syntax error without evaluating anything.
+fn sync_wrapper_parses(ctx: JSContextRef, body: &str) -> bool {
+  let wrapped =
+    format!("(function(__ns, __v8jsc_meta, __deps){{\n{body}\n}})");
+  let Ok(cstr) = std::ffi::CString::new(wrapped) else {
+    return false;
+  };
+  unsafe {
+    let js = JSStringCreateWithUTF8CString(cstr.as_ptr());
+    let mut exc: JSValueRef = ptr::null();
+    let ok = JSCheckScriptSyntax(ctx, js, ptr::null_mut(), 1, &mut exc);
+    JSStringRelease(js);
+    ok
+  }
+}
+
 unsafe fn eval_module_source(
   ctx: JSContextRef,
   rewritten: &str,
@@ -3144,8 +3396,9 @@ unsafe fn eval_module_source(
 ) -> Result<JSValueRef, JSValueRef> {
   let fail =
     |ctx: JSContextRef, exc: JSValueRef| -> Result<JSValueRef, JSValueRef> {
-      unsafe { report_module_exception(ctx, exc) };
-
+      // Do not record a pending exception: the caller converts this error into a
+      // rejected evaluation promise. A pending exception in the context would
+      // also surface as an uncaught error and race the rejection.
       let e = if exc.is_null() {
         make_generic_error(ctx, "module evaluation failed")
       } else {
@@ -3293,6 +3546,39 @@ fn make_rejected_promise(ctx: JSContextRef, exc: JSValueRef) -> *const Value {
   if p.is_null() {
     return intern_ctx::<Value>(ctx, unsafe { JSValueMakeUndefined(ctx) });
   }
+  // Mark the rejection handled. deno polls the promise state for the module error;
+  // JSC's unhandled-rejection notification would otherwise print the same error
+  // as uncaught before the importer's await attaches its handler.
+  unsafe {
+    let catch_key = JSStringCreateWithUTF8CString(c"catch".as_ptr());
+    let catch = JSObjectGetProperty(ctx, p as JSObjectRef, catch_key, &mut e);
+    JSStringRelease(catch_key);
+    if !catch.is_null() && JSObjectIsFunction(ctx, catch as JSObjectRef) {
+      let noop_js =
+        JSStringCreateWithUTF8CString(c"(()=>{})".as_ptr());
+      let mut noop_exc: JSValueRef = ptr::null();
+      let noop = JSEvaluateScript(
+        ctx,
+        noop_js,
+        ptr::null_mut(),
+        ptr::null_mut(),
+        1,
+        &mut noop_exc,
+      );
+      JSStringRelease(noop_js);
+      if !noop.is_null() {
+        let args = [noop];
+        JSObjectCallAsFunction(
+          ctx,
+          catch as JSObjectRef,
+          p as JSObjectRef,
+          1,
+          args.as_ptr(),
+          &mut e,
+        );
+      }
+    }
+  }
   crate::jsc::exception::track_promise_pub(ctx, p as JSObjectRef);
   intern_ctx::<Value>(ctx, p)
 }
@@ -3422,13 +3708,6 @@ unsafe fn build_import_meta(
   meta as JSValueRef
 }
 
-unsafe fn report_module_exception(ctx: JSContextRef, exc: JSValueRef) {
-  if exc.is_null() {
-    return;
-  }
-  crate::jsc::core::record_pending_exception(ctx, exc);
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn v8__Module__IsGraphAsync(this: *const Module) -> bool {
   fn graph_async(this: *const Module, seen: &mut Vec<*const Module>) -> bool {
@@ -3551,7 +3830,10 @@ pub extern "C" fn v8__Module__CreateSyntheticModule(
     source_map_url: None,
     import_offsets: Vec::new(),
     import_attributes: Vec::new(),
+    source_line_starts: Vec::new(),
     import_specifiers: Vec::new(),
+    import_checks: Vec::new(),
+    has_star_reexports: false,
     namespace,
     specifier,
     dependencies: Vec::new(),
@@ -3637,9 +3919,13 @@ pub extern "C" fn v8__ModuleRequest__GetSpecifier(
     let mut exc: JSValueRef = ptr::null();
     let v = JSObjectGetProperty(ctx, obj, key, &mut exc);
     JSStringRelease(key);
-    if v.is_null() || JSValueIsUndefined(ctx, v) {
+    if v.is_null() {
       return ptr::null();
     }
+    // `ModuleRequest::get_specifier` wraps this pointer in a `String` without a type
+    // check and panics on null. An undefined specifier is still a value, so hand it
+    // back the way the QuickJS adapter does; deno_core reports "the engine did not
+    // provide a string" instead of aborting the process.
     intern_ctx::<V8String>(ctx, v)
   }
 }

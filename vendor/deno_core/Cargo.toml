@@ -33,6 +33,9 @@ default = [
     "reactor-tokio",
 ]
 include_icu_data = ["deno_core_icudata"]
+# thinpack patch: system JavaScriptCore on macOS. `serde_v8` needs no arm of its own;
+# both crates depend on the same `deno_v8` package, whose features unify.
+jsc = ["v8/jsc"]
 quickjs = [
     "v8/quickjs",
     "serde_v8/quickjs",

@@ -9,5 +9,5 @@ try {
 
 assert.ok(evaluationError instanceof Error, 'the CJS module should fail during evaluation');
 assert.equal(evaluationError.name, 'ReferenceError');
-// V8 says "before initialization"; QuickJS says "a is not initialized".
-assert.match(evaluationError.message, /initialized/i);
+// V8 and JSC say "before initialization"; QuickJS says "a is not initialized".
+assert.match(evaluationError.message, /initializ/i);

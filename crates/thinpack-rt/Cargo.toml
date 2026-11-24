@@ -76,9 +76,11 @@ toml = "1.2"
 
 # BEGIN GENERATED FEATURES
 [features]
-default = ["backend-quickjs", "node-assert", "node-async-hooks", "node-buffer", "node-child-process", "node-cluster", "node-console", "node-constants", "node-crypto", "node-diagnostics-channel", "node-dns", "node-events", "node-ffi", "node-fs", "node-http", "node-http2", "node-https", "node-inspector", "node-module", "node-net", "node-os", "node-path", "node-perf-hooks", "node-process", "node-punycode", "node-querystring", "node-readline", "node-sea", "node-sqlite", "node-stream", "node-string-decoder", "node-test", "node-timers", "node-tls", "node-tty", "node-url", "node-util", "node-v8", "node-vm", "node-worker-threads", "node-zlib"]
+default = ["backend-quickjs", "node-all"]
 backend-quickjs = ["thinpack-core/backend-quickjs"]
 backend-v8 = ["thinpack-core/backend-v8"]
+backend-jsc = ["thinpack-core/backend-jsc"]
+node-all = ["node-assert", "node-async-hooks", "node-buffer", "node-child-process", "node-cluster", "node-console", "node-constants", "node-crypto", "node-diagnostics-channel", "node-dns", "node-events", "node-ffi", "node-fs", "node-http", "node-http2", "node-https", "node-inspector", "node-module", "node-net", "node-os", "node-path", "node-perf-hooks", "node-process", "node-punycode", "node-querystring", "node-readline", "node-sea", "node-sqlite", "node-stream", "node-string-decoder", "node-test", "node-timers", "node-tls", "node-tty", "node-url", "node-util", "node-v8", "node-vm", "node-worker-threads", "node-zlib"]
 node-assert = ["dep:thinpack-node-assert", "node-util"]
 node-async-hooks = ["dep:thinpack-node-async-hooks"]
 node-buffer = ["dep:thinpack-node-buffer", "node-process"]

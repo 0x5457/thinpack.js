@@ -24,7 +24,7 @@ use crate::capabilities;
 use crate::size::Backend;
 
 const USAGE: &str =
-    "Usage: cargo xtask dist [--backend <quickjs|v8>] [--target <triple>] [--out <dir>]";
+    "Usage: cargo xtask dist [--backend <quickjs|v8|jsc>] [--target <triple>] [--out <dir>]";
 
 /// Binaries in the staging directory. The names carry no extension; the target decides that.
 const BINARIES: [&str; 2] = ["thinpack", "thinpack-rt"];
@@ -84,8 +84,9 @@ fn parse(args: &[String]) -> Result<Config, String> {
         match arg.as_str() {
             "--backend" => {
                 let value = value_of(&mut args, arg)?;
-                backend = Backend::parse(value)
-                    .ok_or_else(|| format!("unknown backend `{value}`; expected quickjs or v8"))?;
+                backend = Backend::parse(value).ok_or_else(|| {
+                    format!("unknown backend `{value}`; expected quickjs, v8 or jsc")
+                })?;
             }
             "--target" => target = Some(value_of(&mut args, arg)?.to_owned()),
             "--out" => out = PathBuf::from(value_of(&mut args, arg)?),
@@ -100,6 +101,21 @@ fn parse(args: &[String]) -> Result<Config, String> {
     })
 }
 
+/// `dist` runs the artifact it just built, so a JSC archive can only be produced on macOS for
+/// a macOS target.
+fn check_host(config: &Config) -> Result<(), String> {
+    if !matches!(config.backend, Backend::Jsc) {
+        return Ok(());
+    }
+    if !cfg!(target_os = "macos") {
+        return Err("the jsc backend uses the macOS system JavaScriptCore framework".to_owned());
+    }
+    if !config.target.contains("apple-darwin") {
+        return Err("the jsc backend is available for macOS targets only".to_owned());
+    }
+    Ok(())
+}
+
 fn value_of<'a>(
     args: &mut impl Iterator<Item = &'a String>,
     option: &str,
@@ -110,6 +126,7 @@ fn value_of<'a>(
 }
 
 fn dist(config: &Config) -> Result<(), String> {
+    check_host(config)?;
     let table = capabilities::load()?;
     let stage = config.out.join(config.stem());
 
@@ -306,6 +323,7 @@ impl Config {
         let suffix = match self.backend {
             Backend::QuickJs => "",
             Backend::V8 => "-v8",
+            Backend::Jsc => "-jsc",
         };
         format!(
             "thinpack-{}{suffix}-{}",

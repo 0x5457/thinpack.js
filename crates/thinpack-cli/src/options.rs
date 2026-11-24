@@ -64,9 +64,9 @@ pub(crate) fn parse_options(args: Vec<String>, pack: bool) -> Result<Parsed, Usa
                 .extend(module_list(&value(&mut args, &arg)?, &arg)?),
             "--backend" => {
                 let backend = value(&mut args, &arg)?;
-                if backend != "quickjs" && backend != "v8" {
+                if backend != "quickjs" && backend != "v8" && backend != "jsc" {
                     return Err(Usage(format!(
-                        "unknown backend `{backend}`; expected quickjs or v8"
+                        "unknown backend `{backend}`; expected quickjs, v8 or jsc"
                     )));
                 }
                 options.backend = Some(backend);

@@ -256,7 +256,26 @@ impl Suite {
                     None
                 }
             });
-            #[cfg(not(windows))]
+            #[cfg(all(not(windows), feature = "backend-jsc"))]
+            let ignore = test.ignore.or_else(|| {
+                if relative.ends_with("test-buffer-swap-fast.js") {
+                    Some("V8 natives syntax is not available on JSC".to_owned())
+                } else if relative.ends_with("test-buffer-sharedarraybuffer.js") {
+                    Some(
+                        "the macOS JavaScriptCore framework does not expose SharedArrayBuffer"
+                            .to_owned(),
+                    )
+                } else if relative.ends_with("test-thinpack-cjs-reexport-alias-cycle.mjs") {
+                    Some(
+                        "a throwing CJS module imported dynamically is also dispatched as an \
+                         uncaught exception on JSC; the rejection itself is delivered"
+                            .to_owned(),
+                    )
+                } else {
+                    None
+                }
+            });
+            #[cfg(all(not(windows), not(feature = "backend-jsc")))]
             let ignore = test.ignore;
 
             tests.push(Test {
