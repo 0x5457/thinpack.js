@@ -18,6 +18,7 @@ pub fn init() -> Extension {
         name: "thinpack_node_dns",
         deps: &["thinpack_node_internals"],
         ops: Cow::Borrowed(ops::OPS),
+        op_state_fn: Some(Box::new(|state| state.put(ops::Resolvers::default()))),
         lazy_loaded_js_files: Cow::Borrowed(BUILTINS),
         ..Default::default()
     }

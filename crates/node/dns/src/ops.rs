@@ -1,15 +1,19 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::net::{IpAddr, SocketAddr};
+use std::rc::Rc;
+use std::sync::Mutex;
 
-use deno_core::{OpDecl, op2};
+use deno_core::{OpDecl, OpState, op2};
 use deno_error::JsErrorBox;
-use hickory_resolver::config::{NameServerConfig, ResolverConfig};
+use hickory_resolver::config::{NameServerConfig, ResolveHosts, ResolverConfig};
 use hickory_resolver::lookup::Lookup;
-use hickory_resolver::net::runtime::TokioRuntimeProvider;
+use hickory_resolver::net::runtime::{RuntimeProvider, TokioRuntimeProvider};
 use hickory_resolver::net::{DnsError, NetError};
 use hickory_resolver::proto::op::ResponseCode;
 use hickory_resolver::proto::rr::{RData, RecordType};
-use hickory_resolver::{Resolver, TokioResolver};
+use hickory_resolver::{Resolver, ResolverBuilder, TokioResolver};
 #[cfg(windows)]
 use tokio::net::lookup_host;
 
@@ -203,12 +207,42 @@ async fn op_dns_lookup(#[string] hostname: String, family: u8) -> Result<String,
     Ok(entries.join("\0"))
 }
 
+/// Resolvers are `Clone` over a name-server pool and a cache, so one per server set
+/// is shared by every query. Building one reads the system configuration (and
+/// `/etc/hosts`), which must not happen per call.
+#[derive(Debug, Default)]
+pub(crate) struct Resolvers(Mutex<HashMap<String, TokioResolver>>);
+
+impl Resolvers {
+    fn get(&self, servers: &str) -> Result<TokioResolver, JsErrorBox> {
+        let mut resolvers = self.0.lock().expect("dns resolver cache");
+        if let Some(resolver) = resolvers.get(servers) {
+            return Ok(resolver.clone());
+        }
+        let resolver = if servers.is_empty() {
+            system_resolver()?
+        } else {
+            custom_resolver(servers)?
+        };
+        resolvers.insert(servers.to_owned(), resolver.clone());
+        Ok(resolver)
+    }
+}
+
+/// c-ares never reads the hosts file and never caches; keep the same contract so
+/// `dns.resolve*` and `dns.lookup` do not disagree about a name.
+fn configure<P: RuntimeProvider>(builder: &mut ResolverBuilder<P>) {
+    builder.options_mut().cache_size = 0;
+    builder.options_mut().use_hosts_file = ResolveHosts::Never;
+}
+
 fn system_resolver() -> Result<TokioResolver, JsErrorBox> {
-    let builder = TokioResolver::builder_tokio().map_err(resolver_error)?;
+    let mut builder = TokioResolver::builder_tokio().map_err(resolver_error)?;
+    configure(&mut builder);
     builder.build().map_err(resolver_error)
 }
 
-fn custom_resolver(servers: &str) -> Result<TokioResolver, JsErrorBox> {
+fn custom_config(servers: &str) -> Result<ResolverConfig, JsErrorBox> {
     let mut configs = Vec::new();
     for server in servers.split(',').filter(|value| !value.is_empty()) {
         let address: SocketAddr = server
@@ -227,18 +261,21 @@ fn custom_resolver(servers: &str) -> Result<TokioResolver, JsErrorBox> {
                     })
             })
             .map_err(|error| JsErrorBox::new("Error", format!("EINVAL\0{error}")))?;
-        // `NameServerConfig` is non-exhaustive; `udp()` is the supported
-        // constructor, and the port lives on its connection list.
-        let mut name_server = NameServerConfig::udp(address.ip());
+        // c-ares retries a truncated answer over TCP; configure both transports.
+        let mut name_server = NameServerConfig::udp_and_tcp(address.ip());
         for connection in &mut name_server.connections {
             connection.port = address.port();
         }
         configs.push(name_server);
     }
-    let config = ResolverConfig::from_parts(None, Vec::new(), configs);
-    Resolver::builder_with_config(config, TokioRuntimeProvider::default())
-        .build()
-        .map_err(resolver_error)
+    Ok(ResolverConfig::from_parts(None, Vec::new(), configs))
+}
+
+fn custom_resolver(servers: &str) -> Result<TokioResolver, JsErrorBox> {
+    let mut builder =
+        Resolver::builder_with_config(custom_config(servers)?, TokioRuntimeProvider::default());
+    configure(&mut builder);
+    builder.build().map_err(resolver_error)
 }
 
 #[expect(
@@ -328,6 +365,7 @@ fn records_json(lookup: &Lookup) -> String {
 #[op2(async(lazy), fast)]
 #[string]
 async fn op_dns_resolve(
+    state: Rc<RefCell<OpState>>,
     #[string] servers: String,
     #[string] hostname: String,
     #[string] rrtype: String,
@@ -347,10 +385,9 @@ async fn op_dns_resolve(
             ));
         }
     };
-    let resolver = if servers.is_empty() {
-        system_resolver()?
-    } else {
-        custom_resolver(&servers)?
+    let resolver = {
+        let state = state.borrow();
+        state.borrow::<Resolvers>().get(&servers)?
     };
     let lookup = resolver
         .lookup(hostname.as_str(), record_type)
@@ -362,20 +399,65 @@ async fn op_dns_resolve(
 #[op2(async(lazy), fast)]
 #[string]
 async fn op_dns_reverse(
+    state: Rc<RefCell<OpState>>,
     #[string] servers: String,
     #[string] address: String,
 ) -> Result<String, JsErrorBox> {
     let ip: IpAddr = address
         .parse()
         .map_err(|error| JsErrorBox::new("Error", format!("EINVAL\0{error}")))?;
-    let resolver = if servers.is_empty() {
-        system_resolver()?
-    } else {
-        custom_resolver(&servers)?
+    let resolver = {
+        let state = state.borrow();
+        state.borrow::<Resolvers>().get(&servers)?
     };
     let lookup = resolver
         .reverse_lookup(hickory_resolver::proto::rr::Name::from(ip))
         .await
         .map_err(request_error)?;
     Ok(records_json(&lookup))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::custom_config;
+
+    #[test]
+    fn custom_servers_get_udp_and_tcp_on_the_requested_port() {
+        let config = custom_config("127.0.0.1:5353,::1").expect("valid server list");
+        assert_eq!(config.name_servers.len(), 2);
+        for server in &config.name_servers {
+            assert_eq!(server.connections.len(), 2);
+        }
+        assert!(
+            server_ports(&config.name_servers[0])
+                .iter()
+                .all(|port| *port == 5353)
+        );
+        assert!(
+            server_ports(&config.name_servers[1])
+                .iter()
+                .all(|port| *port == 53)
+        );
+    }
+
+    fn server_ports(server: &hickory_resolver::config::NameServerConfig) -> Vec<u16> {
+        server
+            .connections
+            .iter()
+            .map(|connection| connection.port)
+            .collect()
+    }
+    #[test]
+    fn resolve_resolvers_disable_hosts_and_cache() {
+        use super::{ResolveHosts, Resolver, TokioRuntimeProvider, configure, custom_config};
+
+        let mut builder = Resolver::builder_with_config(
+            custom_config("127.0.0.1:53").expect("valid server"),
+            TokioRuntimeProvider::default(),
+        );
+        configure(&mut builder);
+        let resolver = builder.build().expect("the resolver builds");
+        assert_eq!(resolver.options().cache_size, 0);
+        assert_eq!(resolver.options().use_hosts_file, ResolveHosts::Never);
+    }
 }
