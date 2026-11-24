@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
-pub(crate) const DEFAULT_BACKEND: &str = "quickjs";
+use thinpack_pack::Backend;
+
+pub(crate) const DEFAULT_BACKEND: Backend = Backend::QuickJs;
 
 #[derive(Default)]
 pub(crate) struct Options {
@@ -10,7 +12,7 @@ pub(crate) struct Options {
     pub assets: Vec<AssetInput>,
     pub with: Vec<String>,
     pub without: Vec<String>,
-    pub backend: Option<String>,
+    pub backend: Option<Backend>,
     pub source: Option<PathBuf>,
     pub rebuild: bool,
     pub strict: bool,
@@ -64,12 +66,11 @@ pub(crate) fn parse_options(args: Vec<String>, pack: bool) -> Result<Parsed, Usa
                 .extend(module_list(&value(&mut args, &arg)?, &arg)?),
             "--backend" => {
                 let backend = value(&mut args, &arg)?;
-                if backend != "quickjs" && backend != "v8" && backend != "jsc" {
-                    return Err(Usage(format!(
+                options.backend = Some(Backend::parse(&backend).ok_or_else(|| {
+                    Usage(format!(
                         "unknown backend `{backend}`; expected quickjs, v8 or jsc"
-                    )));
-                }
-                options.backend = Some(backend);
+                    ))
+                })?);
             }
             "--source" => options.source = Some(PathBuf::from(value(&mut args, &arg)?)),
             "--rebuild" => options.rebuild = true,

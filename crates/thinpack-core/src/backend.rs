@@ -1,12 +1,4 @@
-use std::fmt;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Backend {
-    QuickJs,
-    V8,
-    /// The macOS system `JavaScriptCore` framework; never bundles an engine.
-    Jsc,
-}
+pub use thinpack_pack::Backend;
 
 #[cfg(not(any(
     feature = "backend-quickjs",
@@ -33,29 +25,3 @@ pub const BACKEND: Backend = Backend::V8;
 
 #[cfg(feature = "backend-jsc")]
 pub const BACKEND: Backend = Backend::Jsc;
-
-impl Backend {
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::QuickJs => "quickjs",
-            Self::V8 => "v8",
-            Self::Jsc => "jsc",
-        }
-    }
-
-    #[must_use]
-    pub const fn engine(self) -> &'static str {
-        match self {
-            Self::QuickJs => "QuickJS-ng via v8x",
-            Self::V8 => "V8",
-            Self::Jsc => "JavaScriptCore (macOS system framework)",
-        }
-    }
-}
-
-impl fmt::Display for Backend {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.name())
-    }
-}

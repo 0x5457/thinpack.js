@@ -6,16 +6,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use thinpack_caps::Module;
+use thinpack_pack::{Backend, profile};
 
 use crate::options::{DEFAULT_BACKEND, Options};
-
-/// Templates are built the way `cargo xtask size --profile small` measures them
-/// (`xtask/src/size.rs` holds the same flags): without unwind tables, and on `x86_64`
-/// glibc with packed relative relocations. The same runtime keeps 6% more size and
-/// runs no faster, so size wins by default here.
-const UNWIND_ARGS: &str = "-C force-unwind-tables=no";
-const ELF_LINK_ARGS: &str = "-C force-unwind-tables=no -C link-arg=-Wl,-z,pack-relative-relocs";
-const C_FLAGS: &str = "-fno-asynchronous-unwind-tables -fno-unwind-tables";
 
 /// The template binary: the CLI looks for it next to itself, and a cache entry is a copy of it.
 /// Windows binaries carry an extension, POSIX ones do not.
@@ -23,34 +16,10 @@ fn runtime_binary() -> String {
     format!("thinpack-rt{}", std::env::consts::EXE_SUFFIX)
 }
 
-/// `pack-relative-relocs` is `x86_64` GNU `ld` only, and a static musl `static-pie` needs
-/// musl ≥ 1.2.4 for `DT_RELR` startup relocation, so a musl host gets the same flags the musl
-/// archive was built with (`xtask/src/dist.rs`); MSVC rejects `force-unwind-tables=no`.
-const fn rust_flags() -> &'static str {
-    if cfg!(target_env = "msvc") {
-        ""
-    } else if cfg!(all(
-        target_os = "linux",
-        target_arch = "x86_64",
-        not(target_env = "musl")
-    )) {
-        ELF_LINK_ARGS
-    } else {
-        UNWIND_ARGS
-    }
-}
-
-fn appended(existing: Option<String>, extra: &str) -> String {
-    match existing {
-        Some(existing) if !existing.trim().is_empty() => format!("{existing} {extra}"),
-        _ => extra.to_owned(),
-    }
-}
-
 #[derive(Clone, Debug)]
 pub(crate) struct TemplateInfo {
     pub version: String,
-    pub backend: String,
+    pub backend: Backend,
     pub capabilities_hash: u64,
     pub capabilities: Vec<String>,
 }
@@ -68,7 +37,7 @@ impl TemplateInfo {
         &self,
         binary: &Path,
         required: &[&'static Module],
-        backend: Option<&str>,
+        backend: Option<Backend>,
     ) -> Result<(), Box<dyn Error>> {
         if let Some(backend) = backend
             && backend != self.backend
@@ -102,7 +71,7 @@ impl ResolvedTemplate {
     fn discover(
         path: PathBuf,
         required: &[&'static Module],
-        backend: Option<&str>,
+        backend: Option<Backend>,
     ) -> Option<Self> {
         let info = inspect(&path).ok()?;
         if info.version != env!("CARGO_PKG_VERSION")
@@ -126,7 +95,11 @@ fn inspect(binary: &Path) -> Result<TemplateInfo, Box<dyn Error>> {
         };
         match key {
             "version" => version = Some(value.to_owned()),
-            "backend" => backend = Some(value.to_owned()),
+            "backend" => {
+                backend = Some(Backend::parse(value).ok_or_else(|| {
+                    format!("{} reports unknown backend `{value}`", binary.display())
+                })?);
+            }
             "template-api" => template_api = Some(value),
             "capabilities-hash" => {
                 capabilities_hash = Some(
@@ -194,7 +167,7 @@ impl Cache {
         self.root
             .join("templates")
             .join(&info.version)
-            .join(&info.backend)
+            .join(info.backend.name())
             .join(format!("{:016x}", info.capabilities_hash))
     }
 
@@ -217,7 +190,7 @@ impl Cache {
     fn find(
         &self,
         required: &[&'static Module],
-        backend: Option<&str>,
+        backend: Option<Backend>,
     ) -> Result<Option<ResolvedTemplate>, Box<dyn Error>> {
         let mut candidates = BTreeMap::<_, Vec<_>>::new();
         for entry in self.walk()? {
@@ -249,7 +222,7 @@ impl Cache {
             .filter_map(|(backend, mut binaries)| {
                 binaries.sort_unstable();
                 binaries.into_iter().find_map(|(_, binary)| {
-                    ResolvedTemplate::discover(binary, required, Some(&backend))
+                    ResolvedTemplate::discover(binary, required, Some(backend))
                 })
             })
             .collect();
@@ -258,7 +231,7 @@ impl Cache {
                 "templates for multiple backends are cached ({}); pass --backend",
                 matches
                     .iter()
-                    .map(|template| template.info.backend.as_str())
+                    .map(|template| template.info.backend.name())
                     .collect::<Vec<_>>()
                     .join(", ")
             )
@@ -293,6 +266,9 @@ impl Cache {
             let version_name = version.file_name().to_string_lossy().into_owned();
             for backend in fs::read_dir(version.path())?.flatten() {
                 let backend_name = backend.file_name().to_string_lossy().into_owned();
+                let Some(backend_kind) = Backend::parse(&backend_name) else {
+                    continue;
+                };
                 for entry in fs::read_dir(backend.path())?.flatten() {
                     let Ok(capabilities) = fs::read_to_string(entry.path().join("capabilities"))
                     else {
@@ -300,7 +276,7 @@ impl Cache {
                     };
                     found.push(CachedTemplate {
                         version: version_name.clone(),
-                        backend: backend_name.clone(),
+                        backend: backend_kind,
                         directory: entry.path(),
                         capabilities: capabilities.lines().map(str::to_owned).collect(),
                     });
@@ -313,7 +289,7 @@ impl Cache {
 
 struct CachedTemplate {
     version: String,
-    backend: String,
+    backend: Backend,
     directory: PathBuf,
     capabilities: BTreeSet<String>,
 }
@@ -322,7 +298,7 @@ impl Cache {
     fn rebuild(
         &self,
         required: &[&'static Module],
-        backend: &str,
+        backend: Backend,
         source: Option<&Path>,
     ) -> Result<ResolvedTemplate, Box<dyn Error>> {
         let source = source.map_or_else(
@@ -343,7 +319,7 @@ impl Cache {
             .into());
         }
 
-        let mut features = vec![format!("backend-{backend}")];
+        let mut features = vec![backend.feature().to_owned()];
         for module in required {
             features.push(module.feature.to_owned());
         }
@@ -356,7 +332,7 @@ impl Cache {
             .current_dir(&source)
             .env(
                 "RUSTFLAGS",
-                appended(env::var("RUSTFLAGS").ok(), rust_flags()),
+                profile::append(env::var("RUSTFLAGS").ok(), profile::rust_flags()),
             )
             // MSVC drives cl.exe, which knows none of these.
             .env(
@@ -364,7 +340,7 @@ impl Cache {
                 if cfg!(target_env = "msvc") {
                     env::var("CFLAGS").unwrap_or_default()
                 } else {
-                    appended(env::var("CFLAGS").ok(), C_FLAGS)
+                    profile::append(env::var("CFLAGS").ok(), profile::C_FLAGS)
                 },
             )
             .args([
@@ -404,7 +380,7 @@ impl Cache {
 
 pub(crate) struct CacheEntry {
     pub version: String,
-    pub backend: String,
+    pub backend: Backend,
     pub capabilities: usize,
     pub path: PathBuf,
 }
@@ -426,7 +402,7 @@ pub(crate) fn resolve_template(
 
     if let Some(template) = &options.template {
         let info = inspect(template)?;
-        info.validate(template, required, options.backend.as_deref())?;
+        info.validate(template, required, options.backend)?;
         return Ok(ResolvedTemplate {
             path: template.clone(),
             info,
@@ -437,16 +413,14 @@ pub(crate) fn resolve_template(
     // `--rebuild` answers "this app's own closure": reusing a cached superset
     // here would silently ship a runtime larger than the app needs.
     if options.rebuild {
-        let backend = options.backend.as_deref().unwrap_or(DEFAULT_BACKEND);
+        let backend = options.backend.unwrap_or(DEFAULT_BACKEND);
         return cache.rebuild(required, backend, options.source.as_deref());
     }
     let sibling = sibling_template()
-        .and_then(|path| ResolvedTemplate::discover(path, required, options.backend.as_deref()));
-    let backend = options.backend.as_deref().or_else(|| {
-        sibling
-            .as_ref()
-            .map(|template| template.info.backend.as_str())
-    });
+        .and_then(|path| ResolvedTemplate::discover(path, required, options.backend));
+    let backend = options
+        .backend
+        .or_else(|| sibling.as_ref().map(|template| template.info.backend));
     if let Some(found) = cache.find(required, backend)? {
         return Ok(found);
     }
@@ -454,7 +428,7 @@ pub(crate) fn resolve_template(
         return Ok(sibling);
     }
 
-    let backend = options.backend.as_deref().unwrap_or(DEFAULT_BACKEND);
+    let backend = options.backend.unwrap_or(DEFAULT_BACKEND);
     Err(format!(
         "no {backend} template covers these capabilities: {}\n\
          install a matching release, pass --template <thinpack-rt>, or use --rebuild with a source checkout",

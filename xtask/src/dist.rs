@@ -21,7 +21,7 @@ use flate2::write::GzEncoder;
 use sha2::{Digest, Sha256};
 
 use crate::capabilities;
-use crate::size::Backend;
+use thinpack_pack::{Backend, profile};
 
 const USAGE: &str =
     "Usage: cargo xtask dist [--backend <quickjs|v8|jsc>] [--target <triple>] [--out <dir>]";
@@ -38,14 +38,6 @@ const PROBE: &str = "examples/hello.js";
 /// Output of `examples/hello.js`: a synchronous log and a microtask. Both have to appear, so a
 /// runtime that starts but never drains the microtask queue fails the release.
 const PROBE_EXPECTED: [&str; 2] = ["answer: 42", "microtask completed"];
-
-// `-z pack-relative-relocs` packs every RELATIVE relocation into a `DT_RELR` block: 553 KB
-// smaller on this runtime, and the loader has to understand `DT_RELR` to start the binary
-// (glibc 2.36). Only x86_64 GNU ld implements the flag; elsewhere it is ignored with a warning,
-// which the release build treats as an error.
-const PACK_RELATIVE_RELOCS: &str = "-C link-arg=-Wl,-z,pack-relative-relocs";
-const UNWIND: &str = "-C force-unwind-tables=no";
-const C_FLAGS: &str = "-fno-asynchronous-unwind-tables -fno-unwind-tables";
 
 /// Everything the staging directory holds, sorted by name: the programs, then the documents.
 fn staged() -> Vec<(&'static str, bool)> {
@@ -181,13 +173,19 @@ fn build(config: &Config, table: &[capabilities::Module]) -> Result<PathBuf, Str
     // same flags, so a downloaded pair and a locally rebuilt one agree. An empty value would
     // still shadow the per-target `rustflags` in `.cargo/config.toml`, which is where the MSVC
     // link arguments live, so it is only applied when there is something to say.
-    let rustflags = appended(env::var("RUSTFLAGS").ok(), &rust_flags(&config.target));
+    let rustflags = profile::append(
+        env::var("RUSTFLAGS").ok(),
+        &profile::rust_flags_for_target(&config.target),
+    );
     if !rustflags.trim().is_empty() {
         command.env("RUSTFLAGS", rustflags);
     }
     // MSVC has no gcc-style unwind flags; everything else is clang or gcc.
     if !config.target.contains("msvc") {
-        command.env("CFLAGS", appended(env::var("CFLAGS").ok(), C_FLAGS));
+        command.env(
+            "CFLAGS",
+            profile::append(env::var("CFLAGS").ok(), profile::C_FLAGS),
+        );
     }
 
     let status = command
@@ -322,11 +320,7 @@ fn archive(config: &Config, stage: &Path) -> Result<PathBuf, String> {
 impl Config {
     /// The same name for the staging directory, archive stem and archive contents.
     fn stem(&self) -> String {
-        let suffix = match self.backend {
-            Backend::QuickJs => "",
-            Backend::V8 => "-v8",
-            Backend::Jsc => "-jsc",
-        };
+        let suffix = self.backend.archive_suffix();
         format!(
             "thinpack-{}{suffix}-{}",
             env!("CARGO_PKG_VERSION"),
@@ -355,18 +349,6 @@ impl Config {
 /// Cargo's target directory for this workspace, with `dist` below it. `CARGO_TARGET_DIR` wins
 /// because it is the documented way to build this workspace without the checked-in `target`
 /// symlink; nothing is written inside the repository then.
-/// MSVC rejects `-C force-unwind-tables=no` ("target requires unwind tables") and has no gcc
-/// driver flags at all; both code paths below are the ones that actually work per target.
-fn rust_flags(target: &str) -> String {
-    if target.contains("msvc") {
-        return String::new();
-    }
-    if target.contains("linux") && target.contains("x86_64") && !target.contains("musl") {
-        return format!("{UNWIND} {PACK_RELATIVE_RELOCS}");
-    }
-    UNWIND.to_owned()
-}
-
 fn target_dir() -> PathBuf {
     env::var_os("CARGO_TARGET_DIR")
         .map_or_else(|| crate::repo_root().join("target"), PathBuf::from)
@@ -383,13 +365,6 @@ fn host_triple() -> String {
         .find_map(|line| line.strip_prefix("host: "))
         .map(str::to_owned)
         .expect("rustc -vV reports a host triple")
-}
-
-fn appended(existing: Option<String>, extra: &str) -> String {
-    match existing {
-        Some(existing) if !existing.trim().is_empty() => format!("{existing} {extra}"),
-        _ => extra.to_owned(),
-    }
 }
 
 fn output(command: &mut Command) -> Result<String, String> {
