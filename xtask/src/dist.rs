@@ -11,15 +11,14 @@
 //! own source directory in as the `--rebuild` default — so "same input" includes the source path.
 
 use std::env;
-use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use sha2::{Digest, Sha256};
 
+use crate::build;
 use crate::capabilities;
 use thinpack_pack::{Backend, profile};
 
@@ -88,7 +87,7 @@ fn parse(args: &[String]) -> Result<Config, String> {
 
     Ok(Config {
         backend,
-        target: target.unwrap_or_else(host_triple),
+        target: target.map_or_else(build::host_triple, Ok)?,
         out,
     })
 }
@@ -139,13 +138,13 @@ fn dist(config: &Config) -> Result<(), String> {
         archive.display(),
         bytes,
         bytes / 1_048_576,
-        digest_file(&archive)?
+        build::sha256_file(&archive)?
     );
     Ok(())
 }
 
 fn build(config: &Config, table: &[capabilities::Module]) -> Result<PathBuf, String> {
-    let target_dir = target_dir();
+    let target_dir = build::target_root().join("dist");
     let mut features = vec![format!("thinpack-rt/backend-{}", config.backend.name())];
     features.extend(
         table
@@ -251,7 +250,7 @@ fn verify(config: &Config, stage: &Path, table: &[capabilities::Module]) -> Resu
         }
     }
 
-    let scratch = target_dir().join("probe");
+    let scratch = build::target_root().join("dist/probe");
     let cache = scratch.join("cache");
     if cache.exists() {
         fs::remove_dir_all(&cache).map_err(|error| format!("{}: {error}", cache.display()))?;
@@ -312,8 +311,11 @@ fn archive(config: &Config, stage: &Path) -> Result<PathBuf, String> {
         .map_err(|error| format!("{}: {error}", path.display()))?;
 
     let sums = config.out.join(format!("{stem}.tar.gz.sha256"));
-    fs::write(&sums, format!("{}  {stem}.tar.gz\n", digest_file(&path)?))
-        .map_err(|error| format!("{}: {error}", sums.display()))?;
+    fs::write(
+        &sums,
+        format!("{}  {stem}.tar.gz\n", build::sha256_file(&path)?),
+    )
+    .map_err(|error| format!("{}: {error}", sums.display()))?;
     Ok(path)
 }
 
@@ -346,27 +348,6 @@ impl Config {
     }
 }
 
-/// Cargo's target directory for this workspace, with `dist` below it. `CARGO_TARGET_DIR` wins
-/// because it is the documented way to build this workspace without the checked-in `target`
-/// symlink; nothing is written inside the repository then.
-fn target_dir() -> PathBuf {
-    env::var_os("CARGO_TARGET_DIR")
-        .map_or_else(|| crate::repo_root().join("target"), PathBuf::from)
-        .join("dist")
-}
-
-fn host_triple() -> String {
-    let output = Command::new("rustc")
-        .args(["-vV"])
-        .output()
-        .expect("rustc is on PATH");
-    let text = String::from_utf8_lossy(&output.stdout);
-    text.lines()
-        .find_map(|line| line.strip_prefix("host: "))
-        .map(str::to_owned)
-        .expect("rustc -vV reports a host triple")
-}
-
 fn output(command: &mut Command) -> Result<String, String> {
     let program = command.get_program().to_string_lossy().into_owned();
     let output = command
@@ -379,14 +360,4 @@ fn output(command: &mut Command) -> Result<String, String> {
         ));
     }
     String::from_utf8(output.stdout).map_err(|_| format!("{program}: output is not UTF-8"))
-}
-
-fn digest_file(path: &Path) -> Result<String, String> {
-    let bytes = fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
-    let digest = Sha256::digest(&bytes);
-    let mut hex = String::with_capacity(64);
-    for byte in digest {
-        let _ = write!(hex, "{byte:02x}");
-    }
-    Ok(hex)
 }

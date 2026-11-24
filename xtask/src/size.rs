@@ -92,18 +92,21 @@ impl Profile {
             Self::Small => "small",
         }
     }
+    /// The profile's directory below Cargo's target root.
     fn target_dir(self, backend: Backend, modules: &Modules) -> PathBuf {
         let backend_dir = match backend {
-            Backend::QuickJs => "target",
-            Backend::V8 => "target/v8",
-            Backend::Jsc => "target/jsc",
+            Backend::QuickJs => "",
+            Backend::V8 => "v8",
+            Backend::Jsc => "jsc",
         };
         let dir = match self {
             Self::Release => backend_dir.to_owned(),
+            Self::Small if backend_dir.is_empty() => "small".to_owned(),
             Self::Small => format!("{backend_dir}/small"),
         };
         match modules {
             Modules::All => PathBuf::from(dir),
+            Modules::Some(_) if dir.is_empty() => PathBuf::from(modules.name()),
             Modules::Some(_) => PathBuf::from(format!("{dir}-{}", modules.name())),
         }
     }
@@ -242,9 +245,8 @@ fn build(
         "--features",
     ]);
     command.arg(features.join(","));
-    command
-        .arg("--target-dir")
-        .arg(crate::repo_root().join(&target_dir));
+    let target_dir = crate::build::target_root().join(&target_dir);
+    command.arg("--target-dir").arg(&target_dir);
 
     if profile == Profile::Small {
         command.env(
@@ -333,15 +335,7 @@ impl Record {
 }
 
 fn sha256(binary: &Path) -> Result<String, String> {
-    let output = Command::new("sha256sum")
-        .arg(binary)
-        .output()
-        .map_err(|error| format!("sha256sum: {error}"))?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    text.split_whitespace()
-        .next()
-        .map(str::to_owned)
-        .ok_or_else(|| format!("cannot parse sha256sum output: {text}"))
+    crate::build::sha256_file(binary)
 }
 
 fn rustc_identity() -> Result<(String, String), String> {
