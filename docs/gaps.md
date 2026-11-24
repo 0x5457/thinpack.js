@@ -20,10 +20,6 @@ the divergence, why it exists, and where it lives.
   does not share the buffer: the receiver gets a copy, and `Atomics.wait` on it throws. This is
   a v8x limitation; the shared-store tests are skipped there
   (`crates/thinpack-core/tests/sab_store.rs`).
-- On `jsc`, a CommonJS module that throws while being imported dynamically is delivered as a
-  rejection (a `try`/`catch` around the `import()` sees it), but the same error is also
-  dispatched as an uncaught exception and ends the process; the CJS cycle case is skipped
-  there (`crates/thinpack-rt/tests/node.rs`).
 
 ## Globals
 

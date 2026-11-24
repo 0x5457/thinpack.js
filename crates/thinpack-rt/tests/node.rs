@@ -265,12 +265,6 @@ impl Suite {
                         "the macOS JavaScriptCore framework does not expose SharedArrayBuffer"
                             .to_owned(),
                     )
-                } else if relative.ends_with("test-thinpack-cjs-reexport-alias-cycle.mjs") {
-                    Some(
-                        "a throwing CJS module imported dynamically is also dispatched as an \
-                         uncaught exception on JSC; the rejection itself is delivered"
-                            .to_owned(),
-                    )
                 } else {
                     None
                 }
