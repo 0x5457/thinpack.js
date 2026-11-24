@@ -11,12 +11,10 @@
   const system = Deno.core.ops.op_os_system_info().split("\0");
   const cpuCount = Number(system[0]) || 1;
   const totalmem = Number(system[1]) || 0;
-  const freemem = Number(system[2]) || 0;
-  const release = system[3] || "unknown";
-  const version = system[4] || "unknown";
-  const hostname = system[5] || "localhost";
-  const uptime = Number(system[6]) || 0;
-  const loadavg = [system[7], system[8], system[9]].map(Number);
+  const release = system[2] || "unknown";
+  const version = system[3] || "unknown";
+  const hostname = system[4] || "localhost";
+  const live = () => Deno.core.ops.op_os_live_info().split("\0");
 
   const os = {
     arch: () => process.arch,
@@ -61,9 +59,12 @@
       return cpus;
     },
     totalmem: () => totalmem,
-    freemem: () => freemem,
-    uptime: () => uptime,
-    loadavg: () => loadavg,
+    freemem: () => Number(live()[0]) || 0,
+    uptime: () => Number(live()[1]) || 0,
+    loadavg: () => {
+      const fields = live();
+      return [fields[2], fields[3], fields[4]].map(Number);
+    },
     userInfo: () => {
       // Windows has no uid/gid; Node reports -1 there (and no shell).
       const isWindows = process.platform === "win32";

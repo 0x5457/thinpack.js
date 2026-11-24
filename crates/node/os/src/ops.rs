@@ -5,6 +5,7 @@ use deno_error::JsErrorBox;
 
 pub(crate) const OPS: &[OpDecl] = &[
     op_os_system_info(),
+    op_os_live_info(),
     op_os_cpus(),
     op_os_network_interfaces(),
     op_os_homedir(),
@@ -18,14 +19,7 @@ fn proc_text(path: &str, fallback: &str) -> String {
 }
 
 #[cfg(target_os = "linux")]
-fn system_info() -> String {
-    let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
-    let cpu_count = cpuinfo
-        .lines()
-        .filter(|line| line.trim_start().starts_with("processor"))
-        .count()
-        .max(1);
-
+fn memory() -> (u64, u64) {
     let meminfo = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
     let mut total = 0u64;
     let mut available = 0u64;
@@ -39,7 +33,30 @@ fn system_info() -> String {
             _ => {}
         }
     }
+    (total, available)
+}
 
+#[cfg(target_os = "linux")]
+fn system_info() -> String {
+    let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
+    let cpu_count = cpuinfo
+        .lines()
+        .filter(|line| line.trim_start().starts_with("processor"))
+        .count()
+        .max(1);
+    let (total, _) = memory();
+
+    format!(
+        "{cpu_count}\0{total}\0{}\0{}\0{}",
+        proc_text("/proc/sys/kernel/osrelease", "unknown"),
+        proc_text("/proc/version", "unknown"),
+        proc_text("/proc/sys/kernel/hostname", "localhost"),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn live_info() -> String {
+    let (_, available) = memory();
     let uptime = proc_text("/proc/uptime", "0")
         .split_whitespace()
         .next()
@@ -52,13 +69,8 @@ fn system_info() -> String {
     }
 
     format!(
-        "{cpu_count}\0{total}\0{available}\0{}\0{}\0{}\0{uptime}\0{}\0{}\0{}",
-        proc_text("/proc/sys/kernel/osrelease", "unknown"),
-        proc_text("/proc/version", "unknown"),
-        proc_text("/proc/sys/kernel/hostname", "localhost"),
-        loads[0],
-        loads[1],
-        loads[2],
+        "{available}\0{uptime}\0{}\0{}\0{}",
+        loads[0], loads[1], loads[2]
     )
 }
 
@@ -70,16 +82,28 @@ fn system_info() -> String {
     let system = System::new_with_specifics(
         RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()),
     );
-    let loads = System::load_average();
     // `os.release()` is the kernel version on these platforms; sysinfo has no
     // `uname -v` equivalent for `os.version()`, so the product version stands in.
     format!(
-        "{cpu_count}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}",
+        "{cpu_count}\0{}\0{}\0{}\0{}",
         system.total_memory(),
-        system.available_memory(),
         System::kernel_version().unwrap_or_default(),
         System::long_os_version().unwrap_or_default(),
         System::host_name().unwrap_or_default(),
+    )
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn live_info() -> String {
+    use sysinfo::{MemoryRefreshKind, RefreshKind, System};
+
+    let system = System::new_with_specifics(
+        RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()),
+    );
+    let loads = System::load_average();
+    format!(
+        "{}\0{}\0{}\0{}\0{}",
+        system.available_memory(),
         System::uptime(),
         loads.one,
         loads.five,
@@ -95,32 +119,43 @@ fn system_info() -> String {
     let system = System::new_with_specifics(
         RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()),
     );
-    let total = system.total_memory();
-    let available = system.available_memory();
-    let uptime = System::uptime();
-    let release = System::os_version().unwrap_or_default();
-    let version = System::long_os_version().unwrap_or_default();
-    let hostname = System::host_name().unwrap_or_default();
+    format!(
+        "{cpu_count}\0{}\0{}\0{}\0{}",
+        system.total_memory(),
+        System::os_version().unwrap_or_default(),
+        System::long_os_version().unwrap_or_default(),
+        System::host_name().unwrap_or_default(),
+    )
+}
+
+#[cfg(windows)]
+fn live_info() -> String {
+    use sysinfo::{MemoryRefreshKind, RefreshKind, System};
+
+    let system = System::new_with_specifics(
+        RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()),
+    );
     // Windows has no load average; Node reports zeros there as well.
-    [
-        cpu_count.to_string(),
-        total.to_string(),
-        available.to_string(),
-        release,
-        version,
-        hostname,
-        uptime.to_string(),
-        "0".to_owned(),
-        "0".to_owned(),
-        "0".to_owned(),
-    ]
-    .join("\0")
+    format!(
+        "{}\0{}\0{}\0{}\0{}",
+        system.available_memory(),
+        System::uptime(),
+        "0",
+        "0",
+        "0",
+    )
 }
 
 #[op2]
 #[string]
 pub(crate) fn op_os_system_info() -> String {
     system_info()
+}
+
+#[op2]
+#[string]
+pub(crate) fn op_os_live_info() -> String {
+    live_info()
 }
 
 #[cfg(target_os = "linux")]
@@ -271,4 +306,17 @@ pub(crate) fn op_os_homedir() -> String {
 #[string]
 pub(crate) fn op_os_tmpdir() -> String {
     std::env::temp_dir().to_string_lossy().into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::live_info;
+
+    #[test]
+    fn live_info_reports_five_numeric_fields() {
+        let info = live_info();
+        let fields: Vec<&str> = info.split('\0').collect();
+        assert_eq!(fields.len(), 5);
+        assert!(fields.iter().all(|field| field.parse::<f64>().is_ok()));
+    }
 }
