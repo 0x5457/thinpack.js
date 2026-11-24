@@ -93,6 +93,7 @@
     const [kind, id, url, body] = split(ops.op_require(String(specifier), parent));
     switch (kind) {
       case "b":
+        return evaluate(id, url, body, false, stack, isMain);
       case "f":
         return evaluate(id, url, body, false, stack, isMain, true);
       case "j":
