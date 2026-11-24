@@ -38,9 +38,6 @@ impl Manifest {
     pub(crate) fn is_module(&self) -> bool {
         self.module_type.as_deref() == Some("module")
     }
-    pub(crate) fn declares_optional(&self, name: &str) -> bool {
-        self.optional.iter().any(|entry| entry == name)
-    }
 }
 
 fn optional_names(value: &Json) -> Vec<String> {
@@ -58,9 +55,11 @@ fn optional_names(value: &Json) -> Vec<String> {
     names
 }
 
-/// The `optionalDependencies` (and optional `peerDependenciesMeta`) names declared
-/// by the nearest package scope above `path`. Read once per analyzed file so a
-/// resolved package outside the project root can still be classified as optional.
+/// The optional dependency names declared by the nearest package scope above `path`.
+///
+/// `optionalDependencies` and optional `peerDependenciesMeta` both count. Read once per
+/// analyzed file so a resolved package outside the project root can still be classified
+/// as optional.
 pub fn optional_dependencies(path: &Path, fs: &impl FileSystem) -> Vec<String> {
     let mut directory = path.parent();
     while let Some(current) = directory {
