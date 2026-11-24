@@ -155,8 +155,14 @@ pub fn analyze(entry: &Path, fs: &impl FileSystem) -> Result<Analysis, Error> {
             message: "module is not valid UTF-8".to_owned(),
         })?;
 
+        let optional_dependencies = thinpack_resolve::optional_dependencies(&path, &fs);
         let specifiers = parse_specifiers(&source, &path, &fs, &mut warnings)?;
-        for ((specifier, is_import), optional) in specifiers {
+        for ((specifier, is_import), guarded) in specifiers {
+            // A dependency listed in `optionalDependencies` is optional even when the
+            // request is unguarded, so a hoisted install the payload cannot reach is
+            // omitted with a warning instead of failing the pack.
+            let optional = guarded
+                || thinpack_resolve::is_optional_dependency(&specifier, &optional_dependencies);
             if record_builtin(&specifier, optional, &path, &mut builtins, &mut warnings)? {
                 continue;
             }
@@ -167,9 +173,7 @@ pub fn analyze(entry: &Path, fs: &impl FileSystem) -> Result<Analysis, Error> {
             };
             let resolved = match resolved {
                 Ok(resolved) => resolved,
-                Err(error)
-                    if optional || thinpack_resolve::declares_optional(&specifier, &path, &fs) =>
-                {
+                Err(error) if optional => {
                     warnings.push(Warning {
                         message: format!(
                             "{}: optional dependency `{specifier}` is missing ({error}); the app must handle the error",
