@@ -1,7 +1,5 @@
-use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap};
-use std::fmt;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -10,54 +8,20 @@ use deno_core::{
     ModuleSourceCode, ModuleSpecifier, ModuleType, ResolutionKind,
 };
 
-use deno_error::{AdditionalProperties, JsErrorBox, JsErrorClass, PropertyValue};
+use deno_error::JsErrorBox;
 use thinpack_core::js_string_literal;
 use thinpack_core::{BuiltinSources, file_url};
 use thinpack_resolve::{FileSystem, Format};
 
 use crate::ModuleFs;
 use crate::cjs_exports;
+use crate::error::LoaderError;
 use crate::ops::path_from_url;
 
 #[derive(Debug)]
 struct HookLoad {
     format: String,
     source: String,
-}
-
-#[derive(Debug)]
-struct EsmLoaderError {
-    code: &'static str,
-    message: String,
-    url: Option<String>,
-}
-
-impl fmt::Display for EsmLoaderError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for EsmLoaderError {}
-
-impl JsErrorClass for EsmLoaderError {
-    fn get_class(&self) -> Cow<'static, str> {
-        "Error".into()
-    }
-
-    fn get_message(&self) -> Cow<'static, str> {
-        self.message.clone().into()
-    }
-
-    fn get_additional_properties(&self) -> AdditionalProperties {
-        let code = ("code".into(), PropertyValue::from(self.code));
-        let url = self.url.clone().map(|url| ("url".into(), url.into()));
-        Box::new(std::iter::once(code).chain(url))
-    }
-
-    fn get_ref(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
-        self
-    }
 }
 
 #[derive(Debug)]
@@ -300,7 +264,7 @@ fn module_not_found(
             path_from_url(referrer).map_or_else(|| referrer.to_string(), |path| fs.js_path(&path));
         write!(message, " imported from {importer}").unwrap();
     }
-    JsErrorBox::from_err(EsmLoaderError {
+    JsErrorBox::from_err(LoaderError {
         code: "ERR_MODULE_NOT_FOUND",
         message,
         url: url.map(ToString::to_string),
@@ -364,7 +328,7 @@ pub(crate) fn default_source(
             .get(specifier.as_str())
             .map(|source| ("builtin", source.to_owned()))
             .ok_or_else(|| {
-                JsErrorBox::from_err(EsmLoaderError {
+                JsErrorBox::from_err(LoaderError {
                     code: "ERR_UNKNOWN_BUILTIN_MODULE",
                     message: crate::missing_builtin_message(specifier.as_str()),
                     url: None,
