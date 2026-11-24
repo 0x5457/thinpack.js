@@ -531,6 +531,8 @@
   primordials.PromisePrototypeCatch = (thisPromise, onRejected) =>
     PromisePrototypeThen(thisPromise, undefined, onRejected);
 
+  primordials.PromiseResolve = (value) => Promise.resolve(value);
+
   const arrayToSafePromiseIterable = (array) =>
     new SafeArrayIterator(
       ArrayPrototypeMap(

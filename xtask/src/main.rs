@@ -13,9 +13,9 @@ use std::process::ExitCode;
 const USAGE: &str = "\
 Usage: cargo xtask gen [--check]
        cargo xtask lint
-       cargo xtask size [--backend <quickjs|v8>] [--profile <release|small|all>]
+       cargo xtask size [--backend <quickjs|v8|jsc>] [--profile <release|small|all>]
                         [--modules <all|core|name,...>]
-       cargo xtask dist [--backend <quickjs|v8>] [--target <triple>] [--out <dir>]";
+       cargo xtask dist [--backend <quickjs|v8|jsc>] [--target <triple>] [--out <dir>]";
 
 /// The workspace root: the parent directory of the `xtask` package.
 ///

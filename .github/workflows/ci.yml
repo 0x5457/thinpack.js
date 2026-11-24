@@ -93,9 +93,12 @@ jobs:
     # point GitHub cancels the queued job, so a pull request can wait a quarter of
     # an hour for a job that never starts. macOS runs on main, on dispatch, and on
     # a PR labelled `macos`; the Linux job covers the rest of the suite.
+    #
+    # JSC lives in this job rather than a second macOS job: two queued jobs on the
+    # same runner pool made one of them wait out the 15-minute cancellation window.
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'macos')
     runs-on: macos-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
 
@@ -106,6 +109,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - run: cargo test --workspace -- --test-threads 8
+
+      # `cargo xtask lint` covers this locally on macOS; the job lints the two
+      # crates that carry backend-specific code so the whole gate need not run twice.
+      - run: cargo clippy -p thinpack-core --all-targets --no-default-features --features backend-jsc
+      - run: cargo clippy -p thinpack-rt --all-targets --no-default-features --features backend-jsc,node-all
+
+      - run: cargo test -p thinpack-core --no-default-features --features backend-jsc
+
+      # Three cases are skipped for engine/framework limits: SharedArrayBuffer is
+      # absent from the system framework, V8 natives syntax is V8-only, and a
+      # throwing dynamically-imported CJS module is also dispatched uncaught.
+      # docs/gaps.md records them.
+      - run: cargo test -p thinpack-rt --no-default-features --features backend-jsc,node-all -- --test-threads 8
+
+      - run: cargo xtask dist --backend jsc
 
   windows-tools:
     name: Host tools (windows-latest)

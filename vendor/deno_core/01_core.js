@@ -15,6 +15,8 @@
     ObjectFromEntries,
     ObjectKeys,
     ObjectHasOwn,
+    PromisePrototypeThen,
+    PromiseResolve,
     ReflectOwnKeys,
     setQueueMicrotask,
     SafeMap,
@@ -28,6 +30,25 @@
     TypedArrayPrototypeGetSymbolToStringTag,
     TypeError,
   } = window.__bootstrap.primordials;
+
+  // Apple's JavaScriptCore predates explicit resource management and does not define the
+  // disposal symbols. Node's bundled modules (undici's abort listener, for one) look them up
+  // by name, so install the symbols the primordials already fall back to.
+  if (Symbol.dispose === undefined) {
+    ObjectDefineProperty(Symbol, "dispose", {
+      value: SymbolFor("nodejs.dispose"),
+      configurable: true,
+      writable: true,
+    });
+  }
+  if (Symbol.asyncDispose === undefined) {
+    ObjectDefineProperty(Symbol, "asyncDispose", {
+      value: SymbolFor("nodejs.asyncDispose"),
+      configurable: true,
+      writable: true,
+    });
+  }
+
   const {
     ops,
     hasPromise,
@@ -582,14 +603,20 @@
     if (typeof cb != "function") {
       throw new TypeError("expected a function");
     }
-    const enqueue = nativeQueueMicrotask ?? captureNativeQueueMicrotask();
-    return enqueue(() => {
+    const run = () => {
       try {
         cb();
       } catch (error) {
         reportExceptionCallback(error);
       }
-    });
+    };
+    const enqueue = nativeQueueMicrotask ?? captureNativeQueueMicrotask();
+    if (enqueue) {
+      return enqueue(run);
+    }
+    // V8 and the QuickJS adapter install a native `queueMicrotask`; JSC's C API does not.
+    // Promise reactions run on the same microtask queue, so this keeps the ordering intact.
+    PromisePrototypeThen(PromiseResolve(), run);
   }
 
   // Some "extensions" rely on "BadResource", "Interrupted", "NotCapable"

@@ -10,11 +10,11 @@ mod templates;
 
 const USAGE: &str = "\
 Usage: thinpack pack <entry.js> [-o <output>] [--template <thinpack-rt>] [--rebuild]
-                      [--backend <quickjs|v8>] [--source <checkout>]
+                      [--backend <quickjs|v8|jsc>] [--source <checkout>]
                       [--asset <key>=<path>]... [--with <module[,module...]>]...
                       [--without <module[,module...]>]... [--include <path>]... [--strict] [--list-capabilities]
        thinpack run <entry.js> [--template <thinpack-rt>] [--rebuild]
-                     [--backend <quickjs|v8>] [--source <checkout>]
+                     [--backend <quickjs|v8|jsc>] [--source <checkout>]
                      [--with <module[,module...]>]... [--without <module[,module...]>]... [-- <args>...]
        thinpack templates
        thinpack capabilities
@@ -24,7 +24,8 @@ Packages the entry's module graph into a single executable based on a runtime
 template. Templates come from `--template`, or from the cache
 ($THINPACK_CACHE/templates, deduplicated by version, backend and capability set);
 `--rebuild` builds one with cargo. `thinpack run` executes an entry with a matching
-template without packing. Assets are exposed through node:sea;
+template without packing. `jsc` is the macOS system JavaScriptCore framework and
+has no bundled engine. Assets are exposed through node:sea;
 `--list-capabilities` prints the derived capability set and exits. `--include` packs
 additional files (data, declarations) and analyzes them when they are JavaScript.";
 

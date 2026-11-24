@@ -285,7 +285,9 @@ function call(fn, context) {
 }
 
 async function runFunction(fn, context, timeout, signal) {
-  const body = Promise.resolve().then(() => call(fn, context));
+  // Invoke synchronously: the runner calls this inside AsyncLocalStorage.run, and
+  // engines without promise hooks (JSC) lose the store across the microtask.
+  const body = call(fn, context);
   const races = [body];
   let timeoutId;
   let abortHandler;

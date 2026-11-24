@@ -12,6 +12,7 @@ const BINARY_NAME: &str = "thinpack-rt";
 pub(crate) enum Backend {
     QuickJs,
     V8,
+    Jsc,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -41,6 +42,7 @@ impl Backend {
         match value {
             "quickjs" => Some(Self::QuickJs),
             "v8" => Some(Self::V8),
+            "jsc" => Some(Self::Jsc),
             _ => None,
         }
     }
@@ -49,6 +51,7 @@ impl Backend {
         match self {
             Self::QuickJs => "quickjs",
             Self::V8 => "v8",
+            Self::Jsc => "jsc",
         }
     }
 
@@ -56,6 +59,7 @@ impl Backend {
         match self {
             Self::QuickJs => "backend-quickjs",
             Self::V8 => "backend-v8",
+            Self::Jsc => "backend-jsc",
         }
     }
 }
@@ -121,6 +125,7 @@ impl Profile {
         let backend_dir = match backend {
             Backend::QuickJs => "target",
             Backend::V8 => "target/v8",
+            Backend::Jsc => "target/jsc",
         };
         let dir = match self {
             Self::Release => backend_dir.to_owned(),
@@ -143,8 +148,9 @@ fn parse(args: &[String]) -> Result<(Backend, Vec<Profile>, Modules), String> {
         match arg.as_str() {
             "--backend" => {
                 let value = value_of(&mut args, arg)?;
-                backend = Backend::parse(value)
-                    .ok_or_else(|| format!("unknown backend `{value}`; expected quickjs or v8"))?;
+                backend = Backend::parse(value).ok_or_else(|| {
+                    format!("unknown backend `{value}`; expected quickjs, v8 or jsc")
+                })?;
             }
             "--profile" => {
                 let value = value_of(&mut args, arg)?;
@@ -166,6 +172,14 @@ fn parse(args: &[String]) -> Result<(Backend, Vec<Profile>, Modules), String> {
     Ok((backend, profiles, modules))
 }
 
+/// `size` measures the host build: JSC is the macOS system framework and has no other platform.
+fn check_host(backend: Backend) -> Result<(), String> {
+    if matches!(backend, Backend::Jsc) && !cfg!(target_os = "macos") {
+        return Err("the jsc backend uses the macOS system JavaScriptCore framework".to_owned());
+    }
+    Ok(())
+}
+
 fn value_of<'a>(
     args: &mut impl Iterator<Item = &'a String>,
     option: &str,
@@ -176,6 +190,7 @@ fn value_of<'a>(
 }
 
 fn build_all((backend, profiles, modules): (Backend, Vec<Profile>, Modules)) -> Result<(), String> {
+    check_host(backend)?;
     let table = capabilities::load()?;
     let features = modules.features(&table)?;
     for profile in profiles {

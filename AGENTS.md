@@ -15,4 +15,4 @@
 
 `cargo xtask lint` is the only entry point and the commit gate: rustfmt + `cargo clippy
 --workspace --all-targets` (QuickJS, all built-in modules) + clippy over the same code under
-the V8 backend.
+the V8 backend, and on macOS under the JSC backend as well.

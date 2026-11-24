@@ -14,7 +14,8 @@ at 5.8 MiB against 104.3 and 143.8.
   built-in modules never enter the binary.
 - **Single-file artifact**: the payload is appended after the template and read by the runtime
   from itself; identical input produces identical bytes.
-- **Two backends**: QuickJS by default, V8 on request, same code and separate size budgets.
+- **Three backends**: QuickJS by default, V8 on request, and JSC through macOS's system
+  JavaScriptCore framework, same code and separate size budgets.
 - **Behavior parity**: user-visible modules follow the vendored Node sources, and the Node.js
   compatibility suite is part of the test run.
 
@@ -42,6 +43,11 @@ Set `THINPACK_BACKEND=v8` when running the installer to install a V8 pair. V8 ar
 have `-v8-` in their names and are available for glibc Linux, macOS and Windows. On Linux
 they require glibc 2.39 or newer. Extract a V8 archive to use it directly, or pass its
 runtime with `--template <path>` to an existing CLI.
+
+On macOS, `THINPACK_BACKEND=jsc` installs the JSC pair (`-jsc-` archives): the template links
+the `JavaScriptCore.framework` that ships with macOS instead of carrying an engine. JSC is
+macOS-only; its module support is a source rewriter, so a module graph that relies on exact
+ES module edge cases can behave differently from the QuickJS and V8 templates.
 
 The archive carries one template with every built-in module, so any app packs. `--rebuild` builds a
 template that carries only the app's own capability set, which is where the smallest artifacts in
@@ -71,7 +77,7 @@ cargo build --release -p thinpack-rt -p thinpack-cli
 | `templates` | list the template cache |
 | `capabilities` | list the module names accepted by this CLI |
 | `--template <path>` | use the given runtime template |
-| `--backend <quickjs\|v8>` | pick the template backend |
+| `--backend <quickjs\|v8\|jsc>` | pick the template backend, `quickjs` by default; `jsc` is macOS-only |
 | `--rebuild` `--source <checkout>` | build a template for this app's own capability set and cache it |
 | `--asset <key>=<path>` | embed an asset, readable through `node:sea` |
 | `--include <path>` | pack extra data files (`.d.ts`, templates); JavaScript is analyzed too |
@@ -190,7 +196,7 @@ crates/
   thinpack-cli/      the thinpack CLI, links no JS engine
   thinpack-rt/       the thinpack-rt runtime binary
   node/<name>/       one crate per Node built-in module
-vendor/              patched copies of upstream crates (deno_core, deno_ffi)
+vendor/              patched copies of upstream crates (deno_core, deno_ffi, deno_v8, v8x)
 ```
 
 The engine appears only in `thinpack-core`; module crates declare their own
@@ -216,6 +222,10 @@ for adding a module.
 
 - No full Intl data, no Temporal, no inspector protocol, no native backtraces;
   `Intl.Segmenter` on QuickJS is a lazy fallback implementation.
+- The `jsc` template is macOS-only. It has no bundled engine: it runs on the system
+  `JavaScriptCore.framework`. Its ES module support is a source rewriter aimed at flattened
+  bundles; packed apps keep their file boundaries, so live bindings, cycles and namespace edge
+  cases may differ from the QuickJS and V8 templates, and import attributes are unsupported.
 - `fetch` and its types are Node's own undici, vendored from `deps/undici/undici.js`, so they
   behave as Node does; `EventSource`, `MessageEvent`, `CloseEvent` and `ErrorEvent` are absent.
   `WebSocket`, `Blob`, `File` and `reportError` are present. The bundle's evaluation is lazy,
@@ -234,4 +244,5 @@ for adding a module.
 ## License
 
 MIT. The vendored Node.js sources are MIT too; `vendor/` holds patched copies of upstream MIT
-code, with the reasons recorded in `vendor/deno_core/PATCHES.md`.
+code, with the reasons recorded in `vendor/deno_core/PATCHES.md`, `vendor/deno_v8/PATCHES.md`
+and `vendor/v8x/THINPACK.md`.

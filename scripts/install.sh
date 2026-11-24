@@ -59,9 +59,16 @@ backend=${THINPACK_BACKEND:-quickjs}
 case "${backend}" in
     quickjs) suffix="" ;;
     v8) suffix="-v8" ;;
-    *) fail "unknown THINPACK_BACKEND '${backend}'; expected quickjs or v8" ;;
+    jsc) suffix="-jsc" ;;
+    *) fail "unknown THINPACK_BACKEND '${backend}'; expected quickjs, v8 or jsc" ;;
 esac
 platform=$(platform)
+if [ "${backend}" = jsc ]; then
+    case "${platform}" in
+        *-apple-darwin) ;;
+        *) fail "the JSC pair uses the macOS system JavaScriptCore framework; it is available on macOS only" ;;
+    esac
+fi
 case "${platform}" in
     *-unknown-linux)
         if [ "${backend}" = v8 ]; then

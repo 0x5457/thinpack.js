@@ -9,6 +9,7 @@ license.workspace = true
 default = ["backend-quickjs"]
 backend-quickjs = ["deno_core/quickjs"]
 backend-v8 = ["deno_core/v8"]
+backend-jsc = ["deno_core/jsc"]
 
 [dependencies]
 deno_core.workspace = true

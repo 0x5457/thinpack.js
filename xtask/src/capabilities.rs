@@ -12,7 +12,7 @@ const REGISTRY: &str = "crates/thinpack-rt/src/registry.rs";
 const RT_MANIFEST: &str = "crates/thinpack-rt/Cargo.toml";
 const FEATURES_BEGIN: &str = "# BEGIN GENERATED FEATURES";
 const FEATURES_END: &str = "# END GENERATED FEATURES";
-const BACKEND_FEATURES: [&str; 2] = ["backend-quickjs", "backend-v8"];
+const BACKEND_FEATURES: [&str; 3] = ["backend-quickjs", "backend-v8", "backend-jsc"];
 
 fn repo_path(relative: &str) -> PathBuf {
     crate::repo_root().join(relative)
@@ -379,17 +379,17 @@ fn render_manifest(manifest: &str, modules: &[Module]) -> Result<String, String>
         .find(FEATURES_END)
         .ok_or_else(|| format!("{RT_MANIFEST} lacks `{FEATURES_END}`"))?;
 
-    let mut default = vec![format!("{:?}", "backend-quickjs")];
-    default.extend(modules.iter().map(|module| format!("{:?}", module.feature)));
-
-    let mut block = format!(
-        "{FEATURES_BEGIN}\n[features]\ndefault = [{}]\n",
-        default.join(", ")
-    );
+    let all: Vec<String> = modules
+        .iter()
+        .map(|module| format!("{:?}", module.feature))
+        .collect();
+    let mut block =
+        format!("{FEATURES_BEGIN}\n[features]\ndefault = [\"backend-quickjs\", \"node-all\"]\n");
     for feature in BACKEND_FEATURES {
         let target = feature.replace("backend-", "thinpack-core/backend-");
         let _ = writeln!(block, "{feature} = [\"{target}\"]");
     }
+    let _ = writeln!(block, "node-all = [{}]", all.join(", "));
     for module in modules {
         let mut entries = vec![format!("\"dep:{}\"", module.krate)];
         entries.extend(
@@ -457,8 +457,7 @@ mod tests {
         let rendered = render_manifest(manifest, &modules).expect("markers exist");
 
         assert!(rendered.contains("node-stream = [\"dep:thinpack-node-stream\", \"node-buffer\"]"));
-        assert!(
-            rendered.contains("default = [\"backend-quickjs\", \"node-buffer\", \"node-stream\"]")
-        );
+        assert!(rendered.contains("default = [\"backend-quickjs\", \"node-all\"]"));
+        assert!(rendered.contains("node-all = [\"node-buffer\", \"node-stream\"]"));
     }
 }

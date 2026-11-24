@@ -2,6 +2,10 @@
     unused_crate_dependencies,
     reason = "integration tests only link the dependencies they exercise"
 )]
+// The system-JSC backend cannot wrap a shared backing store in a SharedArrayBuffer through
+// JSC's public C API, and v8x's serializer copies SAB bytes instead of transferring ownership.
+// These cases test that engine primitive, so they only run on QuickJS and V8.
+#![cfg(not(feature = "backend-jsc"))]
 
 use std::borrow::Cow;
 use std::sync::Mutex;

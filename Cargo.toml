@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-exclude = ["vendor/deno_core", "vendor/deno_ffi"]
+exclude = ["vendor/deno_core", "vendor/deno_ffi", "vendor/deno_v8"]
 members = [
     "crates/thinpack-core",
     "crates/thinpack-caps",
@@ -141,3 +141,5 @@ panic = "abort"
 
 [patch.crates-io]
 v8x = { path = "vendor/v8x" }
+# `deno_v8` gains the JSC backend feature; see vendor/deno_v8/PATCHES.md.
+deno_v8 = { path = "vendor/deno_v8" }

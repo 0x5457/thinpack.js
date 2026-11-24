@@ -32,6 +32,20 @@ module evaluation entry point for CJS `require(esm)` (the Node 22.12+ behavior).
    passes through both arms, and relaxing only `Compressed` would panic a debug build at
    startup. Debug builds of the whole test suite run this path, so the assertion was
    load-bearing for vendored sources.
+8. `Cargo.toml`: a `jsc` feature selects v8x's system-JavaScriptCore backend through the
+   vendored `deno_v8` facade. It enables only `v8/jsc`; `serde_v8` shares the same `deno_v8`
+   package, so feature unification picks the backend for both without a `serde_v8` fork.
+   macOS-only, like the engine itself.
+9. `00_primordials.js`/`01_core.js`: when the engine has no native `queueMicrotask` (JSC's C API
+   does not install one), the wrapper falls back to a Promise reaction, which runs on the same
+   microtask queue, instead of calling `undefined`. V8 and the QuickJS adapter keep the native
+   enqueue, so their ordering and op-free path are unchanged.
+10. `01_core.js`: JSC's framework does not define `Symbol.dispose`/`Symbol.asyncDispose`.
+    Install the same symbols thinpack's primordials fall back to, so `[Symbol.dispose]` lookups
+    in undici and other Node code resolve. No effect where the engine defines them.
+11. `modules/map.rs`: the JSC rewriter passes import escape text through, so the NUL-escape
+    check that was QuickJS-only also runs for the `jsc` backend. Without it a
+    `\u0000` specifier resolves as a literal path instead of failing loudly.
 
 Every other file matches upstream. Upgrade procedure: unpack the target version from
 crates.io, apply the changes above, update the path dependency in `Cargo.toml`, then run

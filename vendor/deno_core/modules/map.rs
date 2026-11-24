@@ -949,7 +949,8 @@ impl ModuleMap {
             let invalid_reason = if !specifier.is_string() {
                 Some("the engine did not provide a string")
             } else if import_specifier.contains('\0')
-                || cfg!(feature = "quickjs") && has_nul_escape(&import_specifier)
+                || cfg!(any(feature = "quickjs", feature = "jsc"))
+                    && has_nul_escape(&import_specifier)
             {
                 Some("the specifier contains a NUL character")
             } else {

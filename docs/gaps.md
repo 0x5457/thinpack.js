@@ -5,6 +5,26 @@ entry follows: a feature either behaves like Node or it fails loudly
 (`ERR_NOT_IMPLEMENTED`); it never returns a fabricated value. Each entry names
 the divergence, why it exists, and where it lives.
 
+## Backends
+
+- The `jsc` template runs on macOS's `JavaScriptCore.framework` instead of bundling an engine.
+  Its ES module support is a source rewriter aimed at flattened bundles
+  (`vendor/v8x/src/jsc/module.rs`);
+  packed apps keep their file boundaries, so live bindings, cycles and namespace edge cases can
+  differ from the QuickJS and V8 templates. A missing named export evaluates as `undefined`
+  instead of failing instantiation, and Apple's framework does not parse import attributes
+  (`import ... assert { ... }`).
+- That backend cannot create a `SharedArrayBuffer` over a transferred backing store through
+  JSC's public C API, and v8x's serializer copies shared bytes into an ordinary `ArrayBuffer`.
+  `SharedArrayBuffer` and `Atomics` work within one isolate, but a cross-isolate worker message
+  does not share the buffer: the receiver gets a copy, and `Atomics.wait` on it throws. This is
+  a v8x limitation; the shared-store tests are skipped there
+  (`crates/thinpack-core/tests/sab_store.rs`).
+- On `jsc`, a CommonJS module that throws while being imported dynamically is delivered as a
+  rejection (a `try`/`catch` around the `import()` sees it), but the same error is also
+  dispatched as an uncaught exception and ends the process; the CJS cycle case is skipped
+  there (`crates/thinpack-rt/tests/node.rs`).
+
 ## Globals
 
 - `fetch`, `Headers`, `Request`, `Response` and `FormData` are Node's own undici, vendored
