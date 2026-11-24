@@ -213,10 +213,9 @@ jobs:
     name: Runtime tests (windows-latest)
     # Two jobs rather than one: the capability-sliced template of `windows-smoke`
     # and the full runtime here are different feature sets of the same crates, so
-    # in a single job the second build recompiles the workspace and the cache
-    # carries only the last configuration, leaving every run warm for one of them
-    # and cold for the other. Apart, each job's cache stays warm and the two
-    # builds run at once, so a run costs the longer job instead of the sum.
+    # in a single job one of the two always recompiles the workspace from the
+    # cache of the other. Apart, the two builds run at once and a run costs the
+    # longer job instead of the sum.
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -226,7 +225,20 @@ jobs:
         with:
           rustflags: ""
           cache: false
+
+      # By default the action stores the registry and the dependency artifacts,
+      # not this workspace's own crates, so every run compiles all 60 of them:
+      # 163 s of the 354 s this job takes, and its largest step. Keep them too —
+      # here, where the compile sets the wall clock, and not in the jobs that
+      # finish long before this one does.
+      #
+      # `key` because the input above leaves the cache key unchanged: without it
+      # the restore is a full match on the old dependency-only entry, the action
+      # reports the cache as up to date, and the workspace crates are never added.
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: workspace-crates
+          cache-workspace-crates: "true"
 
       - name: Full runtime (all builtins)
         run: cargo build -p thinpack-rt
