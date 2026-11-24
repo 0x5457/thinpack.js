@@ -3941,6 +3941,7 @@ version = "0.2.0"
 dependencies = [
  "deno_core",
  "deno_error",
+ "getrandom 0.4.3",
  "libc",
  "notify",
  "thinpack-core",
