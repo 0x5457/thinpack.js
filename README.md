@@ -2,57 +2,48 @@
 
 [![CI](https://github.com/0x5457/thinpack.js/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/0x5457/thinpack.js/actions/workflows/ci.yml)
 
-Packs a Node.js app into a single executable file. `deno_core`/`v8x` provide the JS engine,
-`oxc` static analysis computes the built-in module closure the app references, only those
-implementations are linked, and the app's sources and assets are appended to the template.
+Ship a Node.js CLI as one executable. Users can run it without installing Node.js, Bun, or npm.
 
-The same apps land **9–25× smaller** than the other single-file packers: `pi` at 12.4 MiB
-against bun's 115.2 and Node SEA's 157.8; `tsc` at 9.0 MiB against 109.6 and 149.8; `js-yaml`
-at 5.8 MiB against 104.3 and 143.8.
+In the [Linux x86-64 benchmark](#compared-with-other-single-file-approaches), TypeScript's `tsc` packed to **9.0 MiB** with Thinpack versus **109.6 MiB** with Bun `--compile`. Thinpack used a QuickJS runtime rebuilt for the app. The ready-made runtime is larger; QuickJS trades startup speed for a smaller executable.
 
-- **Capability trimming**: `require`/`import` are resolved from the entry; unreferenced
-  built-in modules never enter the binary.
-- **Single-file artifact**: the payload is appended after the template and read by the runtime
-  from itself; identical input produces identical bytes.
-- **Three backends**: QuickJS by default, V8 on request, and JSC through macOS's system
-  JavaScriptCore framework, same code and separate size budgets.
-- **Behavior parity**: user-visible modules follow the vendored Node sources, and the Node.js
-  compatibility suite is part of the test run.
+## Quick start
 
-## Install
+On macOS or Linux with glibc 2.39+, run this in a new directory:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/0x5457/thinpack.js/main/scripts/install.sh | sh
-thinpack pack app.js -o app
-./app
+printf '%s\n' 'console.log("Hello from Thinpack!")' > hello.js
+"$HOME/.local/bin/thinpack" pack hello.js -o hello
+./hello
 ```
 
-The installer puts `thinpack` and `thinpack-rt` in `~/.local/bin` (`THINPACK_INSTALL_DIR`
-overrides that, `THINPACK_VERSION` pins a release). They have to stay in the same directory: the
-CLI loads its template from next to itself. Archives with `SHA256SUMS` are on the
-[releases page](https://github.com/0x5457/thinpack.js/releases): Linux (x86_64 and aarch64), macOS
-(arm64 and Intel) and Windows. Linux ships twice: a glibc build that needs glibc 2.39 or newer, and
-a static one with no libc floor at all, which costs about 1 MiB per packed artifact. The installer
-takes the glibc build when the host can run it and the static one otherwise; `THINPACK_STATIC=1`
-asks for static regardless, which is what you want when the binary you pack has to run on a
-distribution older than your own (the flag is Linux-only, and ignored elsewhere). The static build
-also resolves names with musl's resolver, which reads `/etc/hosts` and `/etc/resolv.conf` only:
-`dns.lookup` on such a binary sees no NSS entries (LDAP, sssd, NIS) and no mDNS.
+You should see `Hello from Thinpack!`. Replace `hello.js` with your CLI's entry point and pack on the target OS and architecture. Only the output executable goes to your users. Keep `thinpack` and `thinpack-rt` together on the machine doing the packing.
 
-Set `THINPACK_BACKEND=v8` when running the installer to install a V8 pair. V8 archives
-have `-v8-` in their names and are available for glibc Linux, macOS and Windows. On Linux
-they require glibc 2.39 or newer. Extract a V8 archive to use it directly, or pass its
-runtime with `--template <path>` to an existing CLI.
+On Windows x86-64, extract the matching release archive and run these commands in the extracted directory:
 
-On macOS, `THINPACK_BACKEND=jsc` installs the JSC pair (`-jsc-` archives): the template links
-the `JavaScriptCore.framework` that ships with macOS instead of carrying an engine. JSC is
-macOS-only; its module support is a source rewriter, so a module graph that relies on exact
-ES module edge cases can behave differently from the QuickJS and V8 templates.
+```powershell
+'console.log("Hello from Thinpack!")' | Set-Content -Encoding Ascii hello.js
+.\thinpack.exe pack hello.js -o hello.exe
+.\hello.exe
+```
 
-The archive carries one template with every built-in module, so any app packs. `--rebuild` builds a
-template that carries only the app's own capability set, which is where the smallest artifacts in
-the table below come from; it compiles the runtime, so it needs a source checkout (`--source
-<checkout>` when the CLI was not built from one).
+## Downloads and runtime choices
+
+The installer fetches the [latest published release](https://github.com/0x5457/thinpack.js/releases/latest), not a build of `main`. Check the release assets for your OS, architecture, and backend. Archives can be checked against `SHA256SUMS`. Set `THINPACK_INSTALL_DIR` to change the install directory or `THINPACK_VERSION` to pin a published release.
+
+QuickJS is the default. For releases that contain matching archives:
+
+- **Static Linux (QuickJS):** `THINPACK_STATIC=1` selects the musl archive for older Linux distributions. Its resolver reads `/etc/hosts` and `/etc/resolv.conf`; no NSS or mDNS.
+- **V8:** `THINPACK_BACKEND=v8` selects a `-v8-` archive. V8 on Linux requires glibc 2.39+.
+- **JavaScriptCore:** `THINPACK_BACKEND=jsc` selects a `-jsc-` archive on macOS. It uses the system framework and has [module compatibility limits](#known-limits).
+
+The prebuilt runtime carries all built-ins. To reproduce the smaller `--rebuild` artifacts in the benchmark, use a matching source checkout and a build toolchain:
+
+```sh
+thinpack pack hello.js -o hello --rebuild --source /path/to/thinpack.js
+```
+
+Thinpack uses `oxc` to trace imports and links only the required built-ins into the rebuilt runtime, then appends the app's sources and assets.
 
 ## Build from source
 
@@ -60,8 +51,8 @@ Requires Rust 1.99.1 (pinned by `rust-toolchain.toml`), a C toolchain and CMake.
 
 ```sh
 cargo build --release -p thinpack-rt -p thinpack-cli
-./target/release/thinpack pack app.js -o app
-./app
+./target/release/thinpack pack examples/hello.js -o hello
+./hello
 ```
 
 `cargo xtask dist` builds the release archive for the host and verifies it by packing and running
