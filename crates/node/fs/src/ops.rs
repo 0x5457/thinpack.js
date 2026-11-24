@@ -1208,7 +1208,9 @@ fn watcher_error(error: notify::Error) -> JsErrorBox {
         notify::ErrorKind::MaxFilesWatch => ENOSPC,
         notify::ErrorKind::InvalidConfig(_) | notify::ErrorKind::WatchNotFound => EINVAL,
         notify::ErrorKind::Io(error) => return fs_error(error),
-        notify::ErrorKind::Generic(_) => return fs_error(io::Error::other(detail)),
+        // Everything else — `Generic`, the FSEvents `WatchStartFailed`, and whatever notify adds
+        // next — is an opaque backend failure with no errno of its own.
+        _ => return fs_error(io::Error::other(detail)),
     };
     fs_error(io::Error::from_raw_os_error(errno))
 }
