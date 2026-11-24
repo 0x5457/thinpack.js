@@ -57,6 +57,7 @@ pub(crate) const OPS: &[OpDecl] = &[
     op_binding_utf8_units(),
     op_binding_utf8_slice(),
     op_binding_utf8_write(),
+    op_binding_signals(),
 ];
 
 /// `Buffer#write` with `latin1` or `ascii`: Node writes the low byte of every
@@ -435,4 +436,79 @@ const fn base64_value(byte: u8) -> Option<u8> {
         b'/' | b'_' => Some(63),
         _ => None,
     }
+}
+
+/// The host's signal names and numbers, one `NAME=NUMBER` per line. Node derives
+/// `os.constants.signals` from the platform's headers; the value is read from
+/// `libc` so macOS and Linux do not share the Linux numbering.
+#[op2]
+#[string]
+pub(crate) fn op_binding_signals() -> String {
+    signals()
+        .into_iter()
+        .map(|(name, number)| format!("{name}={number}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[cfg(unix)]
+fn signals() -> Vec<(&'static str, i32)> {
+    let mut signals = vec![
+        ("SIGHUP", libc::SIGHUP),
+        ("SIGINT", libc::SIGINT),
+        ("SIGQUIT", libc::SIGQUIT),
+        ("SIGILL", libc::SIGILL),
+        ("SIGTRAP", libc::SIGTRAP),
+        ("SIGABRT", libc::SIGABRT),
+        ("SIGIOT", libc::SIGABRT),
+        ("SIGBUS", libc::SIGBUS),
+        ("SIGFPE", libc::SIGFPE),
+        ("SIGKILL", libc::SIGKILL),
+        ("SIGUSR1", libc::SIGUSR1),
+        ("SIGSEGV", libc::SIGSEGV),
+        ("SIGUSR2", libc::SIGUSR2),
+        ("SIGPIPE", libc::SIGPIPE),
+        ("SIGALRM", libc::SIGALRM),
+        ("SIGTERM", libc::SIGTERM),
+        ("SIGCHLD", libc::SIGCHLD),
+        ("SIGCONT", libc::SIGCONT),
+        ("SIGSTOP", libc::SIGSTOP),
+        ("SIGTSTP", libc::SIGTSTP),
+        ("SIGTTIN", libc::SIGTTIN),
+        ("SIGTTOU", libc::SIGTTOU),
+        ("SIGURG", libc::SIGURG),
+        ("SIGXCPU", libc::SIGXCPU),
+        ("SIGXFSZ", libc::SIGXFSZ),
+        ("SIGVTALRM", libc::SIGVTALRM),
+        ("SIGPROF", libc::SIGPROF),
+        ("SIGWINCH", libc::SIGWINCH),
+        ("SIGIO", libc::SIGIO),
+        ("SIGSYS", libc::SIGSYS),
+    ];
+    #[cfg(target_os = "linux")]
+    signals.extend([
+        ("SIGSTKFLT", libc::SIGSTKFLT),
+        ("SIGPOLL", libc::SIGPOLL),
+        ("SIGPWR", libc::SIGPWR),
+    ]);
+    #[cfg(target_vendor = "apple")]
+    signals.extend([("SIGEMT", libc::SIGEMT), ("SIGINFO", libc::SIGINFO)]);
+    signals
+}
+
+#[cfg(windows)]
+fn signals() -> Vec<(&'static str, i32)> {
+    vec![
+        ("SIGHUP", 1),
+        ("SIGINT", 2),
+        ("SIGQUIT", 3),
+        ("SIGILL", 4),
+        ("SIGTRAP", 5),
+        ("SIGABRT", 22),
+        ("SIGBUS", 7),
+        ("SIGFPE", 8),
+        ("SIGSEGV", 11),
+        ("SIGTERM", 15),
+        ("SIGBREAK", 21),
+    ]
 }

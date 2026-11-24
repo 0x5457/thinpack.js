@@ -755,6 +755,30 @@ setTimeout(() => {
         capabilities: &["test"],
         error: Some(&["late boom"]),
     },
+    PackedTest {
+        name: "packed::signals-shared-table",
+        directory: "signals-shared-table",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r"
+const os = require('node:os');
+const signals = os.constants.signals;
+if (process.platform === 'win32') {
+  if (signals.SIGBREAK !== 21) throw new Error('SIGBREAK');
+} else {
+  const sigbus = process.platform === 'darwin' ? 10 : 7;
+  if (signals.SIGBUS !== sigbus) throw new Error('SIGBUS ' + signals.SIGBUS);
+  if (typeof signals.SIGURG !== 'number') throw new Error('SIGURG');
+  process.kill(process.pid, 'SIGURG');
+  process.kill(process.pid, 'SIGWINCH');
+}
+console.log('signals shared');
+",
+        )],
+        capabilities: &["os"],
+        error: None,
+    },
 ];
 
 /// Packed startup cases whose source is generated because the payload is large.

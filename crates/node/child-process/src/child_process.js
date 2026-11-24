@@ -16,15 +16,11 @@
     return failure;
   };
 
-  const SIGNALS = {
-    SIGABRT: 6, SIGALRM: 14, SIGBUS: 7, SIGCHLD: 17, SIGCONT: 18, SIGFPE: 8,
-    SIGHUP: 1, SIGILL: 4, SIGINT: 2, SIGKILL: 9, SIGPIPE: 13, SIGQUIT: 3,
-    SIGSEGV: 11, SIGSTOP: 19, SIGTERM: 15, SIGTSTP: 20, SIGTTIN: 21,
-    SIGTTOU: 22, SIGUSR1: 10, SIGUSR2: 12, SIGVTALRM: 26, SIGXCPU: 24,
-    SIGXFSZ: 25,
-  };
+  const { signals: SIGNALS } = require("node:thinpack/internal/constants").os;
   const SIGNAL_NAMES = {};
-  for (const [name, number] of Object.entries(SIGNALS)) SIGNAL_NAMES[number] = name;
+  // Keep the first name for a number: the table lists canonical names before aliases
+  // (SIGABRT before SIGIOT, SIGIO before SIGPOLL).
+  for (const [name, number] of Object.entries(SIGNALS)) SIGNAL_NAMES[number] ??= name;
 
   const signalName = (signal) =>
     signal > 0 ? (SIGNAL_NAMES[signal] ?? `SIG${signal}`) : null;

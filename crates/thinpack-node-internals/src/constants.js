@@ -1,3 +1,12 @@
+// The host's signal names and numbers, so macOS does not inherit the Linux
+// numbering and every module reads the same table.
+const signals = {};
+for (const line of Deno.core.ops.op_binding_signals().split("\n")) {
+  const separator = line.indexOf("=");
+  if (separator <= 0) continue;
+  signals[line.slice(0, separator)] = Number(line.slice(separator + 1));
+}
+
 module.exports = {
   CHAR_AT: 64,
   CHAR_BACKWARD_SLASH: 92,
@@ -98,41 +107,8 @@ module.exports = {
       ENOKEY: 126, EKEYEXPIRED: 127, EKEYREVOKED: 128, EKEYREJECTED: 129,
       EOWNERDEAD: 130, ENOTRECOVERABLE: 131, ERFKILL: 132, EHWPOISON: 133,
     },
-    signals: {
-      SIGHUP: 1,
-      SIGINT: 2,
-      SIGQUIT: 3,
-      SIGILL: 4,
-      SIGTRAP: 5,
-      SIGABRT: 6,
-      SIGIOT: 6,
-      SIGBUS: 7,
-      SIGFPE: 8,
-      SIGKILL: 9,
-      SIGUSR1: 10,
-      SIGSEGV: 11,
-      SIGUSR2: 12,
-      SIGPIPE: 13,
-      SIGALRM: 14,
-      SIGTERM: 15,
-      SIGCHLD: 17,
-      SIGSTKFLT: 16,
-      SIGCONT: 18,
-      SIGSTOP: 19,
-      SIGTSTP: 20,
-      SIGTTIN: 21,
-      SIGTTOU: 22,
-      SIGURG: 23,
-      SIGXCPU: 24,
-      SIGXFSZ: 25,
-      SIGVTALRM: 26,
-      SIGPROF: 27,
-      SIGWINCH: 28,
-      SIGIO: 29,
-      SIGPOLL: 29,
-      SIGPWR: 30,
-      SIGSYS: 31,
-    },
+    signals,
+
   },
   fs: {
     UV_FS_SYMLINK_DIR: 1,

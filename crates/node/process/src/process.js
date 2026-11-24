@@ -308,13 +308,14 @@
 
   let exitCode;
   let exiting = false;
-  const SIGNALS = {
-    SIGABRT: 6, SIGALRM: 14, SIGBUS: 7, SIGCHLD: 17, SIGCONT: 18, SIGFPE: 8,
-    SIGHUP: 1, SIGILL: 4, SIGINT: 2, SIGKILL: 9, SIGPIPE: 13, SIGQUIT: 3,
-    SIGSEGV: 11, SIGSTOP: 19, SIGTERM: 15, SIGTSTP: 20, SIGTTIN: 21,
-    SIGTTOU: 22, SIGUSR1: 10, SIGUSR2: 12, SIGVTALRM: 26, SIGXCPU: 24,
-    SIGXFSZ: 25,
-  };
+  // The shared host table, so process.kill accepts every name os.constants.signals
+  // exposes and the numbers match the platform.
+  const SIGNALS = {};
+  for (const line of ops.op_binding_signals().split("\n")) {
+    const separator = line.indexOf("=");
+    if (separator <= 0) continue;
+    SIGNALS[line.slice(0, separator)] = Number(line.slice(separator + 1));
+  }
   const signalNumber = (signal) => {
     if (signal === undefined) return SIGNALS.SIGTERM;
     if (typeof signal === "number") return signal;
