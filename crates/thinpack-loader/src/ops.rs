@@ -5,14 +5,13 @@
 )]
 
 use std::cell::RefCell;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 
 use deno_core::error::CoreErrorKind;
 use deno_core::v8;
 use deno_core::{ModuleSpecifier, OpDecl, OpState, op2};
 use deno_error::JsErrorBox;
-use percent_encoding::percent_decode_str;
 use thinpack_core::{BuiltinSources, file_url};
 use thinpack_resolve::{FileSystem, Format, Resolved};
 use url::Url;
@@ -210,34 +209,18 @@ fn read(resolved: &Resolved, fs: &ModuleFs) -> String {
         Ok(bytes) => String::from_utf8(bytes).map_or_else(
             |_| format!("e\0ERR_MODULE_READ\0{path}: module is not valid UTF-8\0"),
             |source| {
-                let kind = match resolved.format {
-                    Format::Json => "j",
-                    _ => "f",
+                // JSON is parsed by the loader, not compiled; it keeps its raw text.
+                if resolved.format == Format::Json {
+                    return format!("j\0{path}\0{url}\0{source}");
+                }
+                let Some((name, script)) = crate::commonjs_script(&resolved.path, &source) else {
+                    return invalid_url(&path);
                 };
-                format!("{kind}\0{path}\0{url}\0{}", strip_hashbang(&source))
+                format!("f\0{path}\0{name}\0{script}")
             },
         ),
         Err(error) => format!("e\0ERR_MODULE_READ\0{path}: {error}\0"),
     }
-}
-
-fn strip_hashbang(source: &str) -> std::borrow::Cow<'_, str> {
-    source.strip_prefix("#!").map_or_else(
-        || std::borrow::Cow::Borrowed(source),
-        |rest| std::borrow::Cow::Owned(format!("//{rest}")),
-    )
-}
-
-/// Inverse of [`file_url`] for the virtual `/app` paths that
-/// `Url::to_file_path` rejects on Windows.
-pub(crate) fn path_from_url(url: &Url) -> Option<PathBuf> {
-    if let Ok(path) = url.to_file_path() {
-        return Some(path);
-    }
-    (url.scheme() == "file").then(|| {
-        let decoded = percent_decode_str(url.path()).decode_utf8_lossy();
-        PathBuf::from(decoded.as_ref())
-    })
 }
 
 fn invalid_url(path: &str) -> String {

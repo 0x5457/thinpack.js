@@ -1,6 +1,8 @@
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+
+use percent_encoding::percent_decode_str;
 
 use deno_core::{
     Extension, JsRuntime, ModuleLoader, PollEventLoopOptions, RuntimeOptions, url::Url,
@@ -145,4 +147,32 @@ fn virtual_file_url(path: &Path) -> Option<Url> {
 #[cfg(not(windows))]
 const fn virtual_file_url(_path: &Path) -> Option<Url> {
     None
+}
+
+/// Inverse of [`file_url`]: the host or virtual path a `file:` URL names.
+///
+/// `Url::to_file_path` is the primary mapping; the fallback decodes the path of a
+/// drive-less virtual `/app/...` URL, which it rejects on Windows.
+#[must_use]
+pub fn path_from_url(url: &Url) -> Option<PathBuf> {
+    if let Ok(path) = url.to_file_path() {
+        return Some(path);
+    }
+    (url.scheme() == "file").then(|| {
+        let decoded = percent_decode_str(url.path()).decode_utf8_lossy();
+        PathBuf::from(decoded.as_ref())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{file_url, path_from_url};
+    use std::path::Path;
+
+    #[test]
+    fn file_url_round_trips_through_path_from_url() {
+        let path = Path::new("/app/lib/main.js");
+        let url = file_url(path).expect("the path becomes a file URL");
+        assert_eq!(path_from_url(&url).as_deref(), Some(path));
+    }
 }

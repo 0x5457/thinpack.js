@@ -23,6 +23,7 @@ deno_core.workspace = true
 thinpack-core.workspace = true
 thinpack-caps.workspace = true
 thinpack-loader.workspace = true
+thinpack-resolve.workspace = true
 thinpack-pack.workspace = true
 thinpack-vfs.workspace = true
 thinpack-io.workspace = true

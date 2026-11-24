@@ -23,7 +23,7 @@ pub use cancel::CancelTable;
 pub use counter::IdCounter;
 pub use error::Error;
 pub use js::js_string_literal;
-pub use runtime::{Runtime, file_url};
+pub use runtime::{Runtime, file_url, path_from_url};
 pub use virtual_files::{VirtualEntry, VirtualFiles, VirtualFilesRef, VirtualStat};
 
 #[derive(Debug)]
