@@ -17,6 +17,7 @@ use thinpack_core::{BuiltinSources, file_url};
 use thinpack_resolve::{FileSystem, Format, Resolved};
 use url::Url;
 
+use crate::error::LoaderError;
 use crate::{Main, ModuleFs, missing_builtin_message};
 
 pub(crate) const OPS: &[OpDecl] = &[
@@ -42,18 +43,26 @@ fn op_require_resolve(
         return Ok(name);
     }
     if thinpack_caps::module_for_builtin(specifier).is_some() {
-        return Err(JsErrorBox::generic(missing_builtin_message(specifier)));
+        return Err(JsErrorBox::from_err(LoaderError::new(
+            "ERR_UNKNOWN_BUILTIN_MODULE",
+            missing_builtin_message(specifier),
+        )));
     }
     let fs = op_state.borrow::<ModuleFs>();
     match thinpack_resolve::resolve(specifier, Path::new(parent), fs) {
         Ok(resolved) => Ok(fs.js_path(&resolved.path)),
-        Err(error) => Err(JsErrorBox::new(
-            "Error",
-            format!(
-                "MODULE_NOT_FOUND\0{}",
+        Err(error) => {
+            let message = if matches!(error, thinpack_resolve::Error::NotFound) {
+                format!("Cannot find module '{specifier}'\nRequire stack:\n- {parent}")
+            } else {
                 error.message(|path| fs.js_path(path))
-            ),
-        )),
+            };
+            Err(JsErrorBox::from_err(LoaderError {
+                code: resolve_code(&error),
+                message,
+                url: None,
+            }))
+        }
     }
 }
 
@@ -235,15 +244,22 @@ fn invalid_url(path: &str) -> String {
     format!("e\0ERR_INVALID_URL\0{path} cannot be converted to a file URL\0")
 }
 
-fn resolve_error(error: &thinpack_resolve::Error, fs: &ModuleFs) -> String {
+fn resolve_code(error: &thinpack_resolve::Error) -> &'static str {
     use thinpack_resolve::Error;
 
-    let code = match error {
+    match error {
         Error::NotFound => "MODULE_NOT_FOUND",
         Error::NotExported { .. } => "ERR_PACKAGE_PATH_NOT_EXPORTED",
         Error::Unsupported { .. } => "ERR_UNKNOWN_FILE_EXTENSION",
         Error::InvalidPackage { .. } => "ERR_INVALID_PACKAGE_CONFIG",
         Error::Io { .. } => "ERR_MODULE_READ",
-    };
-    format!("e\0{code}\0{}\0", error.message(|path| fs.js_path(path)))
+    }
+}
+
+fn resolve_error(error: &thinpack_resolve::Error, fs: &ModuleFs) -> String {
+    format!(
+        "e\0{}\0{}\0",
+        resolve_code(error),
+        error.message(|path| fs.js_path(path))
+    )
 }

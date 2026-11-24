@@ -882,6 +882,25 @@ server.listen(0, '127.0.0.1', async () => {
         capabilities: &["assert", "crypto"],
         error: None,
     },
+    PackedTest {
+        name: "packed::require-resolve-errors",
+        directory: "require-resolve-errors",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r"
+const assert = require('node:assert/strict');
+assert.throws(() => require.resolve('./missing'), (error) => {
+  assert.equal(error.code, 'MODULE_NOT_FOUND');
+  assert.match(error.message, /^Cannot find module '\.\/missing'/);
+  return true;
+});
+console.log('require.resolve errors ok');
+",
+        )],
+        capabilities: &["assert"],
+        error: None,
+    },
 ];
 
 /// Packed startup cases whose source is generated because the payload is large.
