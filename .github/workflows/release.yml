@@ -133,7 +133,7 @@ jobs:
         shell: bash
         run: cargo xtask dist --backend jsc --target ${{ matrix.target }} --out dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: thinpack-${{ matrix.target }}
           path: |
