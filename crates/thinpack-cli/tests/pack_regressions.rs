@@ -66,6 +66,74 @@ mod unix {
     }
 
     #[test]
+    fn esm_syntax_in_a_commonjs_js_entry_fails_during_packing() {
+        let directory = TempDir::new("esm-syntax-in-commonjs");
+        let entry = directory.path().join("main.js");
+        fs::write(
+            directory.path().join("package.json"),
+            r#"{ "name": "esm-bundle" }"#,
+        )
+        .expect("write package manifest");
+        fs::write(
+            &entry,
+            "import { createRequire } from 'node:module';\n\
+             const require = createRequire(import.meta.url);\n",
+        )
+        .expect("write ESM entry");
+
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            directory.path(),
+            &entry,
+            &["--list-capabilities"],
+        );
+        assert!(
+            !result.status.success(),
+            "packed a CommonJS entry that uses ES module syntax"
+        );
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            error.contains("main.js: uses ES module syntax but is loaded as CommonJS"),
+            "{error}"
+        );
+        assert!(error.contains("rename it to .mjs"), "{error}");
+        assert!(error.contains("add \"type\": \"module\""), "{error}");
+    }
+
+    #[test]
+    fn a_js_entry_in_a_module_package_analyzes_as_esm() {
+        let directory = TempDir::new("esm-entry-in-module-package");
+        let entry = directory.path().join("main.js");
+        fs::write(
+            directory.path().join("package.json"),
+            r#"{ "type": "module" }"#,
+        )
+        .expect("write package manifest");
+        fs::write(
+            &entry,
+            "import { sep } from 'node:path';\nconsole.log(sep);\n",
+        )
+        .expect("write ESM entry");
+
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            directory.path(),
+            &entry,
+            &["--list-capabilities"],
+        );
+        assert!(
+            result.status.success(),
+            "rejected a JS entry in a module package:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let listed = String::from_utf8_lossy(&result.stdout);
+        assert!(
+            listed.lines().any(|line| line.starts_with("path ")),
+            "{listed}"
+        );
+    }
+
+    #[test]
     fn finite_conditional_require_is_complete_in_strict_mode() {
         let directory = TempDir::new("finite-conditional-require");
         let entry = directory.path().join("main.js");
