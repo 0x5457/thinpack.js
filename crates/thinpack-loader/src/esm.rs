@@ -10,13 +10,12 @@ use deno_core::{
 
 use deno_error::JsErrorBox;
 use thinpack_core::js_string_literal;
-use thinpack_core::{BuiltinSources, file_url};
+use thinpack_core::{BuiltinSources, file_url, path_from_url};
 use thinpack_resolve::{FileSystem, Format};
 
 use crate::ModuleFs;
 use crate::cjs_exports;
 use crate::error::LoaderError;
-use crate::ops::path_from_url;
 
 #[derive(Debug)]
 struct HookLoad {

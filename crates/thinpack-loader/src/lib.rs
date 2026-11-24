@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use deno_core::{Extension, ExtensionFileSource, ModuleLoader};
-use thinpack_core::BuiltinSources;
+use thinpack_core::{BuiltinSources, file_url};
 use thinpack_resolve::{FileSystem, HostFs};
 use thinpack_vfs::Vfs;
 
@@ -92,6 +92,26 @@ const fn posix_separators(path: String) -> String {
     path
 }
 
+/// The engine name and wrapped source for a CommonJS module. The loader and
+/// `--warm-cache` must produce the same `(eval flags, source, resource name)` key, so
+/// both build it here; a hashbang becomes a line comment exactly once.
+#[must_use]
+pub fn commonjs_script(path: &Path, source: &str) -> Option<(String, String)> {
+    let name = file_url(path)?.to_string();
+    let source = strip_hashbang(source);
+    Some((
+        name,
+        format!("(function (exports, require, module, __filename, __dirname) {{{source}\n}})"),
+    ))
+}
+
+fn strip_hashbang(source: &str) -> Cow<'_, str> {
+    source.strip_prefix("#!").map_or_else(
+        || Cow::Borrowed(source),
+        |rest| Cow::Owned(format!("//{rest}")),
+    )
+}
+
 #[must_use]
 pub fn esm_loader(fs: ModuleFs, builtins: BuiltinSources) -> Rc<dyn ModuleLoader> {
     Rc::new(EsmLoader::new(fs, builtins))
@@ -123,4 +143,25 @@ pub fn init(main: Main, fs: ModuleFs) -> Extension {
 /// Returns the error raised by the entry script or by its event loop.
 pub fn run(runtime: &mut thinpack_core::Runtime) -> Result<(), thinpack_core::Error> {
     runtime.execute_script("<thinpack:main>", "__thinpack_run_main()".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::commonjs_script;
+    use std::path::Path;
+
+    #[test]
+    fn commonjs_script_strips_the_hashbang_and_wraps_once() {
+        let (name, script) = commonjs_script(
+            Path::new("/app/main.js"),
+            "#!/usr/bin/env node\nconsole.log(1);\n",
+        )
+        .expect("the path becomes a file URL");
+        assert_eq!(name, "file:///app/main.js");
+        assert!(
+            script.starts_with("(function (exports, require, module, __filename, __dirname) {//")
+        );
+        assert!(!script.contains("#!"));
+        assert!(script.ends_with("\n})"));
+    }
 }

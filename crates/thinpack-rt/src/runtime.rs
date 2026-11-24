@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
@@ -94,12 +94,8 @@ pub(crate) fn warm(pack: &Pack) -> Result<usize, Box<dyn std::error::Error>> {
     let mut scripts = Vec::new();
     let mut modules = Vec::new();
     for file in &pack.manifest.files {
-        if !matches!(
-            Path::new(&file.path)
-                .extension()
-                .and_then(|extension| extension.to_str()),
-            Some("js" | "cjs" | "mjs")
-        ) {
+        let path = PathBuf::from(&file.path);
+        if !thinpack_resolve::is_javascript(&path) {
             continue;
         }
         let Some(contents) = pack.slice_of(file) else {
@@ -108,16 +104,10 @@ pub(crate) fn warm(pack: &Pack) -> Result<usize, Box<dyn std::error::Error>> {
         let Ok(source) = std::str::from_utf8(contents) else {
             continue;
         };
-        let path = PathBuf::from(&file.path);
         if thinpack_loader::is_esm(&path, &fs) {
             modules.push(path);
-        } else {
-            scripts.push((
-                format!("file://{}", file.path),
-                format!(
-                    "(function (exports, require, module, __filename, __dirname) {{{source}\n}})"
-                ),
-            ));
+        } else if let Some(script) = thinpack_loader::commonjs_script(&path, source) {
+            scripts.push(script);
         }
     }
 

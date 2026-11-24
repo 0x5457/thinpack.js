@@ -13,7 +13,6 @@ thinpack-resolve.workspace = true
 thinpack-caps.workspace = true
 deno_error = "0.7"
 thinpack-vfs.workspace = true
-percent-encoding = "2"
 url = "2"
 
 

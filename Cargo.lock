@@ -3765,6 +3765,7 @@ version = "0.2.0"
 dependencies = [
  "deno_core",
  "deno_error",
+ "percent-encoding",
  "thinpack-pack",
  "tokio",
 ]
@@ -3790,7 +3791,6 @@ version = "0.2.0"
 dependencies = [
  "deno_core",
  "deno_error",
- "percent-encoding",
  "thinpack-caps",
  "thinpack-core",
  "thinpack-js",
@@ -4281,6 +4281,7 @@ dependencies = [
  "thinpack-node-worker-threads",
  "thinpack-node-zlib",
  "thinpack-pack",
+ "thinpack-resolve",
  "thinpack-vfs",
  "tokio",
  "toml",

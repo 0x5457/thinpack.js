@@ -47,7 +47,7 @@
     return failure;
   };
 
-  const evaluate = (id, url, source, json, stack, isMain = false) => {
+  const evaluate = (id, url, source, json, stack, isMain = false, wrapped = false) => {
     const cached = cache[id];
     if (cached !== undefined) return cached.exports;
 
@@ -66,10 +66,10 @@
       return module.exports;
     }
     try {
-      const [factory, error] = Deno.core.evalContext(
-        "(function (exports, require, module, __filename, __dirname) {" + source + "\n})",
-        url,
-      );
+      const code = wrapped
+        ? source
+        : "(function (exports, require, module, __filename, __dirname) {" + source + "\n})";
+      const [factory, error] = Deno.core.evalContext(code, url);
       if (error) {
         throw error.isCompileError ? compileFailure(error.thrown, id) : error.thrown;
       }
@@ -94,7 +94,7 @@
     switch (kind) {
       case "b":
       case "f":
-        return evaluate(id, url, body, false, stack, isMain);
+        return evaluate(id, url, body, false, stack, isMain, true);
       case "j":
         return evaluate(id, url, body, true, stack, isMain);
       case "m":

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use thinpack_analyze::Analysis;
 use thinpack_caps::Module;
 
-use thinpack_resolve::normalize;
+use thinpack_resolve::{is_javascript, normalize};
 
 use crate::bundle::project_root;
 use crate::options::Options;
@@ -75,13 +75,6 @@ pub(crate) fn analyze_entry(options: &Options, pack: bool) -> Result<Analyzed, B
         analysis,
         capabilities,
     })
-}
-
-fn is_javascript(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|extension| extension.to_str()),
-        Some("js" | "cjs" | "mjs")
-    )
 }
 
 fn expand_includes(root: &Path, includes: &[PathBuf]) -> Result<Vec<PathBuf>, Box<dyn Error>> {
