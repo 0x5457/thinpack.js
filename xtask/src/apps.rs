@@ -27,7 +27,6 @@ Usage: cargo xtask apps [--only <name,...>] [--baseline <path>] [--write-baselin
 
 const DEFAULT_BASELINE: &str = "tests/apps/baseline.toml";
 const FIXTURES: &str = "tests/apps";
-const ARTIFACTS: &str = "target/apps";
 
 /// `--rebuild` uses this backend and the small profile (`templates.rs`); the baseline records
 /// both so a run on another backend or profile can never be compared against it.
@@ -180,7 +179,7 @@ fn select(value: &str) -> Result<Vec<&'static App>, String> {
 }
 
 fn measure_all(config: &Config) -> Result<(), String> {
-    let host = host_triple()?;
+    let host = crate::build::host_triple()?;
     build_cli()?;
 
     let apps: Vec<&'static App> = config.only.clone().unwrap_or_else(|| APPS.iter().collect());
@@ -231,9 +230,13 @@ fn build_cli() -> Result<(), String> {
 }
 
 fn cli_path() -> PathBuf {
-    crate::repo_root()
-        .join("target/release")
+    crate::build::target_root()
+        .join("release")
         .join(format!("thinpack{}", env::consts::EXE_SUFFIX))
+}
+
+fn artifact_root() -> PathBuf {
+    crate::build::target_root().join("apps")
 }
 
 fn measure(app: &'static App) -> Result<Record, String> {
@@ -241,15 +244,15 @@ fn measure(app: &'static App) -> Result<Record, String> {
     install(&fixture)?;
     let package = installed(app, &fixture)?;
 
-    let artifact = crate::repo_root().join(ARTIFACTS).join(app.name);
+    let artifact = artifact_root().join(app.name);
     if let Some(directory) = artifact.parent() {
         fs::create_dir_all(directory)
             .map_err(|error| format!("{}: {error}", directory.display()))?;
     }
 
     let includes = include_paths(app, &fixture)?;
-    let stdout = pack(&fixture, &package.entry, &artifact, &includes)?;
-    let summary = PackSummary::parse(&stdout)?;
+    pack(&fixture, &package.entry, &artifact, &includes)?;
+    let summary = PackSummary::read(&artifact)?;
     let bytes = fs::metadata(&artifact)
         .map_err(|error| format!("{}: {error}", artifact.display()))?
         .len();
@@ -417,38 +420,28 @@ struct PackSummary {
 }
 
 impl PackSummary {
-    /// `packed 107 files, 18 capabilities (1091892 bytes payload, 10952412 bytes total) -> tsc`.
-    fn parse(stdout: &str) -> Result<Self, String> {
-        let line = stdout
-            .lines()
-            .find(|line| line.starts_with("packed "))
-            .ok_or_else(|| format!("pack printed no summary:\n{}", stdout.trim()))?;
-        let tokens: Vec<&str> = line.split_whitespace().collect();
-        // The counters are the two standalone numbers and the one that carries the opening
-        // parenthesis; the literals around them have to match, or the format moved.
-        let shape_matches = tokens.len() >= 12
-            && tokens[0] == "packed"
-            && tokens[2] == "files,"
-            && tokens[4] == "capabilities"
-            && tokens[6] == "bytes"
-            && tokens[7] == "payload,"
-            && tokens[9] == "bytes"
-            && tokens[10] == "total)";
-        if !shape_matches {
-            return Err(format!("unexpected pack summary: {line}"));
-        }
-
-        let payload = tokens[5]
-            .strip_prefix('(')
-            .ok_or_else(|| format!("unexpected pack summary: {line}"))?;
-        let number = |text: &str| {
-            text.parse::<u64>()
-                .map_err(|error| format!("unexpected pack summary `{line}`: {error}"))
-        };
+    /// Decode the payload the same way the runtime does instead of parsing the CLI's
+    /// human-readable summary.
+    fn read(artifact: &Path) -> Result<Self, String> {
+        let bytes =
+            fs::read(artifact).map_err(|error| format!("{}: {error}", artifact.display()))?;
+        let trailer_start = bytes
+            .len()
+            .checked_sub(thinpack_pack::TRAILER_LEN)
+            .ok_or_else(|| format!("{}: no thinpack trailer", artifact.display()))?;
+        let payload_len = thinpack_pack::trailer_payload_len(&bytes[trailer_start..])
+            .ok_or_else(|| format!("{}: no thinpack trailer", artifact.display()))?;
+        let payload_len = usize::try_from(payload_len)
+            .map_err(|_| format!("{}: payload is too large", artifact.display()))?;
+        let payload_start = trailer_start
+            .checked_sub(payload_len)
+            .ok_or_else(|| format!("{}: truncated payload", artifact.display()))?;
+        let pack = thinpack_pack::Pack::read(&bytes[payload_start..trailer_start])
+            .map_err(|error| format!("{}: {error}", artifact.display()))?;
         Ok(Self {
-            files: number(tokens[1])?,
-            capabilities: number(tokens[3])?,
-            payload_bytes: number(payload)?,
+            files: pack.manifest.files.len() as u64,
+            capabilities: pack.manifest.capabilities.len() as u64,
+            payload_bytes: payload_len as u64,
         })
     }
 }
@@ -496,21 +489,6 @@ impl Baseline {
     fn matches(&self, host: &str) -> bool {
         self.target == host && self.backend == BACKEND && self.profile == PROFILE
     }
-}
-
-fn host_triple() -> Result<String, String> {
-    let output = Command::new("rustc")
-        .arg("-vV")
-        .output()
-        .map_err(|error| format!("rustc: {error}"))?;
-    if !output.status.success() {
-        return Err(format!("rustc -vV failed ({})", output.status));
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    text.lines()
-        .find_map(|line| line.strip_prefix("host: "))
-        .map(str::to_owned)
-        .ok_or_else(|| "rustc -vV printed no host line".to_owned())
 }
 
 fn read_baseline(path: &Path) -> Result<Baseline, String> {
@@ -683,6 +661,8 @@ fn append_summary(path: &Path, markdown: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::{APPS, App, Baseline, PackSummary, Record, compare};
 
     const HOST: &str = "x86_64-unknown-linux-gnu";
@@ -709,19 +689,44 @@ mod tests {
     }
 
     #[test]
-    fn parses_the_pack_summary() {
-        let summary = PackSummary::parse(
-            "packed 10 files, 14 capabilities (56042 bytes payload, 6068130 bytes total) -> js-yaml\n",
-        )
-        .expect("summary");
-        assert_eq!(summary.files, 10);
-        assert_eq!(summary.capabilities, 14);
-        assert_eq!(summary.payload_bytes, 56042);
+    fn reads_the_summary_from_a_payload() {
+        let manifest = thinpack_pack::Manifest {
+            entry: "/app/main.js".to_owned(),
+            capabilities: vec!["assert".to_owned(), "fs".to_owned()],
+            template: thinpack_pack::Template {
+                version: "1.0.0".to_owned(),
+                backend: thinpack_pack::Backend::QuickJs,
+                capabilities_hash: 0,
+            },
+            files: vec![thinpack_pack::FileRecord {
+                path: "/app/main.js".to_owned(),
+                offset: 0,
+                length: 0,
+            }],
+            assets: Vec::new(),
+        };
+        let payload = thinpack_pack::assemble(&manifest, b"", thinpack_pack::Compression::None)
+            .expect("assemble");
+        let binary = thinpack_pack::append_to_binary(b"", &payload).expect("append");
+        let path =
+            std::env::temp_dir().join(format!("thinpack-apps-summary-{}", std::process::id()));
+        fs::write(&path, binary).expect("write the artifact");
+
+        let summary = PackSummary::read(&path).expect("summary");
+        assert_eq!(summary.files, 1);
+        assert_eq!(summary.capabilities, 2);
+        assert_eq!(summary.payload_bytes, payload.len() as u64);
+
+        let _ = fs::remove_file(path);
     }
 
     #[test]
-    fn rejects_a_moved_summary() {
-        assert!(PackSummary::parse("packed 10 files and 14 capabilities\n").is_err());
+    fn rejects_a_file_without_a_trailer() {
+        let path =
+            std::env::temp_dir().join(format!("thinpack-apps-no-trailer-{}", std::process::id()));
+        fs::write(&path, b"not a packed executable").expect("write the file");
+        assert!(PackSummary::read(&path).is_err());
+        let _ = fs::remove_file(path);
     }
 
     #[test]

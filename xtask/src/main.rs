@@ -1,5 +1,7 @@
 mod apps;
 
+mod build;
+
 mod capabilities;
 
 mod dist;
