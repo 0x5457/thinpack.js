@@ -94,10 +94,12 @@ about 29% faster (pi: 983 ms → 702 ms); `V82JSC_NO_BC_CACHE=1` disables it, an
 ### Module format
 
 Entry and dependency formats follow Node.js: `.mjs` is an ES module, `.cjs` is CommonJS, and a
-`.js` file is CommonJS unless the nearest `package.json` declares `"type": "module"`. A `.js`
-file that contains ESM syntax but is loaded as CommonJS fails to compile, and the runtime names
-the file and detected format, then points at the two ways to ask for ESM: rename it to `.mjs` or
-declare `"type": "module"` in that package.
+`.js` file is CommonJS unless the nearest `package.json` declares `"type": "module"`. Packing
+parses each JavaScript file in the format the loader will use, so a file containing the syntax of
+the other format fails at pack time: the error names the file and both remedies — rename it to
+`.mjs` or add `"type": "module"` to that package, and the mirror case points at `.cjs` and at
+removing the declaration. `.cjs` and `.mjs` fix their format by extension and keep the parser's
+own diagnostic. The runtime keeps the same check for modules that reach it another way.
 
 ## Size
 
@@ -235,7 +237,8 @@ for adding a module.
   X25519. DSA, DH, Ed448 and X448 keys are rejected; encrypted PKCS#1/SEC1 PEM is not
   supported (PKCS#8 encryption is).
 - WebAssembly is always available and cannot be trimmed (WAMR on QuickJS, about 217 KB).
-- ESM loader hooks run inside synchronous checkpoints, so hooks that wait on I/O fail.
+- ESM loader hooks run inside synchronous checkpoints, so hooks that wait on I/O fail. A hook
+  that assigns a module format is invisible to packing, which follows the `package.json` rule.
 - `/app/**` comes from the payload: `fs` reads it, writes return `EROFS`; anything outside
   `/app` goes to the host file system.
 - The artifact's `process.argv` is `[execPath, invoked path, ...args]` (same shape as Node

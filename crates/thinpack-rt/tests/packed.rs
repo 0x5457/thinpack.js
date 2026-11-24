@@ -238,6 +238,24 @@ parentPort.postMessage('worker loaded from the packed VFS');
         capabilities: &["assert", "worker_threads"],
         error: None,
     },
+    // The analyzer's format check rests on this: a packed `package.json` makes the
+    // runtime read `.js` files as ES modules.
+    PackedTest {
+        name: "packed::esm-js-in-module-package",
+        directory: "esm-js-in-module-package",
+        entry: "/app/main.js",
+        files: &[
+            ("/app/package.json", r#"{"type": "module"}"#),
+            (
+                "/app/main.js",
+                "import { value } from './value.js';\n\
+                 if (value !== 42) throw new Error(`unexpected value: ${value}`);\n",
+            ),
+            ("/app/value.js", "export const value = 42;\n"),
+        ],
+        capabilities: &[],
+        error: None,
+    },
     PackedTest {
         name: "packed::commonjs-esm-diagnostic",
         directory: "commonjs-esm-diagnostic",

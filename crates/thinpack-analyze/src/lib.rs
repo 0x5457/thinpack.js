@@ -14,7 +14,7 @@ use oxc_ast_visit::{VisitJs, walk_js};
 use oxc_parser::Parser;
 use oxc_semantic::{Semantic, SemanticBuilder, SymbolId};
 use oxc_span::SourceType;
-use thinpack_resolve::FileSystem;
+use thinpack_resolve::{FileSystem, Format};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Warning {
@@ -53,6 +53,13 @@ pub enum Error {
         path: PathBuf,
         message: String,
     },
+    /// The format the loader will read the file in cannot be decided, or the
+    /// source is written in the other format. Either way the file would fail
+    /// only once the artifact runs.
+    Format {
+        path: PathBuf,
+        message: String,
+    },
     Resolve {
         specifier: String,
         from: PathBuf,
@@ -67,8 +74,9 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Read { path, message } => write!(formatter, "{}: {message}", path.display()),
-            Self::Parse { path, message } => {
+            Self::Read { path, message }
+            | Self::Parse { path, message }
+            | Self::Format { path, message } => {
                 write!(formatter, "{}: {message}", path.display())
             }
             Self::Resolve {
@@ -94,9 +102,10 @@ impl std::error::Error for Error {}
 /// # Errors
 ///
 /// Returns [`Error::Read`] for unreadable or non-UTF-8 modules, [`Error::Parse`]
-/// when a module does not parse, [`Error::Resolve`] for unresolvable non-optional
-/// specifiers and [`Error::UnknownBuiltin`] for `node:` builtins that thinpack
-/// does not ship.
+/// when a module does not parse in the format it will be loaded in, [`Error::Format`]
+/// when that format is undecidable or contradicts the source, [`Error::Resolve`]
+/// for unresolvable non-optional specifiers and [`Error::UnknownBuiltin`] for
+/// `node:` builtins that thinpack does not ship.
 pub fn analyze(entry: &Path, fs: &impl FileSystem) -> Result<Analysis, Error> {
     let mut pending = VecDeque::from([entry.to_path_buf()]);
     let mut visited = BTreeSet::new();
@@ -123,7 +132,7 @@ pub fn analyze(entry: &Path, fs: &impl FileSystem) -> Result<Analysis, Error> {
             message: "module is not valid UTF-8".to_owned(),
         })?;
 
-        let specifiers = parse_specifiers(&source, &path, &mut warnings)?;
+        let specifiers = parse_specifiers(&source, &path, fs, &mut warnings)?;
         for ((specifier, is_import), optional) in specifiers {
             if let Some(module) = thinpack_caps::module_for_builtin(&specifier) {
                 if module.optional && optional {
@@ -202,28 +211,86 @@ pub fn analyze(entry: &Path, fs: &impl FileSystem) -> Result<Analysis, Error> {
 
 type SpecifierEntry = ((String, bool), bool);
 
+/// The parser dialect for a file: the extension supplies the language (JavaScript,
+/// JSX, or JavaScript for an unknown extension) and [`thinpack_resolve::format_of`]
+/// supplies the module kind the loader will read it in. Parsing with the loader's
+/// rule — instead of letting a generic `.js` accept both dialects — is what makes
+/// packing reject a file whose syntax and format disagree, rather than leaving that
+/// failure to the artifact.
+///
+/// The returned format is present only when it decided the dialect. `.cjs` and
+/// `.mjs` name their format, and TypeScript is not a language the loader can execute
+/// as either format, so those keep oxc's own choice and are not diagnosed against the
+/// manifest.
+fn parser_dialect(
+    path: &Path,
+    fs: &impl FileSystem,
+) -> Result<(SourceType, Option<Format>), Error> {
+    let source_type = SourceType::from_path(path).unwrap_or_default();
+    let format_from_extension = path
+        .extension()
+        .is_some_and(|extension| extension == "cjs" || extension == "mjs");
+    if source_type.is_typescript() || format_from_extension {
+        return Ok((source_type, None));
+    }
+    let format = thinpack_resolve::format_of(path, fs).map_err(|error| Error::Format {
+        path: path.to_path_buf(),
+        message: error.to_string(),
+    })?;
+    let source_type = match format {
+        Format::Esm => source_type.with_module(true),
+        Format::CommonJs => source_type.with_commonjs(true),
+        // JSON is data, not a module; `analyze` skips it before parsing.
+        Format::Json => source_type,
+    };
+    Ok((source_type, Some(format)))
+}
+
+/// Explains a file whose syntax belongs to the other module format than the one its
+/// path resolves to. The loader would reject it after the artifact is written, so
+/// packing fails first and names the two ways to ask for the format it is written in.
+fn format_mismatch(
+    source: &str,
+    allocator: &Allocator,
+    source_type: SourceType,
+    format: Format,
+) -> Option<String> {
+    let (other, message) = match format {
+        Format::Esm => (
+            source_type.with_commonjs(true),
+            "uses CommonJS syntax but is loaded as an ES module; rename it to .cjs or remove \"type\": \"module\" from the nearest package.json",
+        ),
+        Format::CommonJs => (
+            source_type.with_module(true),
+            "uses ES module syntax but is loaded as CommonJS; rename it to .mjs or add \"type\": \"module\" to the nearest package.json",
+        ),
+        Format::Json => return None,
+    };
+    Parser::new(allocator, source, other)
+        .parse()
+        .diagnostics
+        .is_empty()
+        .then_some(message.to_owned())
+}
+
 fn parse_specifiers(
     source: &str,
     path: &Path,
+    fs: &impl FileSystem,
     warnings: &mut Vec<Warning>,
 ) -> Result<Vec<SpecifierEntry>, Error> {
     let allocator = Allocator::default();
-    // `.cjs` parses as CommonJS (top-level `return` and `new.target` are legal)
-    // and `.mjs` as an ES module. A generic `.js` is either, so when the first
-    // attempt — unambiguous for `.js`, ESM for unknown extensions — rejects the
-    // source, retry it as CommonJS; files that are neither still fail.
-    let (source_type, may_retry) = SourceType::from_path(path).map_or_else(
-        |_| (SourceType::default(), true),
-        |source_type| (source_type, source_type.is_unambiguous()),
-    );
-    let mut parsed = Parser::new(&allocator, source, source_type).parse();
-    if may_retry && !parsed.diagnostics.is_empty() {
-        let commonjs = Parser::new(&allocator, source, SourceType::cjs()).parse();
-        if commonjs.diagnostics.is_empty() {
-            parsed = commonjs;
-        }
-    }
+    let (source_type, format) = parser_dialect(path, fs)?;
+    let parsed = Parser::new(&allocator, source, source_type).parse();
     if !parsed.diagnostics.is_empty() {
+        if let Some(format) = format
+            && let Some(message) = format_mismatch(source, &allocator, source_type, format)
+        {
+            return Err(Error::Format {
+                path: path.to_path_buf(),
+                message,
+            });
+        }
         let messages: Vec<String> = parsed.diagnostics.iter().map(ToString::to_string).collect();
         return Err(Error::Parse {
             path: path.to_path_buf(),
@@ -552,15 +619,88 @@ mod tests {
     #[test]
     fn collects_esm_specifiers() {
         let fs = MemoryFs::new(&[
+            ("/app/package.json", r#"{"type": "module"}"#),
             (
-                "/app/main.mjs",
+                "/app/main.js",
                 "import './a.js';\nexport * from './b.js';\n",
             ),
             ("/app/a.js", "export const a = 1;\n"),
             ("/app/b.js", "export const b = 1;\n"),
         ]);
-        let analysis = analyze(Path::new("/app/main.mjs"), &fs).unwrap();
+        let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
         assert_eq!(analysis.files.len(), 3);
+    }
+
+    #[test]
+    fn a_nested_manifest_decides_the_dialect_of_its_files() {
+        let fs = MemoryFs::new(&[
+            ("/app/package.json", r#"{"name": "app"}"#),
+            ("/app/main.js", "require('./sub/x.js');\n"),
+            ("/app/sub/package.json", r#"{"type": "module"}"#),
+            ("/app/sub/x.js", "export const x = 1;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
+        assert!(analysis.files.contains(&PathBuf::from("/app/sub/x.js")));
+    }
+
+    #[test]
+    fn a_typescript_file_is_analyzed_but_not_format_checked() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.js",
+                "const helper = require('./helper.ts');\nconsole.log(helper);\n",
+            ),
+            ("/app/helper.ts", "export const helper: number = 1;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
+        assert!(analysis.files.contains(&PathBuf::from("/app/helper.ts")));
+    }
+
+    #[test]
+    fn a_js_file_loaded_as_commonjs_cannot_use_es_module_syntax() {
+        let fs = MemoryFs::new(&[
+            ("/app/package.json", r#"{"name": "esm-bundle"}"#),
+            (
+                "/app/main.js",
+                "import { readFileSync } from 'node:fs';\nconsole.log(readFileSync);\n",
+            ),
+        ]);
+        match analyze(Path::new("/app/main.js"), &fs) {
+            Err(Error::Format { path, message }) => {
+                assert_eq!(path, PathBuf::from("/app/main.js"));
+                assert!(message.contains("loaded as CommonJS"), "{message}");
+                assert!(message.contains("rename it to .mjs"), "{message}");
+                assert!(message.contains("\"type\": \"module\""), "{message}");
+            }
+            other => panic!("expected a format error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_js_file_loaded_as_esm_cannot_use_commonjs_syntax() {
+        let fs = MemoryFs::new(&[
+            ("/app/package.json", r#"{"type": "module"}"#),
+            ("/app/main.js", "return;\n"),
+        ]);
+        match analyze(Path::new("/app/main.js"), &fs) {
+            Err(Error::Format { message, .. }) => {
+                assert!(message.contains("loaded as an ES module"), "{message}");
+                assert!(message.contains("remove \"type\": \"module\""), "{message}");
+            }
+            other => panic!("expected a format error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_cjs_file_keeps_the_parser_message_for_module_syntax() {
+        let fs = MemoryFs::new(&[("/app/main.cjs", "import 'node:fs';\n")]);
+        match analyze(Path::new("/app/main.cjs"), &fs) {
+            Err(Error::Parse { path, message }) => {
+                assert_eq!(path, PathBuf::from("/app/main.cjs"));
+                assert!(message.contains("import"), "{message}");
+            }
+            other => panic!("expected a parse error, got {other:?}"),
+        }
     }
 
     #[test]
