@@ -259,13 +259,13 @@ dependencies = [
 
 [[package]]
 name = "brotli"
-version = "9.1.1"
+version = "9.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "627b7cfb0578f0eafce087a90fcd40add1231900b69e4d4de2d456260a4f5d81"
+checksum = "9071f285ed78f04f37d675abaaef5de7689e2f30a216c8dc6795465d81910a13"
 dependencies = [
  "alloc-no-stdlib 3.0.0",
  "alloc-stdlib 0.3.0",
- "brotli-decompressor 6.3.1",
+ "brotli-decompressor 6.3.2",
 ]
 
 [[package]]
@@ -280,9 +280,9 @@ dependencies = [
 
 [[package]]
 name = "brotli-decompressor"
-version = "6.3.1"
+version = "6.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75c74c9c51b9140663e196b5fb88bc94c334d7a497c8311cb759d8557874747f"
+checksum = "cc031cd87c6529082b0b65c604e86af0ed7744841b17ccfe60b1e31fa606179e"
 dependencies = [
  "alloc-no-stdlib 3.0.0",
  "alloc-stdlib 0.3.0",
@@ -668,7 +668,7 @@ dependencies = [
  "bit-set",
  "bit-vec",
  "boxed_error",
- "brotli-decompressor 6.3.1",
+ "brotli-decompressor 6.3.2",
  "bytes",
  "cooked-waker",
  "deno_error",
@@ -1002,9 +1002,9 @@ checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 
 [[package]]
 name = "form_urlencoded"
-version = "1.2.2"
+version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
+checksum = "afa489199eaffb1211795df1c6236ce1ad0d41a6fa45250add73e3b02420f06e"
 dependencies = [
  "percent-encoding",
 ]
@@ -3221,7 +3221,7 @@ version = "0.1.0"
 name = "thinpack-cli"
 version = "0.1.0"
 dependencies = [
- "brotli 9.1.1",
+ "brotli 9.1.3",
  "thinpack-analyze",
  "thinpack-caps",
  "thinpack-pack",
@@ -3249,7 +3249,7 @@ dependencies = [
 name = "thinpack-js"
 version = "0.1.0"
 dependencies = [
- "brotli 9.1.1",
+ "brotli 9.1.3",
 ]
 
 [[package]]
@@ -3672,7 +3672,7 @@ dependencies = [
 name = "thinpack-pack"
 version = "0.1.0"
 dependencies = [
- "brotli-decompressor 6.3.1",
+ "brotli-decompressor 6.3.2",
 ]
 
 [[package]]
@@ -3954,9 +3954,9 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "url"
-version = "2.5.8"
+version = "2.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+checksum = "f00cd2407bb42c0ef17be88d4cf020f5cceffd121665bac9b8b9493a369b3b1a"
 dependencies = [
  "form_urlencoded",
  "idna",
