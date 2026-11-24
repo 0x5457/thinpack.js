@@ -3,13 +3,12 @@ use std::net::{IpAddr, SocketAddr};
 
 use deno_core::{OpDecl, op2};
 use deno_error::JsErrorBox;
-use hickory_resolver::ResolveErrorKind;
-use hickory_resolver::config::{NameServerConfig, NameServerConfigGroup, ResolverConfig};
-use hickory_resolver::name_server::TokioConnectionProvider;
-use hickory_resolver::proto::ProtoErrorKind;
+use hickory_resolver::config::{NameServerConfig, ResolverConfig};
+use hickory_resolver::lookup::Lookup;
+use hickory_resolver::net::runtime::TokioRuntimeProvider;
+use hickory_resolver::net::{DnsError, NetError};
 use hickory_resolver::proto::op::ResponseCode;
 use hickory_resolver::proto::rr::{RData, RecordType};
-use hickory_resolver::proto::xfer::Protocol;
 use hickory_resolver::{Resolver, TokioResolver};
 #[cfg(windows)]
 use tokio::net::lookup_host;
@@ -206,7 +205,7 @@ async fn op_dns_lookup(#[string] hostname: String, family: u8) -> Result<String,
 
 fn system_resolver() -> Result<TokioResolver, JsErrorBox> {
     let builder = TokioResolver::builder_tokio().map_err(resolver_error)?;
-    Ok(builder.build())
+    builder.build().map_err(resolver_error)
 }
 
 fn custom_resolver(servers: &str) -> Result<TokioResolver, JsErrorBox> {
@@ -228,24 +227,25 @@ fn custom_resolver(servers: &str) -> Result<TokioResolver, JsErrorBox> {
                     })
             })
             .map_err(|error| JsErrorBox::new("Error", format!("EINVAL\0{error}")))?;
-        configs.push(NameServerConfig {
-            socket_addr: address,
-            protocol: Protocol::Udp,
-            tls_dns_name: None,
-            http_endpoint: None,
-            trust_negative_responses: true,
-            bind_addr: None,
-        });
+        // `NameServerConfig` is non-exhaustive; `udp()` is the supported
+        // constructor, and the port lives on its connection list.
+        let mut name_server = NameServerConfig::udp(address.ip());
+        for connection in &mut name_server.connections {
+            connection.port = address.port();
+        }
+        configs.push(name_server);
     }
-    let config = ResolverConfig::from_parts(None, Vec::new(), NameServerConfigGroup::from(configs));
-    Ok(Resolver::builder_with_config(config, TokioConnectionProvider::default()).build())
+    let config = ResolverConfig::from_parts(None, Vec::new(), configs);
+    Resolver::builder_with_config(config, TokioRuntimeProvider::default())
+        .build()
+        .map_err(resolver_error)
 }
 
 #[expect(
     clippy::needless_pass_by_value,
     reason = "used as a direct `map_err` handler, which requires an owned error"
 )]
-fn resolver_error(error: hickory_resolver::ResolveError) -> JsErrorBox {
+fn resolver_error(error: NetError) -> JsErrorBox {
     JsErrorBox::new("Error", format!("ESERVFAIL\0{error}"))
 }
 
@@ -253,18 +253,15 @@ fn resolver_error(error: hickory_resolver::ResolveError) -> JsErrorBox {
     clippy::needless_pass_by_value,
     reason = "used as a direct `map_err` handler, which requires an owned error"
 )]
-fn request_error(error: hickory_resolver::ResolveError) -> JsErrorBox {
-    let code = match error.kind() {
-        ResolveErrorKind::Proto(proto) => match proto.kind() {
-            ProtoErrorKind::NoRecordsFound { response_code, .. } => {
-                if *response_code == ResponseCode::NXDomain {
-                    "ENOTFOUND"
-                } else {
-                    "ENODATA"
-                }
+fn request_error(error: NetError) -> JsErrorBox {
+    let code = match &error {
+        NetError::Dns(DnsError::NoRecordsFound(no_records)) => {
+            if no_records.response_code == ResponseCode::NXDomain {
+                "ENOTFOUND"
+            } else {
+                "ENODATA"
             }
-            _ => "ESERVFAIL",
-        },
+        }
         _ => "ESERVFAIL",
     };
     JsErrorBox::new("Error", format!("{code}\0{error}"))
@@ -303,12 +300,12 @@ fn record_json(record: &RData) -> Option<String> {
         RData::PTR(name) => Some(json_string(&name_text(&name.0))),
         RData::MX(mx) => Some(format!(
             "{{\"priority\":{},\"exchange\":{}}}",
-            mx.preference(),
-            json_string(&name_text(mx.exchange()))
+            mx.preference,
+            json_string(&name_text(&mx.exchange))
         )),
         RData::TXT(txt) => {
             let chunks: Vec<String> = txt
-                .txt_data()
+                .txt_data
                 .iter()
                 .map(|chunk| json_string(&String::from_utf8_lossy(chunk)))
                 .collect();
@@ -316,6 +313,16 @@ fn record_json(record: &RData) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// Renders the answer section of a lookup as the JSON array the JS layer parses.
+fn records_json(lookup: &Lookup) -> String {
+    let records: Vec<String> = lookup
+        .answers()
+        .iter()
+        .filter_map(|record| record_json(&record.data))
+        .collect();
+    format!("[{}]", records.join(","))
 }
 
 #[op2(async(lazy), fast)]
@@ -349,8 +356,7 @@ async fn op_dns_resolve(
         .lookup(hostname.as_str(), record_type)
         .await
         .map_err(request_error)?;
-    let records: Vec<String> = lookup.iter().filter_map(record_json).collect();
-    Ok(format!("[{}]", records.join(",")))
+    Ok(records_json(&lookup))
 }
 
 #[op2(async(lazy), fast)]
@@ -359,7 +365,7 @@ async fn op_dns_reverse(
     #[string] servers: String,
     #[string] address: String,
 ) -> Result<String, JsErrorBox> {
-    let ip = address
+    let ip: IpAddr = address
         .parse()
         .map_err(|error| JsErrorBox::new("Error", format!("EINVAL\0{error}")))?;
     let resolver = if servers.is_empty() {
@@ -367,10 +373,9 @@ async fn op_dns_reverse(
     } else {
         custom_resolver(&servers)?
     };
-    let lookup = resolver.reverse_lookup(ip).await.map_err(request_error)?;
-    let names: Vec<String> = lookup
-        .iter()
-        .map(|name| json_string(&name_text(&name.0)))
-        .collect();
-    Ok(format!("[{}]", names.join(",")))
+    let lookup = resolver
+        .reverse_lookup(hickory_resolver::proto::rr::Name::from(ip))
+        .await
+        .map_err(request_error)?;
+    Ok(records_json(&lookup))
 }
