@@ -3,3 +3,10 @@ CFLAGS_x86_64_unknown_linux_gnu = { value = "-Os", force = false }
 
 [alias]
 xtask = "run --quiet --package xtask --"
+
+[target.'cfg(target_env = "msvc")']
+# rusty_v8's prebuilt archives link the static CRT while rustc links the dynamic one, so `link`
+# reports the duplicated default library on every V8 build. Both sets of CRT objects describe the
+# same ABI and only one of them is kept; `cargo xtask dist` leaves `RUSTFLAGS` unset for MSVC
+# targets so that this applies to release builds too.
+rustflags = ["-C", "link-arg=/IGNORE:4098"]

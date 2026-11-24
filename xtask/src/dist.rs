@@ -178,11 +178,13 @@ fn build(config: &Config, table: &[capabilities::Module]) -> Result<PathBuf, Str
     command.arg("--target-dir").arg(&target_dir);
     command.args(["--target", &config.target]);
     // The template profile: `crates/thinpack-cli/src/templates.rs` rebuilds templates with the
-    // same flags, so a downloaded pair and a locally rebuilt one agree.
-    command.env(
-        "RUSTFLAGS",
-        appended(env::var("RUSTFLAGS").ok(), &rust_flags(&config.target)),
-    );
+    // same flags, so a downloaded pair and a locally rebuilt one agree. An empty value would
+    // still shadow the per-target `rustflags` in `.cargo/config.toml`, which is where the MSVC
+    // link arguments live, so it is only applied when there is something to say.
+    let rustflags = appended(env::var("RUSTFLAGS").ok(), &rust_flags(&config.target));
+    if !rustflags.trim().is_empty() {
+        command.env("RUSTFLAGS", rustflags);
+    }
     // MSVC has no gcc-style unwind flags; everything else is clang or gcc.
     if !config.target.contains("msvc") {
         command.env("CFLAGS", appended(env::var("CFLAGS").ok(), C_FLAGS));
