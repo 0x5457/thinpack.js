@@ -241,8 +241,9 @@ for adding a module.
   that assigns a module format is invisible to packing, which follows the `package.json` rule.
 - `/app/**` comes from the payload: `fs` reads it, writes return `EROFS`; anything outside
   `/app` goes to the host file system.
-- The payload is rooted at the entry's nearest `package.json`. A dependency resolved above that
-  root (a hoisted monorepo install) fails the pack: the artifact could not resolve it.
+- The payload is rooted at the entry's nearest `package.json`. A required dependency resolved
+  above that root (a hoisted monorepo install) fails the pack; an optional one is left out with
+  a warning, and the app must handle its absence.
 - The artifact's `process.argv` is `[execPath, invoked path, ...args]` (same shape as Node
   SEA); the only runtime switch is `--warm-cache`, every other argument goes to the app.
 - `require.extensions` handlers are not invoked and `module.parent` is not implemented;

@@ -13,7 +13,7 @@ pub(crate) fn pack_command(args: Vec<String>) -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     let options = parsed.options;
-    let analyzed = analyze_entry(&options)?;
+    let analyzed = analyze_entry(&options, true)?;
 
     if options.list_capabilities {
         print_capabilities(&analyzed.analysis, &analyzed.capabilities, &analyzed.root);
@@ -53,7 +53,7 @@ pub(crate) fn run_command(args: Vec<String>) -> Result<i32, Box<dyn Error>> {
         return Ok(0);
     }
     let options = parsed.options;
-    let analyzed = analyze_entry(&options)?;
+    let analyzed = analyze_entry(&options, false)?;
     let template = resolve_template(&options, &analyzed.capabilities)?;
     let status = std::process::Command::new(&template.path)
         .arg(&analyzed.entry)
