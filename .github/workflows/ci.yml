@@ -136,16 +136,16 @@ jobs:
           cache: false
       - uses: Swatinem/rust-cache@v2
 
-      # The runtime itself is covered by the windows-runtime job below; this
-      # job keeps a fast, engine-free check of the host tooling: analysis,
-      # resolution, the payload format and the CLI.
+      # The runtime itself is covered by the windows-smoke and windows-tests
+      # jobs below; this job keeps a fast, engine-free check of the host
+      # tooling: analysis, resolution, the payload format and the CLI.
       - run: cargo test -p thinpack-analyze -p thinpack-resolve -p thinpack-pack
       - run: cargo build -p thinpack-cli --release
 
-  windows-runtime:
-    name: Runtime (windows-latest)
+  windows-smoke:
+    name: Runtime smokes (windows-latest)
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -156,7 +156,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       # Template used by the smokes: ambient modules plus fs/os/dns/
-      # child_process/net/cluster. The full default runtime is built below.
+      # child_process/net/cluster. The full default runtime is built in
+      # `windows-tests` instead; see the note there for why that is a job of its
+      # own.
       - run: >-
           cargo build -p thinpack-rt -p thinpack-cli --no-default-features
           --features thinpack-rt/backend-quickjs,thinpack-rt/node-process,thinpack-rt/node-console,thinpack-rt/node-timers,thinpack-rt/node-buffer,thinpack-rt/node-url,thinpack-rt/node-querystring,thinpack-rt/node-util,thinpack-rt/node-fs,thinpack-rt/node-dns,thinpack-rt/node-child-process,thinpack-rt/node-os,thinpack-rt/node-net,thinpack-rt/node-cluster
@@ -206,6 +208,25 @@ jobs:
           ./hello-cluster.exe > cluster.out || true
           cat cluster.out
           grep -q "primary: worker online" cluster.out
+
+  windows-tests:
+    name: Runtime tests (windows-latest)
+    # Two jobs rather than one: the capability-sliced template of `windows-smoke`
+    # and the full runtime here are different feature sets of the same crates, so
+    # in a single job the second build recompiles the workspace and the cache
+    # carries only the last configuration, leaving every run warm for one of them
+    # and cold for the other. Apart, each job's cache stays warm and the two
+    # builds run at once, so a run costs the longer job instead of the sum.
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          rustflags: ""
+          cache: false
+      - uses: Swatinem/rust-cache@v2
 
       - name: Full runtime (all builtins)
         run: cargo build -p thinpack-rt
