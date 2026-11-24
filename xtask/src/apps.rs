@@ -31,7 +31,7 @@ const ARTIFACTS: &str = "target/apps";
 
 /// `--rebuild` uses this backend and the small profile (`templates.rs`); the baseline records
 /// both so a run on another backend or profile can never be compared against it.
-const BACKEND: &str = "quickjs";
+const BACKEND: &str = thinpack_pack::Backend::QuickJs.name();
 const PROFILE: &str = "small";
 
 /// Growth allowed before the gate fails. Sizes are reproducible for a fixed input, but the

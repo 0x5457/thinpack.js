@@ -21,7 +21,7 @@ pub(crate) fn run_packed(pack: Pack) -> ExitCode {
     let template = &pack.manifest.template;
     let own_hash = thinpack_caps::capabilities_hash(&enabled);
     if template.version != env!("CARGO_PKG_VERSION")
-        || template.backend != BACKEND.to_string()
+        || template.backend != BACKEND
         || template.capabilities_hash != own_hash
     {
         eprintln!(

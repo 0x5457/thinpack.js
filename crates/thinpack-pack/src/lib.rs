@@ -12,6 +12,55 @@ pub const TEMPLATE_API: &str = "1";
 
 pub const TRAILER_LEN: usize = 24;
 
+/// The size-oriented build profile shared by the CLI's `--rebuild`, `xtask dist` and
+/// `xtask size`. Keeping the flags here means a host or target rule changes once.
+pub mod profile {
+    /// C flags for templates: no unwind tables.
+    pub const C_FLAGS: &str = "-fno-asynchronous-unwind-tables -fno-unwind-tables";
+
+    const UNWIND: &str = "-C force-unwind-tables=no";
+    const PACK_RELATIVE_RELOCS: &str = "-C link-arg=-Wl,-z,pack-relative-relocs";
+
+    #[must_use]
+    pub fn append(existing: Option<String>, extra: &str) -> String {
+        match existing {
+            Some(existing) if !existing.trim().is_empty() => format!("{existing} {extra}"),
+            _ => extra.to_owned(),
+        }
+    }
+
+    /// `pack-relative-relocs` is `x86_64` GNU `ld` only, and a static musl `static-pie`
+    /// needs musl >= 1.2.4 for `DT_RELR` startup relocation; MSVC rejects
+    /// `force-unwind-tables=no`.
+    #[must_use]
+    pub fn rust_flags_for_target(target: &str) -> String {
+        if target.contains("msvc") {
+            String::new()
+        } else if target.contains("linux") && target.contains("x86_64") && !target.contains("musl")
+        {
+            format!("{UNWIND} {PACK_RELATIVE_RELOCS}")
+        } else {
+            UNWIND.to_owned()
+        }
+    }
+
+    /// [`rust_flags_for_target`] for the host, as a `'static` string.
+    #[must_use]
+    pub const fn rust_flags() -> &'static str {
+        if cfg!(target_env = "msvc") {
+            ""
+        } else if cfg!(all(
+            target_os = "linux",
+            target_arch = "x86_64",
+            not(target_env = "musl")
+        )) {
+            "-C force-unwind-tables=no -C link-arg=-Wl,-z,pack-relative-relocs"
+        } else {
+            UNWIND
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Compression {
@@ -43,10 +92,77 @@ pub struct AssetRecord {
     pub length: u32,
 }
 
+/// The template's JavaScript engine. One definition for the payload header, the
+/// CLI, xtask and the generated build wiring.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Backend {
+    QuickJs,
+    V8,
+    /// The macOS system `JavaScriptCore` framework; never bundles an engine.
+    Jsc,
+}
+
+impl Backend {
+    pub const ALL: [Self; 3] = [Self::QuickJs, Self::V8, Self::Jsc];
+
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "quickjs" => Some(Self::QuickJs),
+            "v8" => Some(Self::V8),
+            "jsc" => Some(Self::Jsc),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::QuickJs => "quickjs",
+            Self::V8 => "v8",
+            Self::Jsc => "jsc",
+        }
+    }
+
+    #[must_use]
+    pub const fn feature(self) -> &'static str {
+        match self {
+            Self::QuickJs => "backend-quickjs",
+            Self::V8 => "backend-v8",
+            Self::Jsc => "backend-jsc",
+        }
+    }
+
+    #[must_use]
+    pub const fn archive_suffix(self) -> &'static str {
+        match self {
+            Self::QuickJs => "",
+            Self::V8 => "-v8",
+            Self::Jsc => "-jsc",
+        }
+    }
+
+    /// The engine description `thinpack-rt --version` prints.
+    #[must_use]
+    pub const fn engine(self) -> &'static str {
+        match self {
+            Self::QuickJs => "QuickJS-ng via v8x",
+            Self::V8 => "V8",
+            Self::Jsc => "JavaScriptCore (macOS system framework)",
+        }
+    }
+}
+
+impl fmt::Display for Backend {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.name())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Template {
     pub version: String,
-    pub backend: String,
+    pub backend: Backend,
     pub capabilities_hash: u64,
 }
 
@@ -70,7 +186,7 @@ impl Manifest {
         push_count(&mut bytes, self.capabilities.len(), "capabilities")?;
         push_string(&mut bytes, &self.entry)?;
         push_string(&mut bytes, &self.template.version)?;
-        push_string(&mut bytes, &self.template.backend)?;
+        push_string(&mut bytes, self.template.backend.name())?;
         bytes.extend_from_slice(&self.template.capabilities_hash.to_le_bytes());
         for capability in &self.capabilities {
             push_string(&mut bytes, capability)?;
@@ -98,9 +214,13 @@ impl Manifest {
         let file_count = reader.u32()? as usize;
         let capability_count = reader.u32()? as usize;
         let entry = reader.string()?;
+        let version = reader.string()?;
+        let backend = reader.string()?;
+        let backend = Backend::parse(&backend)
+            .ok_or_else(|| Error::Invalid(format!("unknown backend `{backend}`")))?;
         let template = Template {
-            version: reader.string()?,
-            backend: reader.string()?,
+            version,
+            backend,
             capabilities_hash: reader.u64()?,
         };
 
@@ -403,7 +523,7 @@ mod tests {
             capabilities: vec!["console".to_owned(), "process".to_owned()],
             template: Template {
                 version: "0.1.0".to_owned(),
-                backend: "quickjs".to_owned(),
+                backend: Backend::QuickJs,
                 capabilities_hash: 42,
             },
             files: vec![

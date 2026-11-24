@@ -3,18 +3,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::{fmt::Write as _, fs};
 
+use thinpack_pack::profile;
+
 use crate::capabilities;
 use crate::measure::gzip_size;
 
 const MEASUREMENTS_DIR: &str = "measurements";
 const BINARY_NAME: &str = "thinpack-rt";
 
-#[derive(Clone, Copy)]
-pub(crate) enum Backend {
-    QuickJs,
-    V8,
-    Jsc,
-}
+pub(crate) use thinpack_pack::Backend;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Profile {
@@ -34,33 +31,6 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
         Err(message) => {
             eprintln!("{message}");
             ExitCode::FAILURE
-        }
-    }
-}
-
-impl Backend {
-    pub(crate) fn parse(value: &str) -> Option<Self> {
-        match value {
-            "quickjs" => Some(Self::QuickJs),
-            "v8" => Some(Self::V8),
-            "jsc" => Some(Self::Jsc),
-            _ => None,
-        }
-    }
-
-    pub(crate) const fn name(self) -> &'static str {
-        match self {
-            Self::QuickJs => "quickjs",
-            Self::V8 => "v8",
-            Self::Jsc => "jsc",
-        }
-    }
-
-    const fn feature(self) -> &'static str {
-        match self {
-            Self::QuickJs => "backend-quickjs",
-            Self::V8 => "backend-v8",
-            Self::Jsc => "backend-jsc",
         }
     }
 }
@@ -277,10 +247,13 @@ fn build(
         .arg(crate::repo_root().join(&target_dir));
 
     if profile == Profile::Small {
-        command.env("RUSTFLAGS", appended(env::var("RUSTFLAGS").ok(), LINK_ARGS));
         command.env(
-            "CFLAGS_x86_64_unknown_linux_gnu",
-            appended(env::var("CFLAGS_x86_64_unknown_linux_gnu").ok(), C_FLAGS),
+            "RUSTFLAGS",
+            profile::append(env::var("RUSTFLAGS").ok(), profile::rust_flags()),
+        );
+        command.env(
+            "CFLAGS",
+            profile::append(env::var("CFLAGS").ok(), profile::C_FLAGS),
         );
     }
 
@@ -295,23 +268,6 @@ fn build(
     }
 
     Ok(target_dir.join("release").join(BINARY_NAME))
-}
-
-/// `pack-relative-relocs` is `x86_64` GNU `ld` only; MSVC rejects `force-unwind-tables=no`.
-const LINK_ARGS: &str = if cfg!(target_env = "msvc") {
-    ""
-} else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-    "-C force-unwind-tables=no -C link-arg=-Wl,-z,pack-relative-relocs"
-} else {
-    "-C force-unwind-tables=no"
-};
-const C_FLAGS: &str = "-fno-asynchronous-unwind-tables -fno-unwind-tables";
-
-fn appended(existing: Option<String>, extra: &str) -> String {
-    match existing {
-        Some(existing) if !existing.trim().is_empty() => format!("{existing} {extra}"),
-        _ => extra.to_owned(),
-    }
 }
 
 struct Record {

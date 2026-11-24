@@ -1119,7 +1119,8 @@ fn inspect_template(runtime: &Path) -> Result<Template, Box<dyn std::error::Erro
 
     Ok(Template {
         version: version.ok_or("runtime reported no version")?,
-        backend: backend.ok_or("runtime reported no backend")?,
+        backend: thinpack_pack::Backend::parse(&backend.ok_or("runtime reported no backend")?)
+            .ok_or("runtime reported an unknown backend")?,
         capabilities_hash: capabilities_hash.ok_or("runtime reported no capabilities hash")?,
     })
 }

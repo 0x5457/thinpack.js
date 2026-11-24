@@ -12,7 +12,11 @@ const REGISTRY: &str = "crates/thinpack-rt/src/registry.rs";
 const RT_MANIFEST: &str = "crates/thinpack-rt/Cargo.toml";
 const FEATURES_BEGIN: &str = "# BEGIN GENERATED FEATURES";
 const FEATURES_END: &str = "# END GENERATED FEATURES";
-const BACKEND_FEATURES: [&str; 3] = ["backend-quickjs", "backend-v8", "backend-jsc"];
+const BACKEND_FEATURES: [&str; 3] = [
+    thinpack_pack::Backend::QuickJs.feature(),
+    thinpack_pack::Backend::V8.feature(),
+    thinpack_pack::Backend::Jsc.feature(),
+];
 
 fn repo_path(relative: &str) -> PathBuf {
     crate::repo_root().join(relative)

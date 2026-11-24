@@ -234,7 +234,7 @@ fn build_manifest(
             .collect(),
         template: thinpack_pack::Template {
             version: info.version.clone(),
-            backend: info.backend.clone(),
+            backend: info.backend,
             capabilities_hash: info.capabilities_hash,
         },
         files: records,
