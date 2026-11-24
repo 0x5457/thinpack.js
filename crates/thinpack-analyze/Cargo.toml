@@ -14,7 +14,7 @@ oxc_ast_visit = "0.158"
 oxc_parser = "0.158"
 oxc_semantic = "0.158"
 oxc_span = "0.158"
-oxc_str = "0.158"
+oxc_str = "0.159"
 
 [lints]
 workspace = true
