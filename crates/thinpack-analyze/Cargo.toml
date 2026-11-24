@@ -8,7 +8,7 @@ license.workspace = true
 [dependencies]
 thinpack-caps = { workspace = true }
 thinpack-resolve = { workspace = true }
-oxc_allocator = "0.158"
+oxc_allocator = "0.159"
 oxc_ast = "0.158"
 oxc_ast_visit = "0.158"
 oxc_parser = "0.158"
