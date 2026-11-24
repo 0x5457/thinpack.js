@@ -3517,70 +3517,30 @@ fn make_rejected_promise(ctx: JSContextRef, exc: JSValueRef) -> *const Value {
     exc
   };
 
+  // Build the promise in the pending state, attach the tracking handlers, and
+  // reject it last. JSC reports an unhandled rejection at rejection time, so
+  // `Promise.reject(...)` followed by `.catch()` would still notify the host.
+  let mut resolve: JSObjectRef = ptr::null_mut();
+  let mut reject: JSObjectRef = ptr::null_mut();
   let mut e: JSValueRef = ptr::null();
-  let p = unsafe {
-    let global = JSContextGetGlobalObject(ctx);
-    let pkey = JSStringCreateWithUTF8CString(c"Promise".as_ptr());
-    let promise_ctor = JSObjectGetProperty(ctx, global, pkey, &mut e);
-    JSStringRelease(pkey);
-    if promise_ctor.is_null() || !JSValueIsObject(ctx, promise_ctor) {
-      return intern_ctx::<Value>(ctx, JSValueMakeUndefined(ctx));
-    }
-    let rkey = JSStringCreateWithUTF8CString(c"reject".as_ptr());
-    let reject =
-      JSObjectGetProperty(ctx, promise_ctor as JSObjectRef, rkey, &mut e);
-    JSStringRelease(rkey);
-    if reject.is_null() || !JSValueIsObject(ctx, reject) {
-      return intern_ctx::<Value>(ctx, JSValueMakeUndefined(ctx));
-    }
-    let args = [exc];
+  let promise =
+    unsafe { JSObjectMakeDeferredPromise(ctx, &mut resolve, &mut reject, &mut e) };
+  if promise.is_null() || !e.is_null() || reject.is_null() {
+    return intern_ctx::<Value>(ctx, unsafe { JSValueMakeUndefined(ctx) });
+  }
+  crate::jsc::exception::track_promise_pub(ctx, promise);
+  let args = [exc];
+  unsafe {
     JSObjectCallAsFunction(
       ctx,
-      reject as JSObjectRef,
-      promise_ctor as JSObjectRef,
+      reject,
+      promise,
       1,
       args.as_ptr(),
       &mut e,
-    )
-  };
-  if p.is_null() {
-    return intern_ctx::<Value>(ctx, unsafe { JSValueMakeUndefined(ctx) });
+    );
   }
-  // Mark the rejection handled. deno polls the promise state for the module error;
-  // JSC's unhandled-rejection notification would otherwise print the same error
-  // as uncaught before the importer's await attaches its handler.
-  unsafe {
-    let catch_key = JSStringCreateWithUTF8CString(c"catch".as_ptr());
-    let catch = JSObjectGetProperty(ctx, p as JSObjectRef, catch_key, &mut e);
-    JSStringRelease(catch_key);
-    if !catch.is_null() && JSObjectIsFunction(ctx, catch as JSObjectRef) {
-      let noop_js =
-        JSStringCreateWithUTF8CString(c"(()=>{})".as_ptr());
-      let mut noop_exc: JSValueRef = ptr::null();
-      let noop = JSEvaluateScript(
-        ctx,
-        noop_js,
-        ptr::null_mut(),
-        ptr::null_mut(),
-        1,
-        &mut noop_exc,
-      );
-      JSStringRelease(noop_js);
-      if !noop.is_null() {
-        let args = [noop];
-        JSObjectCallAsFunction(
-          ctx,
-          catch as JSObjectRef,
-          p as JSObjectRef,
-          1,
-          args.as_ptr(),
-          &mut e,
-        );
-      }
-    }
-  }
-  crate::jsc::exception::track_promise_pub(ctx, p as JSObjectRef);
-  intern_ctx::<Value>(ctx, p)
+  intern_ctx::<Value>(ctx, promise as JSValueRef)
 }
 
 /// Install live re-export getters on `namespace`: for each `export { local as

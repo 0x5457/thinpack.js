@@ -117,10 +117,8 @@ jobs:
 
       - run: cargo test -p thinpack-core --no-default-features --features backend-jsc
 
-      # Three cases are skipped for engine/framework limits: SharedArrayBuffer is
-      # absent from the system framework, V8 natives syntax is V8-only, and a
-      # throwing dynamically-imported CJS module is also dispatched uncaught.
-      # docs/gaps.md records them.
+      # Two cases are skipped for engine limits: SharedArrayBuffer is absent from the
+      # system framework and V8 natives syntax is V8-only. docs/gaps.md records them.
       - run: cargo test -p thinpack-rt --no-default-features --features backend-jsc,node-all -- --test-threads 8
 
       - run: cargo xtask dist --backend jsc
