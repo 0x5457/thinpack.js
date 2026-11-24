@@ -1,7 +1,9 @@
 mod require;
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use oxc_allocator::Allocator;
@@ -25,6 +27,15 @@ pub struct Warning {
 #[derive(Debug)]
 pub struct Analysis {
     pub files: Vec<PathBuf>,
+    /// Every file the entry reaches without crossing an optional edge: a guarded
+    /// `require`, or an `import()` (a rejected `import()` never fails the pack; the
+    /// app must handle it). Always a subset of `files`; `merge` preserves that.
+    pub required: BTreeSet<PathBuf>,
+    /// The `package.json` files the resolver and [`thinpack_resolve::format_of`] read
+    /// while analyzing. The loader reads the same ones at run time, so the payload
+    /// has to carry them. TypeScript-extension files are not format-checked, so their
+    /// scope manifests are not recorded.
+    pub manifests: BTreeSet<PathBuf>,
     pub builtins: BTreeMap<String, BTreeSet<PathBuf>>,
     pub warnings: Vec<Warning>,
 }
@@ -34,6 +45,10 @@ impl Analysis {
         self.files.extend(other.files);
         self.files.sort();
         self.files.dedup();
+        // A file required by either graph is required by the merged graph; the
+        // optional files are what remains outside this set.
+        self.required.extend(other.required);
+        self.manifests.extend(other.manifests);
         for (builtin, files) in other.builtins {
             self.builtins.entry(builtin).or_default().extend(files);
         }
@@ -107,14 +122,22 @@ impl std::error::Error for Error {}
 /// for unresolvable non-optional specifiers and [`Error::UnknownBuiltin`] for
 /// `node:` builtins that thinpack does not ship.
 pub fn analyze(entry: &Path, fs: &impl FileSystem) -> Result<Analysis, Error> {
-    let mut pending = VecDeque::from([entry.to_path_buf()]);
-    let mut visited = BTreeSet::new();
+    let fs = ManifestRecorder::new(fs);
+    // Required targets are queued in front of optional ones, so the entry's
+    // non-optional closure is complete before any optional file is read and a file
+    // reached both ways is classified by its required edge.
+    let mut pending = VecDeque::from([(entry.to_path_buf(), false)]);
+    let mut files = BTreeSet::new();
+    let mut required = BTreeSet::new();
     let mut builtins: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
     let mut warnings = Vec::new();
 
-    while let Some(path) = pending.pop_front() {
-        if !visited.insert(path.clone()) {
+    while let Some((path, optional_subtree)) = pending.pop_front() {
+        if !files.insert(path.clone()) {
             continue;
+        }
+        if !optional_subtree {
+            required.insert(path.clone());
         }
         if path
             .extension()
@@ -132,54 +155,20 @@ pub fn analyze(entry: &Path, fs: &impl FileSystem) -> Result<Analysis, Error> {
             message: "module is not valid UTF-8".to_owned(),
         })?;
 
-        let specifiers = parse_specifiers(&source, &path, fs, &mut warnings)?;
+        let specifiers = parse_specifiers(&source, &path, &fs, &mut warnings)?;
         for ((specifier, is_import), optional) in specifiers {
-            if let Some(module) = thinpack_caps::module_for_builtin(&specifier) {
-                if module.optional && optional {
-                    warnings.push(Warning {
-                        message: format!(
-                            "{}: optional builtin `{specifier}` may be absent; the app must handle ERR_UNKNOWN_BUILTIN_MODULE",
-                            path.display()
-                        ),
-                        strict: false,
-                    });
-                    continue;
-                }
-                let builtin = specifier
-                    .strip_prefix("node:")
-                    .unwrap_or(&specifier)
-                    .to_owned();
-                builtins.entry(builtin).or_default().insert(path.clone());
+            if record_builtin(&specifier, optional, &path, &mut builtins, &mut warnings)? {
                 continue;
             }
-            if specifier.starts_with("node:") {
-                // A guarded `require` or a `process.getBuiltinModule` probe is
-                // how an app checks for a builtin that may not ship; warn like
-                // an optional dependency instead of failing the pack.
-                if optional {
-                    warnings.push(Warning {
-                        message: format!(
-                            "{}: unknown builtin `{specifier}` may be absent; the app must handle ERR_UNKNOWN_BUILTIN_MODULE",
-                            path.display()
-                        ),
-                        strict: false,
-                    });
-                    continue;
-                }
-                return Err(Error::UnknownBuiltin {
-                    specifier,
-                    from: path,
-                });
-            }
             let resolved = if is_import {
-                thinpack_resolve::resolve_import_path(&specifier, &path, fs)
+                thinpack_resolve::resolve_import_path(&specifier, &path, &fs)
             } else {
-                thinpack_resolve::resolve_path(&specifier, &path, fs)
+                thinpack_resolve::resolve_path(&specifier, &path, &fs)
             };
             let resolved = match resolved {
                 Ok(resolved) => resolved,
                 Err(error)
-                    if optional || thinpack_resolve::declares_optional(&specifier, &path, fs) =>
+                    if optional || thinpack_resolve::declares_optional(&specifier, &path, &fs) =>
                 {
                     warnings.push(Warning {
                         message: format!(
@@ -198,18 +187,118 @@ pub fn analyze(entry: &Path, fs: &impl FileSystem) -> Result<Analysis, Error> {
                     });
                 }
             };
-            pending.push_back(resolved);
+            // Every file under an optional edge is optional, however the file
+            // itself reaches its dependencies.
+            if optional_subtree || optional {
+                pending.push_back((resolved, true));
+            } else {
+                pending.push_front((resolved, false));
+            }
         }
     }
 
     Ok(Analysis {
-        files: visited.into_iter().collect(),
+        files: files.into_iter().collect(),
+        required,
+        manifests: fs.into_manifests(),
         builtins,
         warnings,
     })
 }
 
+/// A [`FileSystem`] that remembers every `package.json` it reads. The resolver and
+/// [`thinpack_resolve::format_of`] only read a manifest when the loader will read it
+/// too, so the recorded set is exactly what the payload has to carry.
+struct ManifestRecorder<'a, F> {
+    inner: &'a F,
+    manifests: RefCell<BTreeSet<PathBuf>>,
+}
+
+impl<'a, F: FileSystem> ManifestRecorder<'a, F> {
+    const fn new(inner: &'a F) -> Self {
+        Self {
+            inner,
+            manifests: RefCell::new(BTreeSet::new()),
+        }
+    }
+
+    fn into_manifests(self) -> BTreeSet<PathBuf> {
+        self.manifests.into_inner()
+    }
+}
+
+impl<F: FileSystem> FileSystem for ManifestRecorder<'_, F> {
+    fn is_file(&self, path: &Path) -> bool {
+        self.inner.is_file(path)
+    }
+
+    fn is_dir(&self, path: &Path) -> bool {
+        self.inner.is_dir(path)
+    }
+
+    fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
+        let bytes = self.inner.read(path)?;
+        if path.file_name().is_some_and(|name| name == "package.json") {
+            self.manifests.borrow_mut().insert(path.to_path_buf());
+        }
+        Ok(bytes)
+    }
+}
+
 type SpecifierEntry = ((String, bool), bool);
+
+/// Records `specifier` when it names a builtin and reports whether it did. A
+/// guarded reference to a builtin that may be absent only warns; an unguarded
+/// unknown `node:` builtin fails the pack.
+fn record_builtin(
+    specifier: &str,
+    optional: bool,
+    from: &Path,
+    builtins: &mut BTreeMap<String, BTreeSet<PathBuf>>,
+    warnings: &mut Vec<Warning>,
+) -> Result<bool, Error> {
+    let Some(module) = thinpack_caps::module_for_builtin(specifier) else {
+        if !specifier.starts_with("node:") {
+            return Ok(false);
+        }
+        // A guarded `require` or a `process.getBuiltinModule` probe is how an app
+        // checks for a builtin that may not ship; warn like an optional dependency
+        // instead of failing the pack.
+        if optional {
+            warnings.push(Warning {
+                message: format!(
+                    "{}: unknown builtin `{specifier}` may be absent; the app must handle ERR_UNKNOWN_BUILTIN_MODULE",
+                    from.display()
+                ),
+                strict: false,
+            });
+            return Ok(true);
+        }
+        return Err(Error::UnknownBuiltin {
+            specifier: specifier.to_owned(),
+            from: from.to_path_buf(),
+        });
+    };
+    if module.optional && optional {
+        warnings.push(Warning {
+            message: format!(
+                "{}: optional builtin `{specifier}` may be absent; the app must handle ERR_UNKNOWN_BUILTIN_MODULE",
+                from.display()
+            ),
+            strict: false,
+        });
+        return Ok(true);
+    }
+    let builtin = specifier
+        .strip_prefix("node:")
+        .unwrap_or(specifier)
+        .to_owned();
+    builtins
+        .entry(builtin)
+        .or_default()
+        .insert(from.to_path_buf());
+    Ok(true)
+}
 
 /// The parser dialect for a file: the extension supplies the language (JavaScript,
 /// JSX, or JavaScript for an unknown extension) and [`thinpack_resolve::format_of`]
@@ -510,9 +599,17 @@ impl<'a> VisitJs<'a> for SpecifierCollector<'a, '_> {
     }
 
     fn visit_try_statement(&mut self, statement: &TryStatement<'a>) {
+        // Only the `try` block is guarded: a throw from the handler or the finalizer
+        // is not caught by this statement.
         self.try_depth += 1;
-        walk_js::walk_try_statement(self, statement);
+        self.visit_block_statement(&statement.block);
         self.try_depth -= 1;
+        if let Some(handler) = &statement.handler {
+            self.visit_catch_clause(handler);
+        }
+        if let Some(finalizer) = &statement.finalizer {
+            self.visit_block_statement(finalizer);
+        }
     }
 
     fn visit_new_expression(&mut self, expression: &NewExpression<'a>) {
@@ -723,6 +820,138 @@ mod tests {
 
         let required = MemoryFs::new(&[("/app/main.js", "require('required-dep');\n")]);
         assert!(analyze(Path::new("/app/main.js"), &required).is_err());
+    }
+
+    #[test]
+    fn files_reached_only_through_optional_edges_are_optional() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.js",
+                "try { require('./guarded'); } catch {}\nrequire('./needed');\n",
+            ),
+            (
+                "/app/guarded/index.js",
+                "module.exports = require('./nested');\n",
+            ),
+            ("/app/guarded/nested.js", "module.exports = 1;\n"),
+            ("/app/needed.js", "module.exports = 2;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
+        assert!(analysis.required.contains(&PathBuf::from("/app/main.js")));
+        assert!(analysis.required.contains(&PathBuf::from("/app/needed.js")));
+        assert!(
+            !analysis
+                .required
+                .contains(&PathBuf::from("/app/guarded/index.js"))
+        );
+        // The whole subtree keeps the optionality of the edge that reached it.
+        assert!(
+            !analysis
+                .required
+                .contains(&PathBuf::from("/app/guarded/nested.js"))
+        );
+        assert!(
+            analysis
+                .files
+                .contains(&PathBuf::from("/app/guarded/nested.js"))
+        );
+    }
+
+    #[test]
+    fn a_later_required_edge_beats_an_earlier_optional_one() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.js",
+                "try { require('./a'); } catch {}\nrequire('./b');\n",
+            ),
+            ("/app/a.js", "try { require('./shared'); } catch {}\n"),
+            ("/app/b.js", "require('./shared');\n"),
+            ("/app/shared.js", "module.exports = 1;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
+        assert!(analysis.required.contains(&PathBuf::from("/app/shared.js")));
+    }
+
+    #[test]
+    fn a_require_in_a_catch_or_finally_block_is_required() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.js",
+                "try { require('./primary'); } catch { require('./fallback'); } finally { require('./cleanup'); }\n",
+            ),
+            ("/app/primary.js", "module.exports = 1;\n"),
+            ("/app/fallback.js", "module.exports = 2;\n"),
+            ("/app/cleanup.js", "module.exports = 3;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
+        assert!(
+            !analysis
+                .required
+                .contains(&PathBuf::from("/app/primary.js"))
+        );
+        assert!(
+            analysis
+                .required
+                .contains(&PathBuf::from("/app/fallback.js"))
+        );
+        assert!(
+            analysis
+                .required
+                .contains(&PathBuf::from("/app/cleanup.js"))
+        );
+    }
+
+    #[test]
+    fn records_the_manifests_the_loader_reads() {
+        let fs = MemoryFs::new(&[
+            ("/app/package.json", r#"{"type": "module"}"#),
+            ("/app/main.mjs", "require('./lib');\nrequire('./helper');\n"),
+            ("/app/helper.js", "module.exports = 1;\n"),
+            ("/app/lib/package.json", r#"{"main": "entry.js"}"#),
+            ("/app/lib/entry.js", "module.exports = 1;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.mjs"), &fs).unwrap();
+        assert!(
+            analysis
+                .manifests
+                .contains(&PathBuf::from("/app/package.json"))
+        );
+        assert!(
+            analysis
+                .manifests
+                .contains(&PathBuf::from("/app/lib/package.json"))
+        );
+        assert_eq!(analysis.manifests.len(), 2);
+    }
+
+    #[test]
+    fn a_file_reached_both_ways_is_required() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.js",
+                "try { require('./shared'); } catch {}\nrequire('./shared');\n",
+            ),
+            ("/app/shared.js", "module.exports = 1;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
+        assert!(analysis.required.contains(&PathBuf::from("/app/shared.js")));
+    }
+
+    #[test]
+    fn merging_promotes_files_required_by_any_graph() {
+        let guarded = MemoryFs::new(&[
+            ("/app/main.js", "try { require('./shared'); } catch {}\n"),
+            ("/app/shared.js", "module.exports = 1;\n"),
+        ]);
+        let mut analysis = analyze(Path::new("/app/main.js"), &guarded).unwrap();
+        assert!(!analysis.required.contains(&PathBuf::from("/app/shared.js")));
+
+        let needed = MemoryFs::new(&[
+            ("/app/main.js", "require('./shared');\n"),
+            ("/app/shared.js", "module.exports = 1;\n"),
+        ]);
+        analysis.merge(analyze(Path::new("/app/main.js"), &needed).unwrap());
+        assert!(analysis.required.contains(&PathBuf::from("/app/shared.js")));
     }
 
     #[test]

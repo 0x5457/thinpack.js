@@ -273,24 +273,30 @@ fn load_path(path: &Path, fs: &impl FileSystem) -> Result<PathBuf, Error> {
 }
 
 fn load_file_or_directory(path: &Path, fs: &impl FileSystem) -> Result<Option<PathBuf>, Error> {
-    if let Some(resolved) = load_file(path, fs) {
+    // `main` may point outside its directory; the runtime's virtual file system only
+    // knows normalized paths, so normalize before looking the joined path up.
+    let path = normalize(path);
+    if let Some(resolved) = load_file(&path, fs) {
         return Ok(Some(resolved));
     }
-    if fs.is_dir(path) {
-        return load_directory(path, fs);
+    if fs.is_dir(&path) {
+        return load_directory(&path, fs);
     }
     Ok(None)
 }
 
 fn load_file(path: &Path, fs: &impl FileSystem) -> Option<PathBuf> {
-    if fs.is_file(path) {
-        return Some(normalize(path));
+    // Export targets and `main` may carry `.` segments, and the payload's virtual
+    // file system only knows normalized paths.
+    let path = normalize(path);
+    if fs.is_file(&path) {
+        return Some(path);
     }
 
     for extension in ["js", "json", "cjs", "mjs"] {
-        let candidate = append_extension(path, extension);
+        let candidate = append_extension(&path, extension);
         if fs.is_file(&candidate) {
-            return Some(normalize(&candidate));
+            return Some(candidate);
         }
     }
     None
@@ -340,10 +346,19 @@ pub fn format_of(path: &Path, fs: &impl FileSystem) -> Result<Format, Error> {
 }
 
 fn package_is_module(directory: &Path, fs: &impl FileSystem) -> Result<bool, Error> {
+    // Node's getPackageScopeConfig: the nearest package.json decides, even when it
+    // has no `type`, and the walk stops at a node_modules boundary. The filesystem
+    // root is still a package scope, as it is in Node.
     for ancestor in directory.ancestors() {
-        let manifest = Manifest::read(&ancestor.join("package.json"), fs)?;
-        if manifest.module_type.is_some() {
-            return Ok(manifest.is_module());
+        if ancestor
+            .file_name()
+            .is_some_and(|name| name == "node_modules")
+        {
+            return Ok(false);
+        }
+        let manifest = ancestor.join("package.json");
+        if fs.is_file(&manifest) {
+            return Ok(Manifest::read(&manifest, fs)?.is_module());
         }
     }
     Ok(false)
@@ -356,7 +371,10 @@ fn append_extension(path: &Path, extension: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
-fn normalize(path: &Path) -> PathBuf {
+/// Lexically removes `.` components and resolves `..`, the same semantics the
+/// runtime's virtual-path lookup applies when it resolves a specifier.
+#[must_use]
+pub fn normalize(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {
@@ -434,6 +452,33 @@ mod tests {
         assert_eq!(util.path, PathBuf::from("/app/src/util.js"));
         let lib = resolve_from(&fs, "./lib", "/app/src/main.js").unwrap();
         assert_eq!(lib.path, PathBuf::from("/app/src/lib/index.js"));
+    }
+
+    #[test]
+    fn resolves_an_exports_target_with_dot_segments() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/node_modules/pkg/package.json",
+                r#"{"exports": "././index.js"}"#,
+            ),
+            ("/app/node_modules/pkg/index.js", ""),
+        ]);
+        assert_eq!(
+            resolve_from(&fs, "pkg", "/app/main.js").unwrap().path,
+            PathBuf::from("/app/node_modules/pkg/index.js")
+        );
+    }
+
+    #[test]
+    fn resolves_a_directory_main_outside_the_directory() {
+        let fs = MemoryFs::new(&[
+            ("/app/lib/package.json", r#"{"main": "../shared/entry.js"}"#),
+            ("/app/shared/entry.js", ""),
+        ]);
+        assert_eq!(
+            resolve_from(&fs, "./lib", "/app/main.js").unwrap().path,
+            PathBuf::from("/app/shared/entry.js")
+        );
     }
 
     #[test]
@@ -552,6 +597,40 @@ mod tests {
         ]);
         let resolved = resolve_from(&fs, "./helper.js", "/app/main.js").unwrap();
         assert_eq!(resolved.format, Format::Esm);
+    }
+
+    #[test]
+    fn the_nearest_manifest_decides_the_format() {
+        let fs = MemoryFs::new(&[
+            ("/app/package.json", r#"{"type": "module"}"#),
+            ("/app/sub/package.json", r#"{"name": "sub"}"#),
+            ("/app/sub/helper.js", ""),
+        ]);
+        assert_eq!(
+            format_of(Path::new("/app/sub/helper.js"), &fs),
+            Ok(Format::CommonJs)
+        );
+    }
+
+    #[test]
+    fn node_modules_ends_the_package_scope() {
+        let fs = MemoryFs::new(&[
+            ("/app/package.json", r#"{"type": "module"}"#),
+            ("/app/node_modules/pkg/helper.js", ""),
+        ]);
+        assert_eq!(
+            format_of(Path::new("/app/node_modules/pkg/helper.js"), &fs),
+            Ok(Format::CommonJs)
+        );
+    }
+
+    #[test]
+    fn the_filesystem_root_can_be_the_package_scope() {
+        let fs = MemoryFs::new(&[
+            ("/package.json", r#"{"type": "module"}"#),
+            ("/app/helper.js", ""),
+        ]);
+        assert_eq!(format_of(Path::new("/app/helper.js"), &fs), Ok(Format::Esm));
     }
 
     #[test]

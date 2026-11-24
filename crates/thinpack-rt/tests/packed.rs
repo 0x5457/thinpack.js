@@ -256,6 +256,24 @@ parentPort.postMessage('worker loaded from the packed VFS');
         capabilities: &[],
         error: None,
     },
+    // A directory manifest may point outside its own directory; the payload Vfs
+    // knows only normalized paths, so the resolver has to normalize the target.
+    PackedTest {
+        name: "packed::directory-main-outside-directory",
+        directory: "directory-main-outside-directory",
+        entry: "/app/main.js",
+        files: &[
+            (
+                "/app/main.js",
+                "const value = require('./lib');\n\
+                 if (value !== 1) throw new Error(`unexpected value: ${value}`);\n",
+            ),
+            ("/app/lib/package.json", r#"{"main": "../shared/entry.js"}"#),
+            ("/app/shared/entry.js", "module.exports = 1;\n"),
+        ],
+        capabilities: &[],
+        error: None,
+    },
     PackedTest {
         name: "packed::commonjs-esm-diagnostic",
         directory: "commonjs-esm-diagnostic",

@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use thinpack_analyze::Analysis;
 use thinpack_caps::Module;
 
-use crate::bundle::{normalize, project_root};
+use thinpack_resolve::normalize;
+
+use crate::bundle::project_root;
 use crate::options::Options;
 
 pub(crate) struct Analyzed {
@@ -15,7 +17,7 @@ pub(crate) struct Analyzed {
     pub capabilities: Vec<&'static Module>,
 }
 
-pub(crate) fn analyze_entry(options: &Options) -> Result<Analyzed, Box<dyn Error>> {
+pub(crate) fn analyze_entry(options: &Options, pack: bool) -> Result<Analyzed, Box<dyn Error>> {
     // `absolute` keeps `..` components; a manifest record built from them would
     // never match the runtime's normalized lookup, so the whole pipeline works
     // on lexically clean paths.
@@ -28,12 +30,34 @@ pub(crate) fn analyze_entry(options: &Options) -> Result<Analyzed, Box<dyn Error
     for file in &included {
         if is_javascript(file) {
             analysis.merge(thinpack_analyze::analyze(file, &thinpack_resolve::HostFs)?);
-        } else if !analysis.files.contains(file) {
-            analysis.files.push(file.clone());
+        } else {
+            if !analysis.files.contains(file) {
+                analysis.files.push(file.clone());
+            }
+            // An explicit include is required even if the graph reached the file
+            // through an optional edge.
+            analysis.required.insert(file.clone());
         }
     }
     analysis.files.sort();
     analysis.files.dedup();
+    if pack {
+        // A module outside the root cannot be reached from the payload. Pack leaves
+        // optional ones out; the warning belongs with the other optional warnings so
+        // `--strict` and `--list-capabilities` treat it like the rest.
+        for path in &analysis.files {
+            if !path.starts_with(&root) && !analysis.required.contains(path) {
+                analysis.warnings.push(thinpack_analyze::Warning {
+                    message: format!(
+                        "{}: optional module resolves outside the project root {}; it is left out of the payload and the app must handle its absence",
+                        path.display(),
+                        root.display()
+                    ),
+                    strict: false,
+                });
+            }
+        }
+    }
     for warning in &analysis.warnings {
         if options.strict && warning.strict {
             return Err(format!(

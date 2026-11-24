@@ -1,12 +1,14 @@
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fs;
 use std::io;
 use std::io::Cursor;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use thinpack_analyze::Analysis;
 use thinpack_caps::Module;
 use thinpack_pack::{AssetRecord, Compression, FileRecord, Manifest};
+use thinpack_resolve::normalize;
 
 use crate::options::AssetInput;
 use crate::templates::TemplateInfo;
@@ -47,7 +49,8 @@ pub(crate) fn build(
     assets: &[AssetInput],
 ) -> Result<Bundle, Box<dyn Error>> {
     let mut files = collect_analysis_files(root, analysis)?;
-    files.extend(collect_package_json(root, &files)?);
+    let manifests = collect_manifests(root, &analysis.manifests, &files)?;
+    files.extend(manifests);
     files.sort_by(|left, right| left.path.cmp(&right.path));
 
     let (mut manifest, mut blob) = build_manifest(root, entry, capabilities, info, &files);
@@ -130,96 +133,69 @@ fn collect_analysis_files(
     for path in &analysis.files {
         // Resolution walks `node_modules` above the root, but the payload is rooted
         // there: a file outside it cannot be reached by a specifier in the artifact.
-        if !path.starts_with(root) {
-            return Err(format!(
-                "{} resolves outside the project root {}; a packed binary only resolves modules under that root, so the file would be unreachable at run time. Copy it into the project or install the dependency inside the root",
-                path.display(),
-                root.display()
-            )
-            .into());
-        }
+        let Some(virtual_path) = virtual_path(root, path) else {
+            if analysis.required.contains(path) {
+                return Err(format!(
+                    "{} resolves outside the project root {}; the payload is rooted there, so the file would be unreachable at run time. Copy it into the project or install the dependency inside the root",
+                    path.display(),
+                    root.display()
+                )
+                .into());
+            }
+            // `analyze_entry` already warned: only a guarded `require`, `import()`
+            // or optional dependency reaches this file.
+            continue;
+        };
         files.push(PackedFile {
-            path: virtual_path(root, path),
+            path: virtual_path,
             contents: fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?,
         });
     }
     Ok(files)
 }
 
-fn collect_package_json(
+/// The `package.json` files the payload needs: the ones the resolver and
+/// [`thinpack_resolve::format_of`] read during analysis, plus the app's own manifest
+/// at the root. The loader reads the same set at run time, and anything above the
+/// root could not be reached from `/app`.
+fn collect_manifests(
     root: &Path,
-    already: &[PackedFile],
+    manifests: &BTreeSet<PathBuf>,
+    packed: &[PackedFile],
 ) -> Result<Vec<PackedFile>, Box<dyn Error>> {
+    let mut seen: BTreeSet<String> = packed.iter().map(|file| file.path.clone()).collect();
+    let root_manifest = root.join("package.json");
+    let candidates = manifests
+        .iter()
+        .map(PathBuf::as_path)
+        .chain(root_manifest.is_file().then_some(root_manifest.as_path()));
     let mut files = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(directory) = stack.pop() {
-        let entries = match fs::read_dir(&directory) {
-            Ok(entries) => entries,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotFound
-                ) =>
-            {
-                continue;
-            }
-            Err(error) => return Err(error.into()),
+    for manifest in candidates {
+        let Some(path) = virtual_path(root, manifest) else {
+            continue;
         };
-        for entry in entries {
-            let entry = entry?;
-            let path = entry.path();
-            let metadata = entry.metadata()?;
-            if metadata.is_dir() {
-                // `.git` never carries a `package.json`, and the project root's own
-                // `target` is a cargo build tree; pruning them keeps the walk off large
-                // trees. A nested directory with the same name is an ordinary package
-                // directory whose manifest still decides the format of its files.
-                let name = entry.file_name();
-                let pruned = name == ".git" || (name == "target" && directory.as_path() == root);
-                if !pruned {
-                    stack.push(path);
-                }
-            } else if metadata.is_file()
-                && path.file_name().is_some_and(|name| name == "package.json")
-            {
-                let virtual_path = virtual_path(root, &path);
-                if already.iter().any(|file| file.path == virtual_path) {
-                    continue;
-                }
-                files.push(PackedFile {
-                    path: virtual_path,
-                    contents: fs::read(&path)?,
-                });
-            }
+        if seen.insert(path.clone()) {
+            files.push(PackedFile {
+                path,
+                contents: fs::read(manifest)
+                    .map_err(|error| format!("{}: {error}", manifest.display()))?,
+            });
         }
     }
     Ok(files)
 }
 
-/// Lexically removes `.` components and resolves `..`, the same semantics the
-/// runtime's virtual-path lookup applies when it resolves a specifier.
-pub(crate) fn normalize(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            other => normalized.push(other),
-        }
-    }
-    normalized
-}
-
-/// Maps a host path under `root` to its `/app` virtual path. This is the one
-/// place that builds virtual paths, so `.` and `..` components never reach a
-/// manifest record: the runtime's lookup normalizes specifiers, and a record
-/// that kept them would never be found.
-fn virtual_path(root: &Path, path: &Path) -> String {
-    let root = normalize(root);
-    let relative = normalize(path.strip_prefix(&root).unwrap_or(path));
-    format!("/app/{}", relative.to_string_lossy().replace('\\', "/"))
+/// Maps a host path under `root` to its `/app` virtual path, or `None` when the
+/// path is outside the root and therefore unreachable in the payload. This is the
+/// one place that builds virtual paths, so `.` and `..` components never reach a
+/// manifest record: the runtime's lookup normalizes specifiers, and a record that
+/// kept them would never be found.
+fn virtual_path(root: &Path, path: &Path) -> Option<String> {
+    let relative = normalize(path.strip_prefix(root).ok()?);
+    Some(format!(
+        "/app/{}",
+        relative.to_string_lossy().replace('\\', "/")
+    ))
 }
 
 /// A manifest record stores lengths as `u32`; a longer file also pushes the blob past
@@ -251,7 +227,7 @@ fn build_manifest(
         });
     }
     let manifest = Manifest {
-        entry: virtual_path(root, entry),
+        entry: virtual_path(root, entry).expect("the project root contains the entry"),
         capabilities: capabilities
             .iter()
             .map(|module| module.name.to_owned())
