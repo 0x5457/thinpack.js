@@ -11,6 +11,7 @@ thinpack-node-internals = { workspace = true, features = ["glob"] }
 deno_core.workspace = true
 deno_error.workspace = true
 thinpack-core = { workspace = true }
+getrandom = "0.4"
 libc = "0.2"
 notify = "9.0"
 tokio.workspace = true

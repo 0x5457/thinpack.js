@@ -18,7 +18,6 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle};
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -381,27 +380,15 @@ fn make_directory(path: &str, mode: u32) -> Result<String, JsErrorBox> {
         .unwrap_or_default())
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "both truncations are intended: the nanoseconds are folded into 64 bits and the modulo result is below ALPHABET.len(), so neither value is used outside its new width"
-)]
-fn random_suffix() -> String {
+fn random_suffix() -> Result<String, getrandom::Error> {
     const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    static SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
-    let mut state = SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ^ (u64::from(std::process::id()) << 32)
-        ^ SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_nanos() as u64);
-    (0..6)
-        .map(|_| {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            ALPHABET[(state % ALPHABET.len() as u64) as usize] as char
-        })
-        .collect()
+    let mut bytes = [0u8; 6];
+    getrandom::fill(&mut bytes)?;
+    Ok(bytes
+        .iter()
+        .map(|byte| char::from(ALPHABET[usize::from(*byte) % ALPHABET.len()]))
+        .collect())
 }
 
 #[op2(nofast)]
@@ -832,7 +819,7 @@ fn symlink(target: &str, path: &str) -> io::Result<()> {
 #[string]
 fn op_fs_mkdtemp(#[string] prefix: &str) -> Result<String, JsErrorBox> {
     for _ in 0..16 {
-        let candidate = format!("{prefix}{}", random_suffix());
+        let candidate = format!("{prefix}{}", random_suffix().map_err(|_| errno_error(EIO))?);
         match directory_builder(0o700).create(&candidate) {
             Ok(()) => return Ok(candidate),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -1229,4 +1216,18 @@ fn op_fs_watch_take(#[smi] id: u32) -> String {
 #[op2(fast)]
 fn op_fs_watch_close(#[smi] id: u32) {
     watch_registry().lock().unwrap().remove(&id);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::random_suffix;
+
+    #[test]
+    fn suffix_is_random_and_alphanumeric() {
+        let first = random_suffix().expect("the operating system provides random bytes");
+        let second = random_suffix().expect("the operating system provides random bytes");
+        assert_eq!(first.len(), 6);
+        assert!(first.bytes().all(|byte| byte.is_ascii_alphanumeric()));
+        assert_ne!(first, second);
+    }
 }
