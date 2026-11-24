@@ -11,7 +11,6 @@ deno_core.workspace = true
 deno_error.workspace = true
 tokio.workspace = true
 ring = "0.17"
-openssl = { version = "0.10", features = ["vendored"] }
 base64 = "0.22"
 md-5 = "0.10"
 aes = "0.8"
@@ -20,6 +19,22 @@ cbc = "0.1"
 ctr = "0.9"
 cipher = { version = "0.4", features = ["alloc", "block-padding"] }
 scrypt = "0.11"
+
+der = { version = "0.7", features = ["oid", "pem"] }
+ed25519-dalek = { version = "2", features = ["pkcs8", "rand_core"] }
+k256 = { version = "0.13", default-features = false, features = ["arithmetic", "ecdh", "pkcs8", "std"] }
+p256 = { version = "0.13", default-features = false, features = ["arithmetic", "ecdh", "pkcs8", "std"] }
+p384 = { version = "0.13", default-features = false, features = ["arithmetic", "ecdh", "pkcs8", "std"] }
+p521 = { version = "0.13", default-features = false, features = ["arithmetic", "ecdh", "pkcs8", "std"] }
+pkcs1 = "0.7"
+pkcs5 = { version = "0.7", features = ["alloc", "pbes2"] }
+pkcs8 = { version = "0.10", features = ["encryption"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+rsa = "0.9"
+sec1 = "0.7"
+spki = "0.7"
+x25519-dalek = { version = "2", features = ["getrandom", "static_secrets"] }
+x509-cert = { version = "0.2", features = ["pem"] }
 
 [lints]
 workspace = true

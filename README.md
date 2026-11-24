@@ -57,7 +57,6 @@ the table below come from; it compiles the runtime, so it needs a source checkou
 ## Build from source
 
 Requires Rust 1.99.1 (pinned by `rust-toolchain.toml`), a C toolchain and CMake.
-Templates with `node:crypto` also need Perl and Make (`nmake` on Windows) to build OpenSSL.
 
 ```sh
 cargo build --release -p thinpack-rt -p thinpack-cli
@@ -125,13 +124,11 @@ brotli-compressed (`thinpack_js::js!`): 2.0 MB of JavaScript costs 0.43 MB of te
 few milliseconds per start. Measured with `cargo xtask size` (build, strip, measure, write
 `measurements/`).
 
-The numbers below (and the all-modules row above) predate `crypto`'s vendored OpenSSL
-backend (commit `1622804`): carrying `crypto` now adds about 3.7 MiB, so an app or template
-that requires it is larger than listed. `cargo xtask apps` measures the same apps from the
-pinned fixtures in `tests/apps/`, packs each with its own capability closure, and holds the
-artifact and its gzip size to `tests/apps/baseline.toml` — the current sizes. The Size
-workflow runs it on main, weekly, and on a pull request labelled `size`; growth beyond 1%
-fails the run, and an intentional change re-records the baseline with
+The app numbers below are the recording from `71dc765`. `cargo xtask apps` measures the
+same apps from the pinned fixtures in `tests/apps/`, packs each with its own capability
+closure, and holds the artifact and its gzip size to `tests/apps/baseline.toml` — the current
+sizes. The Size workflow runs it on main, weekly, and on a pull request labelled `size`;
+growth beyond 1% fails the run, and an intentional change re-records the baseline with
 `cargo xtask apps --write-baseline`.
 
 ## Compared with other single-file approaches
@@ -243,6 +240,9 @@ for adding a module.
   but its payload is not: it ships with `http` and is decoded at startup.
   `docs/gaps.md` records what remains different.
 - No N-API or native addon loading; code that needs native code goes through `node:ffi`.
+- `crypto` key material covers RSA/RSA-PSS, EC (P-256/P-384/P-521/secp256k1), Ed25519 and
+  X25519. DSA, DH, Ed448 and X448 keys are rejected; encrypted PKCS#1/SEC1 PEM is not
+  supported (PKCS#8 encryption is).
 - WebAssembly is always available and cannot be trimmed (WAMR on QuickJS, about 217 KB).
 - ESM loader hooks run inside synchronous checkpoints, so hooks that wait on I/O fail.
 - `/app/**` comes from the payload: `fs` reads it, writes return `EROFS`; anything outside

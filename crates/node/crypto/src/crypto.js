@@ -828,7 +828,7 @@
     hkdfSync,
     randomUUID,
     timingSafeEqual,
-    getCurves: () => ["prime256v1", "secp384r1"],
+    getCurves: () => ["prime256v1", "secp384r1", "secp521r1", "secp256k1"],
     getCiphers: () => CIPHERS.slice(),
     createCipheriv: (algorithm, key, iv, options) => new Cipheriv(algorithm, key, iv, options),
     createDecipheriv: (algorithm, key, iv, options) => new Decipheriv(algorithm, key, iv, options),

@@ -1,13 +1,11 @@
+//! JSON Web Key import and export for the key types this module supports.
+
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use deno_core::serde::{Deserialize, Serialize};
 use deno_error::JsErrorBox;
-use openssl::bn::{BigNum, BigNumContext};
-use openssl::ec::{EcKey, PointConversionForm};
-use openssl::nid::Nid;
-use openssl::pkey::{HasPublic, Id, PKey, PKeyRef, Private, Public};
-use openssl::rsa::Rsa;
 
-use super::{KeyData, coded_error, crypto_error, named_group};
+use super::ec;
+use super::{KeyData, PrivateKey, PublicKey, coded_error};
 
 #[derive(Deserialize, Serialize)]
 #[serde(crate = "deno_core::serde", tag = "kty")]
@@ -47,200 +45,205 @@ pub(super) struct RsaPrivate {
     qi: String,
 }
 
-impl RsaPrivate {
-    fn from_key(key: &PKeyRef<Private>) -> Result<Self, JsErrorBox> {
-        let key = key.rsa().map_err(invalid_key)?;
-        let (Some(p), Some(q), Some(dp), Some(dq), Some(qi)) =
-            (key.p(), key.q(), key.dmp1(), key.dmq1(), key.iqmp())
-        else {
-            return Err(invalid_jwk("RSA key is missing private parameters"));
-        };
-        Ok(Self {
-            d: encode(key.d().to_vec()),
-            p: encode(p.to_vec()),
-            q: encode(q.to_vec()),
-            dp: encode(dp.to_vec()),
-            dq: encode(dq.to_vec()),
-            qi: encode(qi.to_vec()),
-        })
-    }
-}
-
-impl Jwk {
-    pub(super) fn export(
-        key: &PKeyRef<impl HasPublic>,
-        private: Option<&PKeyRef<Private>>,
-    ) -> Result<Self, JsErrorBox> {
-        Ok(match key.id() {
-            Id::RSA => {
-                let rsa = key.rsa().map_err(invalid_key)?;
-                Self::Rsa {
-                    n: encode(rsa.n().to_vec()),
-                    e: encode(rsa.e().to_vec()),
-                    private: private.map(RsaPrivate::from_key).transpose()?,
-                }
-            }
-            Id::EC => {
-                let ec = key.ec_key().map_err(invalid_key)?;
-                let group = ec.group();
-                let curve = match group.curve_name() {
-                    Some(Nid::X9_62_PRIME256V1) => "P-256",
-                    Some(Nid::SECP384R1) => "P-384",
-                    Some(Nid::SECP521R1) => "P-521",
-                    Some(Nid::SECP256K1) => "secp256k1",
-                    _ => {
-                        return Err(coded_error(
-                            "ERR_CRYPTO_JWK_UNSUPPORTED_CURVE",
-                            "Unsupported JWK EC curve",
-                        ));
-                    }
-                };
-                let mut context = BigNumContext::new().map_err(invalid_key)?;
-                let point = ec
-                    .public_key()
-                    .to_bytes(group, PointConversionForm::UNCOMPRESSED, &mut context)
-                    .map_err(invalid_key)?;
-                let (x, y) = point[1..].split_at((point.len() - 1) / 2);
-                let d = private
-                    .map(|key| {
-                        let size =
-                            i32::try_from(group.degree().div_ceil(8)).expect("known curve size");
-                        let scalar = key.ec_key()?.private_key().to_vec_padded(size)?;
-                        Ok(encode(scalar))
-                    })
-                    .transpose()
-                    .map_err(invalid_key)?;
-                Self::Ec {
-                    crv: curve.into(),
-                    x: encode(x),
-                    y: encode(y),
-                    d,
-                }
-            }
-            id => {
-                let curve = match id {
-                    Id::ED25519 => "Ed25519",
-                    Id::ED448 => "Ed448",
-                    Id::X25519 => "X25519",
-                    Id::X448 => "X448",
-                    _ => {
-                        return Err(coded_error(
-                            "ERR_CRYPTO_JWK_UNSUPPORTED_KEY_TYPE",
-                            "Unsupported JWK Key Type.",
-                        ));
-                    }
-                };
-                let d = private
-                    .map(PKeyRef::raw_private_key)
-                    .transpose()
-                    .map_err(invalid_key)?
-                    .map(encode);
-                Self::Okp {
-                    crv: curve.into(),
-                    x: encode(key.raw_public_key().map_err(invalid_key)?),
-                    d,
-                }
-            }
-        })
-    }
-
-    pub(super) fn import(self, as_private: bool) -> Result<KeyData, JsErrorBox> {
-        if as_private {
-            let key = self.private_key()?;
-            let der = key.private_key_to_pkcs8().map_err(invalid_key)?;
-            KeyData::new(&key, der).map_err(invalid_key)
-        } else {
-            let key = self.public_key()?;
-            let der = key.public_key_to_der().map_err(invalid_key)?;
-            KeyData::new(&key, der).map_err(invalid_key)
+pub(super) fn export_private(key: &PrivateKey) -> Result<Jwk, JsErrorBox> {
+    match key {
+        PrivateKey::Rsa { key, .. } => {
+            let numbers = super::rsa::private_numbers(&key.key)?;
+            Ok(Jwk::Rsa {
+                n: encode(numbers.n),
+                e: encode(numbers.e),
+                private: Some(RsaPrivate {
+                    d: encode(numbers.d),
+                    p: encode(numbers.p),
+                    q: encode(numbers.q),
+                    dp: encode(numbers.dp),
+                    dq: encode(numbers.dq),
+                    qi: encode(numbers.qi),
+                }),
+            })
         }
-    }
-
-    fn public_key(self) -> Result<PKey<Public>, JsErrorBox> {
-        Ok(match self {
-            Self::Rsa { n, e, .. } => {
-                let key = Rsa::from_public_components(decode_int(&n)?, decode_int(&e)?)
-                    .map_err(invalid_key)?;
-                PKey::from_rsa(key).map_err(invalid_key)?
-            }
-            Self::Ec { crv, x, y, .. } => {
-                PKey::from_ec_key(ec_public_key(&crv, &x, &y)?).map_err(invalid_key)?
-            }
-            Self::Okp { crv, x, .. } => {
-                PKey::public_key_from_raw_bytes(&decode(&x)?, okp_id(&crv)?).map_err(invalid_key)?
-            }
-        })
-    }
-
-    fn private_key(self) -> Result<PKey<Private>, JsErrorBox> {
-        Ok(match self {
-            Self::Rsa {
-                n,
-                e,
-                private: Some(private),
-            } => {
-                let key = Rsa::from_private_components(
-                    decode_int(&n)?,
-                    decode_int(&e)?,
-                    decode_int(&private.d)?,
-                    decode_int(&private.p)?,
-                    decode_int(&private.q)?,
-                    decode_int(&private.dp)?,
-                    decode_int(&private.dq)?,
-                    decode_int(&private.qi)?,
-                )
-                .map_err(invalid_key)?;
-                if !key.check_key().map_err(invalid_key)? {
-                    return Err(invalid_jwk("Invalid RSA private key"));
-                }
-                PKey::from_rsa(key).map_err(invalid_key)?
-            }
-            Self::Ec {
-                crv,
-                x,
-                y,
-                d: Some(d),
-            } => {
-                let public = ec_public_key(&crv, &x, &y)?;
-                let scalar = decode_int(&d)?;
-                let key =
-                    EcKey::from_private_components(public.group(), &scalar, public.public_key())
-                        .map_err(invalid_key)?;
-                key.check_key().map_err(invalid_key)?;
-                PKey::from_ec_key(key).map_err(invalid_key)?
-            }
-            Self::Okp { crv, x, d: Some(d) } => {
-                let key = PKey::private_key_from_raw_bytes(&decode(&d)?, okp_id(&crv)?)
-                    .map_err(invalid_key)?;
-                if key.raw_public_key().map_err(invalid_key)? != decode(&x)? {
-                    return Err(invalid_jwk("JWK public key does not match its private key"));
-                }
-                key
-            }
-            _ => return Err(invalid_jwk("JWK is missing private parameters")),
-        })
+        PrivateKey::Ec(key) => {
+            let (x, y) = coordinates(&ec::public_key(key));
+            Ok(Jwk::Ec {
+                crv: ec::curve(key).jwk_name().to_owned(),
+                x: encode(x),
+                y: encode(y),
+                d: Some(encode(ec::secret_bytes(key))),
+            })
+        }
+        PrivateKey::Ed25519(key) => Ok(Jwk::Okp {
+            crv: "Ed25519".to_owned(),
+            x: encode(key.verifying_key().as_bytes()),
+            d: Some(encode(key.to_bytes())),
+        }),
+        PrivateKey::X25519(key) => Ok(Jwk::Okp {
+            crv: "X25519".to_owned(),
+            x: encode(x25519_dalek::PublicKey::from(key).as_bytes()),
+            d: Some(encode(key.to_bytes())),
+        }),
     }
 }
 
-fn ec_public_key(crv: &str, x: &str, y: &str) -> Result<EcKey<Public>, JsErrorBox> {
-    if !matches!(crv, "P-256" | "P-384" | "P-521" | "secp256k1") {
-        return Err(invalid_jwk("Unsupported JWK EC curve"));
+pub(super) fn export_public(key: &PublicKey) -> Jwk {
+    match key {
+        PublicKey::Rsa { key, .. } => {
+            let (n, e) = super::rsa::public_numbers(&key.key);
+            Jwk::Rsa {
+                n: encode(n),
+                e: encode(e),
+                private: None,
+            }
+        }
+        PublicKey::Ec(key) => {
+            let (x, y) = coordinates(key);
+            Jwk::Ec {
+                crv: ec::public_curve(key).jwk_name().to_owned(),
+                x: encode(x),
+                y: encode(y),
+                d: None,
+            }
+        }
+        PublicKey::Ed25519(key) => Jwk::Okp {
+            crv: "Ed25519".to_owned(),
+            x: encode(key.as_bytes()),
+            d: None,
+        },
+        PublicKey::X25519(key) => Jwk::Okp {
+            crv: "X25519".to_owned(),
+            x: encode(key.as_bytes()),
+            d: None,
+        },
     }
-    let group = named_group(crv)?;
-    let key = EcKey::from_public_key_affine_coordinates(&group, &*decode_int(x)?, &*decode_int(y)?)
-        .map_err(invalid_key)?;
-    key.check_key().map_err(invalid_key)?;
-    Ok(key)
 }
 
-fn okp_id(curve: &str) -> Result<Id, JsErrorBox> {
+pub(super) fn import(jwk: Jwk, as_private: bool) -> Result<KeyData, JsErrorBox> {
+    if as_private {
+        KeyData::from_private(&private_key(jwk)?)
+    } else {
+        KeyData::from_public(&public_key(jwk)?)
+    }
+}
+
+fn private_key(jwk: Jwk) -> Result<PrivateKey, JsErrorBox> {
+    match jwk {
+        Jwk::Rsa {
+            n,
+            e,
+            private: Some(private),
+        } => Ok(PrivateKey::Rsa {
+            key: super::rsa::from_jwk_private(
+                &decode(&n)?,
+                &decode(&e)?,
+                &decode(&private.d)?,
+                &decode(&private.p)?,
+                &decode(&private.q)?,
+            )?,
+            pss: false,
+        }),
+        Jwk::Rsa { private: None, .. } | Jwk::Ec { d: None, .. } | Jwk::Okp { d: None, .. } => {
+            Err(invalid_jwk("JWK is missing private parameters"))
+        }
+        Jwk::Ec {
+            crv,
+            x,
+            y,
+            d: Some(d),
+        } => {
+            let curve = curve(&crv)?;
+            Ok(PrivateKey::Ec(ec::from_jwk_private(
+                curve,
+                &decode(&x)?,
+                &decode(&y)?,
+                &decode(&d)?,
+            )?))
+        }
+        Jwk::Okp { crv, x, d: Some(d) } => okp_private(&crv, &x, &d),
+    }
+}
+
+fn public_key(jwk: Jwk) -> Result<PublicKey, JsErrorBox> {
+    match jwk {
+        Jwk::Rsa { n, e, .. } => Ok(PublicKey::Rsa {
+            key: super::rsa::from_jwk_public(&decode(&n)?, &decode(&e)?)?,
+            pss: false,
+        }),
+        Jwk::Ec { crv, x, y, .. } => {
+            let curve = curve(&crv)?;
+            Ok(PublicKey::Ec(ec::from_jwk_public(
+                curve,
+                &decode(&x)?,
+                &decode(&y)?,
+            )?))
+        }
+        Jwk::Okp { crv, x, .. } => okp_public(&crv, &x),
+    }
+}
+
+fn okp_private(curve: &str, x: &str, d: &str) -> Result<PrivateKey, JsErrorBox> {
+    let seed = decode(d)?;
+    let x = decode(x)?;
     match curve {
-        "Ed25519" => Ok(Id::ED25519),
-        "Ed448" => Ok(Id::ED448),
-        "X25519" => Ok(Id::X25519),
-        "X448" => Ok(Id::X448),
-        _ => Err(invalid_jwk("Unsupported JWK OKP curve")),
+        "Ed25519" => {
+            let seed: [u8; 32] = seed
+                .try_into()
+                .map_err(|_| invalid_jwk("Ed25519 private key has the wrong length"))?;
+            let key = ed25519_dalek::SigningKey::from_bytes(&seed);
+            if key.verifying_key().as_bytes() != x.as_slice() {
+                return Err(invalid_jwk("JWK public key does not match its private key"));
+            }
+            Ok(PrivateKey::Ed25519(key))
+        }
+        "X25519" => {
+            let seed: [u8; 32] = seed
+                .try_into()
+                .map_err(|_| invalid_jwk("X25519 private key has the wrong length"))?;
+            let key = x25519_dalek::StaticSecret::from(seed);
+            if x25519_dalek::PublicKey::from(&key).as_bytes() != x.as_slice() {
+                return Err(invalid_jwk("JWK public key does not match its private key"));
+            }
+            Ok(PrivateKey::X25519(key))
+        }
+        other => Err(unsupported_curve(other)),
     }
+}
+
+fn okp_public(curve: &str, x: &str) -> Result<PublicKey, JsErrorBox> {
+    let bytes = decode(x)?;
+    match curve {
+        "Ed25519" => {
+            let bytes: [u8; 32] = bytes
+                .try_into()
+                .map_err(|_| invalid_jwk("Ed25519 public key has the wrong length"))?;
+            Ok(PublicKey::Ed25519(
+                ed25519_dalek::VerifyingKey::from_bytes(&bytes)
+                    .map_err(|error| invalid_jwk(&error.to_string()))?,
+            ))
+        }
+        "X25519" => {
+            let bytes: [u8; 32] = bytes
+                .try_into()
+                .map_err(|_| invalid_jwk("X25519 public key has the wrong length"))?;
+            Ok(PublicKey::X25519(x25519_dalek::PublicKey::from(bytes)))
+        }
+        other => Err(unsupported_curve(other)),
+    }
+}
+
+fn curve(name: &str) -> Result<ec::Curve, JsErrorBox> {
+    ec::Curve::from_jwk_name(name).ok_or_else(|| unsupported_curve(name))
+}
+
+fn coordinates(key: &ec::Public) -> (Vec<u8>, Vec<u8>) {
+    let point = ec::public_point(key);
+    let (x, y) = point[1..].split_at((point.len() - 1) / 2);
+    (x.to_vec(), y.to_vec())
+}
+
+fn unsupported_curve(name: &str) -> JsErrorBox {
+    coded_error(
+        "ERR_CRYPTO_JWK_UNSUPPORTED_CURVE",
+        &format!("Unsupported JWK curve `{name}`"),
+    )
 }
 
 fn encode(bytes: impl AsRef<[u8]>) -> String {
@@ -253,15 +256,6 @@ fn decode(value: &str) -> Result<Vec<u8>, JsErrorBox> {
         .map_err(|_| invalid_jwk("Invalid base64url encoded JWK parameter"))
 }
 
-fn decode_int(value: &str) -> Result<BigNum, JsErrorBox> {
-    BigNum::from_slice(&decode(value)?).map_err(invalid_key)
-}
-
 fn invalid_jwk(message: &str) -> JsErrorBox {
     coded_error("ERR_CRYPTO_INVALID_JWK", message)
-}
-
-#[expect(clippy::needless_pass_by_value, reason = "used as a map_err function")]
-fn invalid_key(error: openssl::error::ErrorStack) -> JsErrorBox {
-    crypto_error("ERR_CRYPTO_INVALID_JWK", &error)
 }
