@@ -122,8 +122,10 @@ remainder starts with `import`/`export`, then process the declaration normally.
 
 A throwing synthetic evaluation step (a CommonJS module with a TDZ error, for
 one) leaves a pending exception. `Evaluate` turns it into a rejected promise so
-the importer or `import()` sees the rejection, and marks the rejection handled
-so JSC does not also report it as uncaught. Source modules keep the same
+the importer or `import()` sees the rejection. JSC reports an unhandled
+rejection at rejection time, so the promise is created pending, its tracking
+handlers are attached, and only then is it rejected; otherwise the same CJS
+error would also be dispatched as uncaught. Source modules keep the same
 contract through `eval_module_source`.
 
 ## Validation
