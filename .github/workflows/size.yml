@@ -1,0 +1,69 @@
+name: Size
+
+# Artifact size is the product's headline claim, so the programs the README compares are
+# packed from pinned fixtures in `tests/apps/` and measured against
+# `tests/apps/baseline.toml`. Each app is packed with `--rebuild`, which compiles a runtime
+# for its own capability closure; the job therefore costs several template builds, and a
+# pull request pays for it only when labelled `size`. Main, the weekly schedule and a
+# dispatch keep the baseline honest.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "vendor/**"
+      - "xtask/**"
+      - "tests/apps/**"
+      - "capabilities.toml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/**"
+      - "rust-toolchain.toml"
+      - ".github/workflows/size.yml"
+  pull_request:
+    # `labeled` so adding the `size` label starts the job without a push.
+    types: [opened, synchronize, reopened, labeled]
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: size-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  apps:
+    name: App artifacts (ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'size')
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          rustflags: ""
+          cache: false
+
+      # The six `--rebuild` templates share `target/templates`; caching it keeps the C
+      # dependencies (QuickJS/WAMR, OpenSSL, sqlite) from compiling once per app on every
+      # run.
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: tests/apps/*/package-lock.json
+
+      # The command writes the table and every regression to the step summary before it
+      # exits, so a failed run still shows what moved.
+      - name: Pack and measure
+        run: cargo xtask apps --summary "$GITHUB_STEP_SUMMARY"

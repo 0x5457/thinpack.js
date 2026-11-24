@@ -1,0 +1,5 @@
+{
+  "name": "thinpack-prettier-size-fixture",
+  "private": true,
+  "dependencies": { "prettier": "3.10.1" }
+}

@@ -1,7 +1,7 @@
 /target
 
 # Node fixture dependencies stay out of the repository
-tests/*/node_modules/
+tests/**/node_modules/
 /target-http2/
 /target-core/
 

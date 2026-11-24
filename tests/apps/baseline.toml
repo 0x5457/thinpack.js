@@ -1,0 +1,60 @@
+# Artifact sizes of the apps in the README, recorded by `cargo xtask apps --write-baseline`.
+# The Size workflow fails when an artifact exceeds the recorded size by more than 1 percent;
+# re-record after an intentional change and review the diff.
+target = "x86_64-unknown-linux-gnu"
+backend = "quickjs"
+profile = "small"
+
+[apps.eslint]
+package = "eslint"
+version = "10.15.0"
+bytes = 10722545
+gzip_bytes = 5090937
+payload_bytes = 752377
+files = 621
+capabilities = 19
+
+[apps.js-yaml]
+package = "js-yaml"
+version = "5.5.0"
+bytes = 6068130
+gzip_bytes = 2808102
+payload_bytes = 56042
+files = 10
+capabilities = 14
+
+[apps.pi]
+package = "@earendil-works/pi-coding-agent"
+version = "1.5.0"
+bytes = 16621565
+gzip_bytes = 8965727
+payload_bytes = 2694405
+files = 2377
+capabilities = 34
+
+[apps.prettier]
+package = "prettier"
+version = "3.10.1"
+bytes = 11189523
+gzip_bytes = 5625394
+payload_bytes = 1289595
+files = 21
+capabilities = 20
+
+[apps.terser]
+package = "terser"
+version = "5.51.2"
+bytes = 6350198
+gzip_bytes = 3045668
+payload_bytes = 261694
+files = 37
+capabilities = 14
+
+[apps.tsc]
+package = "typescript"
+version = "5.9.3"
+bytes = 10950572
+gzip_bytes = 5398144
+payload_bytes = 1091892
+files = 107
+capabilities = 18

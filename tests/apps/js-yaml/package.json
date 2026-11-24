@@ -1,0 +1,5 @@
+{
+  "name": "thinpack-js-yaml-size-fixture",
+  "private": true,
+  "dependencies": { "js-yaml": "5.5.0" }
+}

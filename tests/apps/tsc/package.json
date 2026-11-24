@@ -1,0 +1,5 @@
+{
+  "name": "thinpack-tsc-size-fixture",
+  "private": true,
+  "dependencies": { "typescript": "5.9.3" }
+}

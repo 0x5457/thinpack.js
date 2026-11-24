@@ -4,6 +4,7 @@ use std::process::{Command, ExitCode};
 use std::{fmt::Write as _, fs};
 
 use crate::capabilities;
+use crate::measure::gzip_size;
 
 const MEASUREMENTS_DIR: &str = "measurements";
 const BINARY_NAME: &str = "thinpack-rt";
@@ -373,21 +374,6 @@ impl Record {
         );
         json
     }
-}
-
-fn gzip_size(binary: &Path) -> Result<u64, String> {
-    let output = Command::new("gzip")
-        .args(["-9", "-n", "-c"])
-        .arg(binary)
-        .output()
-        .map_err(|error| format!("gzip: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "gzip failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    Ok(output.stdout.len() as u64)
 }
 
 fn sha256(binary: &Path) -> Result<String, String> {

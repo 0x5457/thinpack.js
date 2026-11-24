@@ -125,6 +125,15 @@ brotli-compressed (`thinpack_js::js!`): 2.0 MB of JavaScript costs 0.43 MB of te
 few milliseconds per start. Measured with `cargo xtask size` (build, strip, measure, write
 `measurements/`).
 
+The numbers below (and the all-modules row above) predate `crypto`'s vendored OpenSSL
+backend (commit `1622804`): carrying `crypto` now adds about 3.7 MiB, so an app or template
+that requires it is larger than listed. `cargo xtask apps` measures the same apps from the
+pinned fixtures in `tests/apps/`, packs each with its own capability closure, and holds the
+artifact and its gzip size to `tests/apps/baseline.toml` — the current sizes. The Size
+workflow runs it on main, weekly, and on a pull request labelled `size`; growth beyond 1%
+fails the run, and an intentional change re-records the baseline with
+`cargo xtask apps --write-baseline`.
+
 ## Compared with other single-file approaches
 
 Same app (`@earendil-works/pi-coding-agent@1.5.0`, 2,377 modules, 16.5 MB of sources),
@@ -144,9 +153,10 @@ SEA artifact dies in `fileURLToPath(import.meta.url)` before `main`.
 ### Other CLIs
 
 Each app gets a template for its own closure (`pack --rebuild`) from the entry the package
-ships as its `bin`; bun gets the same entry, SEA an esbuild `--bundle --format=cjs` blob
-injected with postject. Sizes in MiB (gzip), startup for `--version` as cold/warm median of
-seven runs:
+ships as its `bin`; for `pi` that is the statically linked `dist/cli.js`, because its `bin`
+launcher hands off to an ES module bundle. bun gets the `bin` entry, SEA an esbuild
+`--bundle --format=cjs` blob injected with postject. Sizes in MiB (gzip), startup for
+`--version` as cold/warm median of seven runs:
 
 | Program | thinpack | bun | Node SEA | thinpack startup | SEA startup |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -211,6 +221,7 @@ cargo test -p thinpack-rt --test node   # Node.js compatibility suite
 cargo xtask gen --check                 # are generated files stale?
 cargo xtask lint                        # fmt + clippy, the commit gate
 cargo xtask size                        # build, strip, measure, record
+cargo xtask apps                        # pack tests/apps, check the size baseline
 cargo xtask dist                        # build, verify and archive a release
 ```
 
