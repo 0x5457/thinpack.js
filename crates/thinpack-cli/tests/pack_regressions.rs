@@ -240,6 +240,69 @@ mod unix {
     }
 
     #[test]
+    fn an_optional_dependency_above_the_project_root_is_left_out() {
+        let directory = TempDir::new("optional-hoisted-dependency");
+        let project = directory.path().join("project");
+        fs::create_dir(&project).expect("create project directory");
+        fs::write(
+            project.join("package.json"),
+            r#"{ "name": "app", "optionalDependencies": { "hoisted": "1" } }"#,
+        )
+        .expect("write project manifest");
+        let entry = project.join("main.js");
+        fs::write(&entry, "require('hoisted');\n").expect("write entry");
+        let dependency = directory.path().join("node_modules/hoisted");
+        fs::create_dir_all(&dependency).expect("create hoisted dependency");
+        fs::write(dependency.join("index.js"), "module.exports = 1;\n")
+            .expect("write hoisted module");
+
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let output = directory.path().join("packed-app");
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            directory.path(),
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+            ],
+        );
+        assert!(
+            result.status.success(),
+            "pack failed:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            error.contains("optional module resolves outside the project root"),
+            "{error}"
+        );
+        assert!(error.contains("hoisted/index.js"), "{error}");
+
+        let pack = thinpack_pack::read_from_executable(&output)
+            .expect("read packed executable")
+            .expect("packed payload");
+        assert!(
+            !pack
+                .manifest
+                .files
+                .iter()
+                .any(|file| file.path.contains("hoisted")),
+            "packed an unreachable optional module: {:?}",
+            pack.manifest
+                .files
+                .iter()
+                .map(|file| &file.path)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn a_symlinked_package_manifest_is_packed() {
         let directory = TempDir::new("symlinked-package-manifest");
         let project = directory.path().join("project");

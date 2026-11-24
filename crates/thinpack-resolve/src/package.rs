@@ -38,9 +38,6 @@ impl Manifest {
     pub(crate) fn is_module(&self) -> bool {
         self.module_type.as_deref() == Some("module")
     }
-    pub(crate) fn declares_optional(&self, name: &str) -> bool {
-        self.optional.iter().any(|entry| entry == name)
-    }
 }
 
 fn optional_names(value: &Json) -> Vec<String> {
@@ -58,18 +55,32 @@ fn optional_names(value: &Json) -> Vec<String> {
     names
 }
 
-pub fn declares_optional(specifier: &str, path: &Path, fs: &impl FileSystem) -> bool {
-    let name = package_name(specifier);
+/// The optional dependency names declared by the nearest package scope above `path`.
+///
+/// `optionalDependencies` and optional `peerDependenciesMeta` both count. Read once per
+/// analyzed file so a resolved package outside the project root can still be classified
+/// as optional.
+pub fn optional_dependencies(path: &Path, fs: &impl FileSystem) -> Vec<String> {
     let mut directory = path.parent();
     while let Some(current) = directory {
         let manifest_path = current.join("package.json");
         if fs.is_file(&manifest_path) {
             return Manifest::read(&manifest_path, fs)
-                .is_ok_and(|manifest| manifest.declares_optional(name));
+                .map_or_else(|_| Vec::new(), |manifest| manifest.optional);
         }
         directory = current.parent();
     }
-    false
+    Vec::new()
+}
+
+#[must_use]
+pub fn is_optional_dependency(specifier: &str, optional: &[String]) -> bool {
+    let name = package_name(specifier);
+    optional.iter().any(|entry| entry == name)
+}
+
+pub fn declares_optional(specifier: &str, path: &Path, fs: &impl FileSystem) -> bool {
+    is_optional_dependency(specifier, &optional_dependencies(path, fs))
 }
 
 fn package_name(specifier: &str) -> &str {
