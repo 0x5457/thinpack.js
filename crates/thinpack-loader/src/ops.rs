@@ -244,7 +244,7 @@ fn invalid_url(path: &str) -> String {
     format!("e\0ERR_INVALID_URL\0{path} cannot be converted to a file URL\0")
 }
 
-fn resolve_code(error: &thinpack_resolve::Error) -> &'static str {
+const fn resolve_code(error: &thinpack_resolve::Error) -> &'static str {
     use thinpack_resolve::Error;
 
     match error {
