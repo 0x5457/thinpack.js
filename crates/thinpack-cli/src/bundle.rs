@@ -128,6 +128,16 @@ fn collect_analysis_files(
 ) -> Result<Vec<PackedFile>, Box<dyn Error>> {
     let mut files = Vec::with_capacity(analysis.files.len());
     for path in &analysis.files {
+        // Resolution walks `node_modules` above the root, but the payload is rooted
+        // there: a file outside it cannot be reached by a specifier in the artifact.
+        if !path.starts_with(root) {
+            return Err(format!(
+                "{} resolves outside the project root {}; a packed binary only resolves modules under that root, so the file would be unreachable at run time. Copy it into the project or install the dependency inside the root",
+                path.display(),
+                root.display()
+            )
+            .into());
+        }
         files.push(PackedFile {
             path: virtual_path(root, path),
             contents: fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?,
@@ -160,9 +170,13 @@ fn collect_package_json(
             let path = entry.path();
             let metadata = entry.metadata()?;
             if metadata.is_dir() {
-                // `.git` and cargo's `target` never carry a packed
-                // `package.json`; skipping them keeps the walk off large trees.
-                if entry.file_name() != ".git" && entry.file_name() != "target" {
+                // `.git` never carries a `package.json`, and the project root's own
+                // `target` is a cargo build tree; pruning them keeps the walk off large
+                // trees. A nested directory with the same name is an ordinary package
+                // directory whose manifest still decides the format of its files.
+                let name = entry.file_name();
+                let pruned = name == ".git" || (name == "target" && directory.as_path() == root);
+                if !pruned {
                     stack.push(path);
                 }
             } else if metadata.is_file()
