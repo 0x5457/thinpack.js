@@ -134,6 +134,102 @@ mod unix {
     }
 
     #[test]
+    fn a_dependency_resolved_above_the_project_root_fails_packing() {
+        let directory = TempDir::new("hoisted-dependency");
+        let project = directory.path().join("project");
+        fs::create_dir(&project).expect("create project directory");
+        fs::write(project.join("package.json"), r#"{ "name": "app" }"#)
+            .expect("write project manifest");
+        let entry = project.join("main.js");
+        fs::write(&entry, "require('hoisted');\n").expect("write entry");
+        let dependency = directory.path().join("node_modules/hoisted");
+        fs::create_dir_all(&dependency).expect("create hoisted dependency");
+        fs::write(dependency.join("index.js"), "module.exports = 1;\n")
+            .expect("write hoisted module");
+
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let output = directory.path().join("packed-app");
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            directory.path(),
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+            ],
+        );
+        assert!(
+            !result.status.success(),
+            "packed a dependency the artifact cannot resolve"
+        );
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            error.contains("resolves outside the project root"),
+            "{error}"
+        );
+        assert!(error.contains("hoisted/index.js"), "{error}");
+        assert!(
+            !output.exists(),
+            "pack wrote an executable that cannot load its dependency"
+        );
+    }
+
+    #[test]
+    fn a_nested_target_manifest_is_packed() {
+        let directory = TempDir::new("nested-target-manifest");
+        let entry = directory.path().join("main.mjs");
+        fs::write(&entry, "import './lib/target/x.js';\n").expect("write ESM entry");
+        let nested = directory.path().join("lib/target");
+        fs::create_dir_all(&nested).expect("create nested target directory");
+        fs::write(nested.join("package.json"), r#"{ "type": "module" }"#)
+            .expect("write nested manifest");
+        fs::write(nested.join("x.js"), "export const x = 1;\n").expect("write ESM module");
+
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let output = directory.path().join("packed-app");
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            directory.path(),
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+            ],
+        );
+        assert!(
+            result.status.success(),
+            "pack failed:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+
+        let pack = thinpack_pack::read_from_executable(&output)
+            .expect("read packed executable")
+            .expect("packed payload");
+        assert!(
+            pack.manifest
+                .files
+                .iter()
+                .any(|file| file.path == "/app/lib/target/package.json"),
+            "missing nested manifest: {:?}",
+            pack.manifest
+                .files
+                .iter()
+                .map(|file| &file.path)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn finite_conditional_require_is_complete_in_strict_mode() {
         let directory = TempDir::new("finite-conditional-require");
         let entry = directory.path().join("main.js");
