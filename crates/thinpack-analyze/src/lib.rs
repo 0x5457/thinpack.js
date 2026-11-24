@@ -409,9 +409,6 @@ fn js_string(value: oxc_str::JSStr<'_>) -> String {
         .map_or_else(|| value.display().to_string(), str::to_owned)
 }
 
-/// The modules behind a global that the runtime installs lazily, so a static
-/// reference to the global is what brings them into the payload.
-const WEBSOCKET_BUILTINS: [&str; 4] = ["http", "https", "crypto", "buffer"];
 /// The vendored undici bundle (`crates/node/http/vendor/undici.js`) requires these, so a
 /// static reference to one of its globals has to pull all of them into the payload.
 /// `http2` and `sqlite` are not here: the bundle probes both and handles their absence.
@@ -614,7 +611,7 @@ impl<'a> VisitJs<'a> for SpecifierCollector<'a, '_> {
 
     fn visit_new_expression(&mut self, expression: &NewExpression<'a>) {
         match global_name(&expression.callee) {
-            Some("WebSocket") => self.add_builtins(&WEBSOCKET_BUILTINS),
+            Some("WebSocket") => self.add_builtins(&FETCH_BUILTINS),
             Some(name) if FETCH_GLOBALS.contains(&name) => self.add_builtins(&FETCH_BUILTINS),
             _ => {}
         }
@@ -971,7 +968,7 @@ mod tests {
         let fs = MemoryFs::new(&[("/app/main.js", "new WebSocket('ws://127.0.0.1:1');\n")]);
         let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
         let capabilities = capabilities(&analysis);
-        for name in ["http", "https", "crypto", "buffer"] {
+        for name in ["http", "net", "tls", "crypto", "buffer", "stream", "zlib"] {
             assert!(
                 capabilities.iter().any(|capability| capability == name),
                 "missing {name}: {capabilities:?}"
