@@ -1,0 +1,5 @@
+{
+  "name": "thinpack-terser-size-fixture",
+  "private": true,
+  "dependencies": { "terser": "5.51.2" }
+}

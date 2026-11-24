@@ -1,8 +1,12 @@
+mod apps;
+
 mod capabilities;
 
 mod dist;
 
 mod lint;
+
+mod measure;
 
 mod size;
 
@@ -15,7 +19,9 @@ Usage: cargo xtask gen [--check]
        cargo xtask lint
        cargo xtask size [--backend <quickjs|v8|jsc>] [--profile <release|small|all>]
                         [--modules <all|core|name,...>]
-       cargo xtask dist [--backend <quickjs|v8|jsc>] [--target <triple>] [--out <dir>]";
+       cargo xtask dist [--backend <quickjs|v8|jsc>] [--target <triple>] [--out <dir>]
+       cargo xtask apps [--only <name,...>] [--baseline <path>] [--write-baseline]
+                        [--summary <path>]";
 
 /// The workspace root: the parent directory of the `xtask` package.
 ///
@@ -43,6 +49,7 @@ fn main() -> ExitCode {
         "lint" => lint::run(&rest),
         "size" => size::run(&rest),
         "dist" => dist::run(&rest),
+        "apps" => apps::run(&rest),
         _ => {
             eprintln!("unknown command `{command}`\n{USAGE}");
             ExitCode::from(2)

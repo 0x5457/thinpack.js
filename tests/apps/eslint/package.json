@@ -1,0 +1,5 @@
+{
+  "name": "thinpack-eslint-size-fixture",
+  "private": true,
+  "dependencies": { "eslint": "10.15.0" }
+}
