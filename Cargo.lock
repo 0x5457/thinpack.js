@@ -380,6 +380,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
+name = "chacha20"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.3.1",
+ "rand_core 0.10.1",
+]
+
+[[package]]
 name = "cipher"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -398,6 +409,16 @@ dependencies = [
  "glob",
  "libc",
  "libloading",
+]
+
+[[package]]
+name = "combine"
+version = "4.6.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4356eba6976435498d05a311ee9fc486da3bc81c200d3f0d7dd9703b41913f92"
+dependencies = [
+ "bytes",
+ "memchr",
 ]
 
 [[package]]
@@ -430,6 +451,16 @@ name = "cooked-waker"
 version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "147be55d677052dabc6b22252d5dd0fd4c29c8c27aa4f2fbef0f94aa003b406f"
+
+[[package]]
+name = "core-foundation"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91e195e091a93c46f7102ec7818a2aa394e1e1771c3ab4825963fa03e45afb8f"
+dependencies = [
+ "core-foundation-sys",
+ "libc",
+]
 
 [[package]]
 name = "core-foundation"
@@ -975,7 +1006,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1077,18 +1108,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "enum-as-inner"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1e6a265c649f3f5979b601d26f1d05ada116434c87741c9493cb56218f76cbc"
-dependencies = [
- "heck",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "equivalent"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1101,7 +1120,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1320,25 +1339,14 @@ dependencies = [
 
 [[package]]
 name = "getrandom"
-version = "0.3.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
-dependencies = [
- "cfg-if",
- "libc",
- "r-efi 5.3.0",
- "wasip2",
-]
-
-[[package]]
-name = "getrandom"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099"
 dependencies = [
  "cfg-if",
  "libc",
- "r-efi 6.0.0",
+ "r-efi",
+ "rand_core 0.10.1",
 ]
 
 [[package]]
@@ -1429,23 +1437,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
-name = "hickory-proto"
-version = "0.25.2"
+name = "hickory-net"
+version = "0.26.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8a6fe56c0038198998a6f217ca4e7ef3a5e51f46163bd6dd60b5c71ca6c6502"
+checksum = "c480823ed7c2c5d0f09c41020cb6b7c28029ce60ec42dc942158dcf22f8e0a4d"
 dependencies = [
  "async-trait",
  "cfg-if",
  "data-encoding",
- "enum-as-inner",
  "futures-channel",
  "futures-io",
  "futures-util",
+ "hickory-proto",
  "idna",
  "ipnet",
- "once_cell",
- "rand 0.9.5",
- "ring",
+ "jni",
+ "rand 0.10.4",
  "thiserror",
  "tinyvec",
  "tokio",
@@ -1454,21 +1461,46 @@ dependencies = [
 ]
 
 [[package]]
-name = "hickory-resolver"
-version = "0.25.2"
+name = "hickory-proto"
+version = "0.26.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc62a9a99b0bfb44d2ab95a7208ac952d31060efc16241c87eaf36406fecf87a"
+checksum = "12b92608f679a6fa515dd1d15c1ff89443026e391200a2c840c7afcba482893d"
+dependencies = [
+ "data-encoding",
+ "idna",
+ "ipnet",
+ "jni",
+ "once_cell",
+ "prefix-trie",
+ "rand 0.10.4",
+ "ring",
+ "thiserror",
+ "tinyvec",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "hickory-resolver"
+version = "0.26.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f3da5255c95d5a716857d54b5b8f4e8d67c3484d3beaaaae2ce25063b3ba981"
 dependencies = [
  "cfg-if",
  "futures-util",
+ "hickory-net",
  "hickory-proto",
  "ipconfig",
+ "ipnet",
+ "jni",
  "moka",
+ "ndk-context",
  "once_cell",
  "parking_lot",
- "rand 0.9.5",
+ "rand 0.10.4",
  "resolv-conf",
  "smallvec",
+ "system-configuration",
  "thiserror",
  "tokio",
  "tracing",
@@ -1816,6 +1848,9 @@ name = "ipnet"
 version = "2.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "itertools"
@@ -1846,6 +1881,55 @@ name = "ixdtf"
 version = "0.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4754a1731458af0443709c9667302793d3f63cc90ec4ba4c8259f2b9515478e5"
+
+[[package]]
+name = "jni"
+version = "0.22.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5efd9a482cf3a427f00d6b35f14332adc7902ce91efb778580e180ff90fa3498"
+dependencies = [
+ "cfg-if",
+ "combine",
+ "jni-macros",
+ "jni-sys",
+ "log",
+ "simd_cesu8",
+ "thiserror",
+ "walkdir",
+ "windows-link 0.2.1",
+]
+
+[[package]]
+name = "jni-macros"
+version = "0.22.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a00109accc170f0bdb141fed3e393c565b6f5e072365c3bd58f5b062591560a3"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "rustc_version",
+ "simd_cesu8",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "jni-sys"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6377a88cb3910bee9b0fa88d4f42e1d2da8e79915598f65fb0c7ee14c878af2"
+dependencies = [
+ "jni-sys-macros",
+]
+
+[[package]]
+name = "jni-sys-macros"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38c0b942f458fe50cdac086d2f946512305e5631e720728f2a61aabcd47a6264"
+dependencies = [
+ "quote",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "jobserver"
@@ -2082,6 +2166,12 @@ dependencies = [
  "tagptr",
  "uuid",
 ]
+
+[[package]]
+name = "ndk-context"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "27b02d87554356db9e9a873add8782d4ea6e3e58ea071a9adb9a2e8ddb884a8b"
 
 [[package]]
 name = "netif"
@@ -2748,6 +2838,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "prefix-trie"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cf6e3177f0684016a5c209b00882e15f8bdd3f3bb48f0491df10cd102d0c6e7"
+dependencies = [
+ "either",
+ "ipnet",
+ "num-traits",
+]
+
+[[package]]
 name = "prettyplease"
 version = "0.2.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2786,12 +2887,6 @@ dependencies = [
 
 [[package]]
 name = "r-efi"
-version = "5.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
-
-[[package]]
-name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
@@ -2808,18 +2903,19 @@ version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e058c7de0b26af77780c769414d6257830bb240f3c38477dbc2c16e5f54d6d4c"
 dependencies = [
- "rand_chacha 0.3.1",
+ "rand_chacha",
  "rand_core 0.6.4",
 ]
 
 [[package]]
 name = "rand"
-version = "0.9.5"
+version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9ef1d0d795eb7d84685bca4f72f3649f064e6641543d3a8c415898726a57b41"
+checksum = "8f6fa277c67e6ea590466f04c3fe82cb509f0864fe470643e5570de9514a9b11"
 dependencies = [
- "rand_chacha 0.9.0",
- "rand_core 0.9.5",
+ "chacha20",
+ "getrandom 0.4.3",
+ "rand_core 0.10.1",
 ]
 
 [[package]]
@@ -2833,16 +2929,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rand_chacha"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3022b5f1df60f26e1ffddd6c66e8aa15de382ae63b3a0c1bfc0e4d3e3f325cb"
-dependencies = [
- "ppv-lite86",
- "rand_core 0.9.5",
-]
-
-[[package]]
 name = "rand_core"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2853,12 +2939,9 @@ dependencies = [
 
 [[package]]
 name = "rand_core"
-version = "0.9.5"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c"
-dependencies = [
- "getrandom 0.3.4",
-]
+checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
 name = "redox_syscall"
@@ -3029,7 +3112,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3160,7 +3243,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b7f4bc775c73d9a02cde8bf7b2ec4c9d12743edf609006c7facc23998404cd1d"
 dependencies = [
  "bitflags",
- "core-foundation",
+ "core-foundation 0.10.1",
  "core-foundation-sys",
  "libc",
  "security-framework-sys",
@@ -3321,6 +3404,22 @@ name = "simd-adler32"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
+
+[[package]]
+name = "simd_cesu8"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11031e251abf8611c80f460e19dbdeb54a66db918e49c65a7065b46ac7aec520"
+dependencies = [
+ "rustc_version",
+ "simdutf8",
+]
+
+[[package]]
+name = "simdutf8"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
 name = "siphasher"
@@ -3536,6 +3635,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "system-configuration"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a13f3d0daba03132c0aa9767f98351b3488edc2c100cda2d2ec2b04f3d8d3c8b"
+dependencies = [
+ "bitflags",
+ "core-foundation 0.9.4",
+ "system-configuration-sys",
+]
+
+[[package]]
+name = "system-configuration-sys"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e1d1b10ced5ca923a1fcb8d03e96b8d3268065d724548c0211415ff6ac6bac4"
+dependencies = [
+ "core-foundation-sys",
+ "libc",
+]
+
+[[package]]
 name = "tagptr"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3611,7 +3731,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-analyze"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "oxc_allocator",
  "oxc_ast",
@@ -3626,11 +3746,11 @@ dependencies = [
 
 [[package]]
 name = "thinpack-caps"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "thinpack-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "brotli 9.1.3",
  "thinpack-analyze",
@@ -3641,7 +3761,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -3650,7 +3770,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-io"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "tokio",
@@ -3658,14 +3778,14 @@ dependencies = [
 
 [[package]]
 name = "thinpack-js"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "brotli 9.1.3",
 ]
 
 [[package]]
 name = "thinpack-loader"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -3680,7 +3800,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-assert"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -3688,7 +3808,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-async-hooks"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -3696,7 +3816,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-buffer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -3704,7 +3824,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-child-process"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -3717,7 +3837,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-cluster"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -3730,7 +3850,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-console"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -3738,7 +3858,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-constants"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -3746,7 +3866,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-crypto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -3780,7 +3900,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-diagnostics-channel"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -3788,7 +3908,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-dns"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -3800,7 +3920,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-events"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -3808,7 +3928,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-ffi"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "deno_ffi",
@@ -3817,7 +3937,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-fs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -3832,7 +3952,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-http"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -3840,7 +3960,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-http2"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "deno_core",
@@ -3856,7 +3976,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-https"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -3864,7 +3984,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-inspector"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -3872,7 +3992,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-internals"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -3880,7 +4000,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-module"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -3888,7 +4008,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-net"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -3901,7 +4021,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-os"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -3913,7 +4033,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-path"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -3922,7 +4042,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-perf-hooks"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -3930,7 +4050,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-process"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -3941,7 +4061,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-punycode"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -3949,7 +4069,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-querystring"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -3957,7 +4077,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-readline"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -3965,7 +4085,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-sea"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "thinpack-core",
@@ -3974,7 +4094,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-sqlite"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -3984,7 +4104,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-stream"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -3992,7 +4112,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-string-decoder"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4000,7 +4120,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-test"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4008,7 +4128,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-timers"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4016,7 +4136,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-tls"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -4032,7 +4152,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-tty"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4040,7 +4160,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-url"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4049,7 +4169,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-util"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4057,7 +4177,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-v8"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4065,7 +4185,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-vm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4073,7 +4193,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-worker-threads"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -4083,7 +4203,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-zlib"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "brotli 8.0.4",
  "deno_core",
@@ -4095,18 +4215,18 @@ dependencies = [
 
 [[package]]
 name = "thinpack-pack"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "brotli-decompressor 6.3.2",
 ]
 
 [[package]]
 name = "thinpack-resolve"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "thinpack-rt"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deno_core",
  "libc",
@@ -4165,7 +4285,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-vfs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "thinpack-core",
  "thinpack-pack",
@@ -4513,15 +4633,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 
 [[package]]
-name = "wasip2"
-version = "1.0.4+wasi-0.2.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b67efb37e106e55ce722a510d6b5f9c17f083e5fc79afc2badeb12cc313d9487"
-dependencies = [
- "wit-bindgen",
-]
-
-[[package]]
 name = "wasm-bindgen"
 version = "0.2.130"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4615,7 +4726,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4874,12 +4985,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d135d17ab770252ad95e9a872d365cf3090e3be864a34ab46f48555993efc904"
 
 [[package]]
-name = "wit-bindgen"
-version = "0.57.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
-
-[[package]]
 name = "write16"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4936,7 +5041,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "flate2",
  "serde",
