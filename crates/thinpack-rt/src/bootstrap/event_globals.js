@@ -132,7 +132,7 @@
     get() {
       let WebSocket;
       try {
-        ({ WebSocket } = globalThis.__thinpack_require__("node:thinpack/internal/websocket"));
+        ({ WebSocket } = globalThis.__thinpack_require__("node:thinpack/internal/undici"));
       } catch (error) {
         const wrapped = new Error(
           "WebSocket is not available in this build; re-pack with --with http,https,crypto,buffer",

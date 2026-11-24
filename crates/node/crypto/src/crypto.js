@@ -250,6 +250,12 @@
   }
 
   const createHash = (algorithm) => new Hash(algorithm);
+
+  // Node's one-shot hash. undici's WebSocket authenticates the handshake with it.
+  const hash = (algorithm, data, outputEncoding) => {
+    const hasher = createHash(algorithm).update(data);
+    return outputEncoding === undefined ? hasher.digest() : hasher.digest(outputEncoding);
+  };
   const createHmac = (algorithm, key) => new Hmac(algorithm, key);
   const getHashes = () => ["md5", "sha1", "sha256", "sha384", "sha512"];
 
@@ -808,6 +814,7 @@
     Hmac,
     createHash,
     createHmac,
+    hash,
     getHashes,
     randomBytes,
     randomFill,

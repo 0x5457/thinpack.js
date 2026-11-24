@@ -227,10 +227,11 @@ for adding a module.
   `JavaScriptCore.framework`. Its ES module support is a source rewriter aimed at flattened
   bundles; packed apps keep their file boundaries, so live bindings, cycles and namespace edge
   cases may differ from the QuickJS and V8 templates, and import attributes are unsupported.
-- `fetch` and its types are Node's own undici, vendored from `deps/undici/undici.js`, so they
-  behave as Node does; `EventSource`, `MessageEvent`, `CloseEvent` and `ErrorEvent` are absent.
-  `WebSocket`, `Blob`, `File` and `reportError` are present. The bundle's evaluation is lazy,
-  but its payload is not: it ships with `http` and is decoded at startup.
+- `fetch`, `WebSocket` and their types are Node's own undici, vendored from
+  `deps/undici/undici.js`, so they behave as Node does; `EventSource`, `MessageEvent`,
+  `CloseEvent` and `ErrorEvent` are absent. `Blob`, `File` and `reportError` are present.
+  The bundle's evaluation is lazy, but its payload is not: it ships with `http` and is
+  decoded at startup, and a `WebSocket` app pulls the same sixteen-module closure as `fetch`.
   `docs/gaps.md` records what remains different.
 - No N-API or native addon loading; code that needs native code goes through `node:ffi`.
 - `crypto` key material covers RSA/RSA-PSS, EC (P-256/P-384/P-521/secp256k1), Ed25519 and

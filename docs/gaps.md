@@ -28,12 +28,14 @@ the divergence, why it exists, and where it lives.
   (`crates/node/http/src/vendor/undici.js`). They are the same code Node runs, so request
   construction, redirects, `AbortSignal`, multipart encoding and the error shapes are Node's,
   and the module needs no seams: the bundle requires only `node:` builtins.
-  - That bundle is the reason a `fetch` call pulls sixteen modules into the payload
+  - That bundle is the reason a `fetch` or `WebSocket` call pulls sixteen modules into the payload
     (`assert`, `async_hooks`, `buffer`, `crypto`, `diagnostics_channel`, `events`, `http`,
     `net`, `perf_hooks`, `querystring`, `stream`, `tls`, `url`, `util`, `worker_threads`,
     `zlib`), which closes over 21 capabilities once the ambient modules are added. `http2`
     and `sqlite` stay out of both sets: undici probes them and handles their absence, so the
     analyzer does not pull them and `--without http2`/`--without sqlite` keep working.
+  - `WebSocket` is the bundle's implementation, not a separate stack, so it shares the same
+    closure and the same protocol behavior as Node.
   - Loading is lazy, the payload is not: the bundle is a lazy source of the `http` extension,
     and every lazy source is decompressed and retained as a string per realm when the runtime
     is created. An app that enables `http` — which includes every app that only uses

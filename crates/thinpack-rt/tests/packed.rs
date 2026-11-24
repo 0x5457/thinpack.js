@@ -797,6 +797,91 @@ console.log('signals shared');
         capabilities: &["os"],
         error: None,
     },
+    PackedTest {
+        name: "packed::websocket-undici",
+        directory: "websocket-undici",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r"const http = require('node:http');
+const crypto = require('node:crypto');
+const assert = require('node:assert/strict');
+
+let connections = 0;
+const server = http.createServer();
+server.on('upgrade', (request, socket) => {
+  const invalid = connections++ === 1;
+  const key = request.headers['sec-websocket-key'];
+  const accept = crypto
+    .createHash('sha1')
+    .update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11')
+    .digest('base64');
+  socket.write(
+    'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n' +
+      `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
+  );
+  let buffer = Buffer.alloc(0);
+  socket.on('data', (chunk) => {
+    buffer = Buffer.concat([buffer, chunk]);
+    while (buffer.length >= 2) {
+      const opcode = buffer[0] & 0x0f;
+      const masked = (buffer[1] & 0x80) !== 0;
+      let length = buffer[1] & 0x7f;
+      let offset = 2;
+      if (length === 126) {
+        if (buffer.length < 4) return;
+        length = buffer.readUInt16BE(2);
+        offset = 4;
+      }
+      const maskOffset = offset;
+      if (masked) offset += 4;
+      if (buffer.length < offset + length) return;
+      const payload = Buffer.from(buffer.subarray(offset, offset + length));
+      if (masked) {
+        for (let i = 0; i < payload.length; i += 1) payload[i] ^= buffer[maskOffset + (i % 4)];
+      }
+      buffer = buffer.subarray(offset + length);
+      if (opcode === 0x8) {
+        socket.write(Buffer.from([0x88, 0x00]));
+        socket.end();
+        return;
+      }
+      if (opcode === 0x1 || opcode === 0x2) {
+        if (invalid) {
+          socket.write(Buffer.from([0x81, 0x02, 0xc3, 0x28]));
+        } else {
+          socket.write(Buffer.concat([Buffer.from([0x80 | opcode, length]), payload]));
+        }
+      }
+    }
+  });
+});
+
+const connect = (port, invalid) =>
+  new Promise((resolve) => {
+    const socket = new WebSocket(`ws://127.0.0.1:${port}`);
+    let message = null;
+    socket.onopen = () => socket.send('ping');
+    socket.onmessage = (event) => {
+      message = event.data;
+      socket.close();
+    };
+    socket.onerror = () => {};
+    socket.onclose = () => resolve(message);
+  });
+
+server.listen(0, '127.0.0.1', async () => {
+  const { port } = server.address();
+  assert.equal(await connect(port, false), 'ping');
+  assert.equal(await connect(port, true), null);
+  server.close();
+  console.log('websocket parity ok');
+});
+",
+        )],
+        capabilities: &["assert", "crypto"],
+        error: None,
+    },
 ];
 
 /// Packed startup cases whose source is generated because the payload is large.
