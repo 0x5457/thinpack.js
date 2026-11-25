@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use bytes::Bytes;
+use deno_core::convert::ByteString;
 use deno_core::{OpDecl, op2};
 use deno_error::JsErrorBox;
 use h2::client::{self, SendRequest};
@@ -13,6 +14,10 @@ use http::{HeaderMap, Request, Response, Version};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
+
+use crate::events::{
+    Headers, ListenerInfo, SessionEvent, SessionInfo, StreamEvent, header_entries, request_entries,
+};
 
 pub(crate) const OPS: &[OpDecl] = &[
     op_http2_connect(),
@@ -36,15 +41,6 @@ pub(crate) const OPS: &[OpDecl] = &[
     op_http2_ping(),
 ];
 
-const EVENT_RESPONSE: u8 = 1;
-const EVENT_DATA: u8 = 2;
-const EVENT_TRAILERS: u8 = 3;
-const EVENT_END: u8 = 4;
-const EVENT_CLOSE: u8 = 5;
-const EVENT_ERROR: u8 = 6;
-const EVENT_STREAM: u8 = 7;
-const EVENT_GOAWAY: u8 = 8;
-
 enum SessionCommand {
     GoAway(Reason),
 }
@@ -58,9 +54,9 @@ struct Session {
     send: Mutex<Option<SendRequest<Bytes>>>,
     streams: Mutex<HashMap<u32, Arc<Stream>>>,
     driver: Mutex<Option<tokio::task::JoinHandle<()>>>,
-    events: mpsc::UnboundedSender<Vec<u8>>,
-    incoming: tokio::sync::Mutex<mpsc::UnboundedReceiver<Vec<u8>>>,
-    info: String,
+    events: mpsc::UnboundedSender<SessionEvent>,
+    incoming: tokio::sync::Mutex<mpsc::UnboundedReceiver<SessionEvent>>,
+    info: Option<SessionInfo>,
     ping: tokio::sync::Mutex<Option<PingPong>>,
     control: mpsc::UnboundedSender<SessionCommand>,
     inject: Mutex<Option<mpsc::UnboundedSender<Inject>>>,
@@ -68,8 +64,8 @@ struct Session {
 
 struct Stream {
     session: u32,
-    events: mpsc::UnboundedSender<Vec<u8>>,
-    incoming: tokio::sync::Mutex<mpsc::UnboundedReceiver<Vec<u8>>>,
+    events: mpsc::UnboundedSender<StreamEvent>,
+    incoming: tokio::sync::Mutex<mpsc::UnboundedReceiver<StreamEvent>>,
     outbound: tokio::sync::Mutex<Option<Outbound>>,
 }
 
@@ -154,7 +150,7 @@ fn insert_session(session: Session) -> u32 {
 
 fn new_session(
     send: Option<SendRequest<Bytes>>,
-    info: String,
+    info: Option<SessionInfo>,
     ping: Option<PingPong>,
     inject: Option<mpsc::UnboundedSender<Inject>>,
 ) -> (Session, mpsc::UnboundedReceiver<SessionCommand>) {
@@ -176,67 +172,25 @@ fn new_session(
     )
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "the header blob is a fixed-width wire format: the count and name lengths are read back as u16 and value lengths as u32; HTTP/2 caps header blocks at 16 KiB"
-)]
-fn push_entries(event: &mut Vec<u8>, entries: &[(Vec<u8>, Vec<u8>)]) {
-    event.extend_from_slice(&(entries.len() as u16).to_le_bytes());
-    for (name, value) in entries {
-        event.extend_from_slice(&(name.len() as u16).to_le_bytes());
-        event.extend_from_slice(name);
-        event.extend_from_slice(&(value.len() as u32).to_le_bytes());
-        event.extend_from_slice(value);
-    }
+fn header_text(bytes: ByteString) -> Result<String, JsErrorBox> {
+    String::from_utf8(bytes.into()).map_err(|_| invalid("header is not ASCII"))
 }
 
-fn push_headers(event: &mut Vec<u8>, headers: &HeaderMap) {
-    let entries: Vec<(Vec<u8>, Vec<u8>)> = headers
-        .iter()
-        .map(|(name, value)| (name.as_str().as_bytes().to_vec(), value.as_bytes().to_vec()))
-        .collect();
-    push_entries(event, &entries);
-}
-
-fn push_request_headers(event: &mut Vec<u8>, request: &Request<RecvStream>) {
-    let mut entries: Vec<(Vec<u8>, Vec<u8>)> = vec![(
-        b":method".to_vec(),
-        request.method().as_str().as_bytes().to_vec(),
-    )];
-    if let Some(scheme) = request.uri().scheme_str() {
-        entries.push((b":scheme".to_vec(), scheme.as_bytes().to_vec()));
-    }
-    if let Some(authority) = request.uri().authority() {
-        entries.push((
-            b":authority".to_vec(),
-            authority.as_str().as_bytes().to_vec(),
-        ));
-    }
-    if let Some(path) = request.uri().path_and_query() {
-        entries.push((b":path".to_vec(), path.as_str().as_bytes().to_vec()));
-    }
-    for (name, value) in request.headers() {
-        entries.push((name.as_str().as_bytes().to_vec(), value.as_bytes().to_vec()));
-    }
-    push_entries(event, &entries);
-}
-
-fn request_from_headers(blob: &[u8]) -> Result<Request<()>, JsErrorBox> {
-    let (count, mut offset) = read_u16(blob, 0).ok_or_else(|| invalid("truncated header block"))?;
+fn request_from_headers(headers: Headers) -> Result<Request<()>, JsErrorBox> {
     let mut method = "GET".to_owned();
     let mut scheme = "http".to_owned();
     let mut authority = String::new();
     let mut path = "/".to_owned();
-    let mut headers = Vec::new();
-    for _ in 0..count {
-        let (name, value, next) = read_entry(blob, offset)?;
-        offset = next;
+    let mut fields = Vec::new();
+    for (name, value) in headers {
+        let name = header_text(name)?;
+        let value = header_text(value)?;
         match name.as_str() {
             ":method" => method = value,
             ":scheme" => scheme = value,
             ":authority" => authority = value,
             ":path" => path = value,
-            _ => headers.push((name, value)),
+            _ => fields.push((name, value)),
         }
     }
     let uri = if authority.is_empty() {
@@ -248,7 +202,7 @@ fn request_from_headers(blob: &[u8]) -> Result<Request<()>, JsErrorBox> {
         .method(method.as_str())
         .version(Version::HTTP_2)
         .uri(uri);
-    for (name, value) in headers {
+    for (name, value) in fields {
         builder = builder.header(name, value);
     }
     builder
@@ -256,23 +210,22 @@ fn request_from_headers(blob: &[u8]) -> Result<Request<()>, JsErrorBox> {
         .map_err(|error| invalid(&error.to_string()))
 }
 
-fn response_from_headers(blob: &[u8]) -> Result<Response<()>, JsErrorBox> {
-    let (count, mut offset) = read_u16(blob, 0).ok_or_else(|| invalid("truncated header block"))?;
+fn response_from_headers(headers: Headers) -> Result<Response<()>, JsErrorBox> {
     let mut status = 200u16;
-    let mut headers = Vec::new();
-    for _ in 0..count {
-        let (name, value, next) = read_entry(blob, offset)?;
-        offset = next;
+    let mut fields = Vec::new();
+    for (name, value) in headers {
+        let name = header_text(name)?;
+        let value = header_text(value)?;
         if name == ":status" {
             status = value.parse().map_err(|_| invalid("invalid :status"))?;
         } else if name.starts_with(':') {
             return Err(invalid(&format!("unsupported pseudo header {name}")));
         } else {
-            headers.push((name, value));
+            fields.push((name, value));
         }
     }
     let mut builder = Response::builder().version(Version::HTTP_2).status(status);
-    for (name, value) in headers {
+    for (name, value) in fields {
         builder = builder.header(name, value);
     }
     builder
@@ -280,43 +233,11 @@ fn response_from_headers(blob: &[u8]) -> Result<Response<()>, JsErrorBox> {
         .map_err(|error| invalid(&error.to_string()))
 }
 
-fn read_entry(blob: &[u8], offset: usize) -> Result<(String, String, usize), JsErrorBox> {
-    let (name_len, offset) =
-        read_u16(blob, offset).ok_or_else(|| invalid("truncated header name"))?;
-    let name = string_of(blob, offset, name_len as usize)?;
-    let offset = offset + name_len as usize;
-    let (value_len, offset) =
-        read_u32(blob, offset).ok_or_else(|| invalid("truncated header value"))?;
-    let value = string_of(blob, offset, value_len as usize)?;
-    Ok((name, value, offset + value_len as usize))
-}
-
-fn read_u16(bytes: &[u8], offset: usize) -> Option<(u16, usize)> {
-    let slice = bytes.get(offset..offset + 2)?;
-    Some((u16::from_le_bytes([slice[0], slice[1]]), offset + 2))
-}
-
-fn read_u32(bytes: &[u8], offset: usize) -> Option<(u32, usize)> {
-    let slice = bytes.get(offset..offset + 4)?;
-    Some((
-        u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]),
-        offset + 4,
-    ))
-}
-
-fn string_of(bytes: &[u8], offset: usize, len: usize) -> Result<String, JsErrorBox> {
-    let slice = bytes
-        .get(offset..offset + len)
-        .ok_or_else(|| invalid("truncated header block"))?;
-    String::from_utf8(slice.to_vec()).map_err(|_| invalid("header is not ASCII"))
-}
-
-fn trailers_from_headers(blob: &[u8]) -> Result<HeaderMap, JsErrorBox> {
-    let (count, mut offset) = read_u16(blob, 0).ok_or_else(|| invalid("truncated header block"))?;
+fn trailers_from_headers(headers: Headers) -> Result<HeaderMap, JsErrorBox> {
     let mut trailers = HeaderMap::new();
-    for _ in 0..count {
-        let (name, value, next) = read_entry(blob, offset)?;
-        offset = next;
+    for (name, value) in headers {
+        let name = header_text(name)?;
+        let value = header_text(value)?;
         let name = http::header::HeaderName::from_bytes(name.as_bytes())
             .map_err(|_| invalid(&format!("invalid header name {name}")))?;
         let value = http::header::HeaderValue::from_str(&value)
@@ -349,7 +270,7 @@ async fn op_http2_connect(tcp_id: u32) -> Result<u32, JsErrorBox> {
 
 fn injectable_transport<S>(
     transport: S,
-    observer: Arc<Mutex<Option<mpsc::UnboundedSender<Vec<u8>>>>>,
+    observer: Arc<Mutex<Option<mpsc::UnboundedSender<SessionEvent>>>>,
 ) -> (tokio::io::DuplexStream, mpsc::UnboundedSender<Inject>)
 where
     S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
@@ -437,7 +358,7 @@ fn goaway_frame(last_stream_id: u32, code: u32, debug: &[u8]) -> Vec<u8> {
 fn observe_frames(
     pending: &mut Vec<u8>,
     data: &[u8],
-    observer: &Arc<Mutex<Option<mpsc::UnboundedSender<Vec<u8>>>>>,
+    observer: &Arc<Mutex<Option<mpsc::UnboundedSender<SessionEvent>>>>,
 ) {
     pending.extend_from_slice(data);
     loop {
@@ -454,11 +375,11 @@ fn observe_frames(
             let last = u32::from_be_bytes([pending[9], pending[10], pending[11], pending[12]])
                 & 0x7fff_ffff;
             let debug = &pending[17..9 + length];
-            let mut event = Vec::with_capacity(9 + debug.len());
-            event.push(EVENT_GOAWAY);
-            event.extend_from_slice(&code.to_le_bytes());
-            event.extend_from_slice(&last.to_le_bytes());
-            event.extend_from_slice(debug);
+            let event = SessionEvent::Goaway {
+                code,
+                last_stream_id: last,
+                opaque: (!debug.is_empty()).then(|| debug.to_vec().into()).into(),
+            };
             if let Some(sender) = observer.lock().expect("http2 goaway observer").as_ref() {
                 let _ = sender.send(event);
             }
@@ -487,23 +408,22 @@ where
     let (send, mut connection) = client::handshake(transport).await.map_err(http2_error)?;
     let send = send.ready().await.map_err(http2_error)?;
     let ping = connection.ping_pong();
-    let (session, _commands) = new_session(Some(send), String::new(), ping, Some(inject));
+    let (session, _commands) = new_session(Some(send), None, ping, Some(inject));
     let id = insert_session(session);
     let events = session_of(id)?.events.clone();
     *observer.lock().expect("http2 goaway observer") = Some(events.clone());
     let driver = tokio::spawn(async move {
         let _ = connection.await;
-        let _ = events.send(Vec::from([EVENT_CLOSE]));
-        let _ = events.send(Vec::new());
+        let _ = events.send(SessionEvent::Close);
     });
     *session_of(id)?.driver.lock().expect("http2 driver") = Some(driver);
     Ok(id)
 }
 
-#[op2(fast)]
+#[op2]
 fn op_http2_request(
     session_id: u32,
-    #[buffer] headers: &[u8],
+    #[scoped] headers: Headers,
     end_stream: bool,
 ) -> Result<u32, JsErrorBox> {
     let session = session_of(session_id)?;
@@ -536,45 +456,49 @@ fn op_http2_request(
     Ok(stream_id)
 }
 
-async fn read_response(response: client::ResponseFuture, events: mpsc::UnboundedSender<Vec<u8>>) {
+async fn read_response(
+    response: client::ResponseFuture,
+    events: mpsc::UnboundedSender<StreamEvent>,
+) {
     let response = match response.await {
         Ok(response) => response,
         Err(error) => {
-            send_event(&events, Vec::from([EVENT_ERROR]), &error.to_string());
+            let _ = events.send(StreamEvent::Failure(error.to_string()));
             return;
         }
     };
     let (parts, body) = response.into_parts();
-    let mut event = vec![EVENT_RESPONSE, u8::from(body.is_end_stream())];
-    event.extend_from_slice(&parts.status.as_u16().to_le_bytes());
-    push_headers(&mut event, &parts.headers);
+    let event = StreamEvent::Response {
+        end_stream: body.is_end_stream(),
+        status: parts.status.as_u16(),
+        headers: header_entries(&parts.headers),
+    };
     if events.send(event).is_err() {
         return;
     }
     read_body(body, events).await;
 }
 
-async fn read_body(mut body: RecvStream, events: mpsc::UnboundedSender<Vec<u8>>) {
+async fn read_body(mut body: RecvStream, events: mpsc::UnboundedSender<StreamEvent>) {
     if !body.is_end_stream() {
         loop {
             match body.data().await {
                 Some(Ok(chunk)) => {
-                    let mut event = Vec::with_capacity(chunk.len() + 1);
-                    event.push(EVENT_DATA);
-                    event.extend_from_slice(&chunk);
-                    if events.send(event).is_err() {
+                    if events
+                        .send(StreamEvent::Data(chunk.to_vec().into()))
+                        .is_err()
+                    {
                         return;
                     }
                 }
                 Some(Err(error)) => {
                     if let Some(reason) = error.reason() {
-                        let mut event = Vec::from([EVENT_CLOSE]);
-                        event.extend_from_slice(&u32::from(reason).to_le_bytes());
-                        let _ = events.send(event);
-                        let _ = events.send(Vec::new());
+                        let _ = events.send(StreamEvent::Close {
+                            reason: u32::from(reason),
+                        });
                         return;
                     }
-                    send_event(&events, Vec::from([EVENT_ERROR]), &error.to_string());
+                    let _ = events.send(StreamEvent::Failure(error.to_string()));
                     return;
                 }
                 None => break,
@@ -582,30 +506,22 @@ async fn read_body(mut body: RecvStream, events: mpsc::UnboundedSender<Vec<u8>>)
         }
         match body.trailers().await {
             Ok(Some(trailers)) => {
-                let mut event = vec![EVENT_TRAILERS];
-                push_headers(&mut event, &trailers);
-                if events.send(event).is_err() {
+                if events
+                    .send(StreamEvent::Trailers(header_entries(&trailers)))
+                    .is_err()
+                {
                     return;
                 }
             }
             Ok(None) => {}
             Err(error) => {
-                send_event(&events, Vec::from([EVENT_ERROR]), &error.to_string());
+                let _ = events.send(StreamEvent::Failure(error.to_string()));
                 return;
             }
         }
     }
-    let _ = events.send(Vec::from([EVENT_END]));
-    let mut close = Vec::from([EVENT_CLOSE]);
-    close.extend_from_slice(&0u32.to_le_bytes());
-    if events.send(close).is_ok() {
-        let _ = events.send(Vec::new());
-    }
-}
-
-fn send_event(events: &mpsc::UnboundedSender<Vec<u8>>, mut event: Vec<u8>, message: &str) {
-    event.extend_from_slice(message.as_bytes());
-    let _ = events.send(event);
+    let _ = events.send(StreamEvent::End);
+    let _ = events.send(StreamEvent::Close { reason: 0 });
 }
 
 #[op2]
@@ -652,11 +568,11 @@ async fn op_http2_write(
 #[op2]
 async fn op_http2_respond(
     stream_id: u32,
-    #[buffer(copy)] headers: Vec<u8>,
+    #[scoped] headers: Headers,
     end_stream: bool,
 ) -> Result<(), JsErrorBox> {
     let stream = stream_of(stream_id)?;
-    let response = response_from_headers(&headers)?;
+    let response = response_from_headers(headers)?;
     let mut outbound = stream.outbound.lock().await;
     let mut pending = match outbound.take() {
         Some(Outbound::Pending(response_handle)) => response_handle,
@@ -678,10 +594,10 @@ async fn op_http2_respond(
 #[op2]
 async fn op_http2_send_trailers(
     stream_id: u32,
-    #[buffer(copy)] headers: Vec<u8>,
+    #[scoped] headers: Headers,
 ) -> Result<(), JsErrorBox> {
     let stream = stream_of(stream_id)?;
-    let trailers = trailers_from_headers(&headers)?;
+    let trailers = trailers_from_headers(headers)?;
     let mut outbound = stream.outbound.lock().await;
     match outbound.take() {
         Some(Outbound::Open(mut sender)) => sender.send_trailers(trailers).map_err(http2_error),
@@ -694,14 +610,10 @@ async fn op_http2_send_trailers(
 }
 
 #[op2(async(lazy), fast)]
-#[buffer]
-async fn op_http2_next_event(stream_id: u32) -> Result<Box<[u8]>, JsErrorBox> {
+async fn op_http2_next_event(stream_id: u32) -> Result<Option<StreamEvent>, JsErrorBox> {
     let stream = stream_of(stream_id)?;
     let mut incoming = stream.incoming.lock().await;
-    Ok(match incoming.recv().await {
-        Some(event) => event.into_boxed_slice(),
-        None => Box::new([]),
-    })
+    Ok(incoming.recv().await)
 }
 
 #[op2]
@@ -754,15 +666,14 @@ fn op_http2_close_session(session_id: u32) {
     let pending = std::mem::take(&mut *session.streams.lock().expect("http2 session streams"));
     let mut table = streams().lock().expect("http2 stream table");
     for (stream_id, stream) in pending {
-        let _ = stream.events.send(Vec::new());
+        let _ = stream.events.send(StreamEvent::Close { reason: 0 });
         table.remove(&stream_id);
     }
-    let _ = session.events.send(Vec::new());
+    let _ = session.events.send(SessionEvent::Close);
 }
 
 #[op2]
-#[string]
-fn op_http2_session_info(session_id: u32) -> Result<String, JsErrorBox> {
+fn op_http2_session_info(session_id: u32) -> Result<Option<SessionInfo>, JsErrorBox> {
     Ok(session_of(session_id)?.info.clone())
 }
 
@@ -826,7 +737,7 @@ const BAD_PREFACE_REPLY: [u8; 26] = [
 fn register_listener(
     listener: TcpListener,
     acceptor: Option<thinpack_node_tls::ServerAcceptor>,
-) -> Result<String, JsErrorBox> {
+) -> Result<ListenerInfo, JsErrorBox> {
     let local = listener
         .local_addr()
         .map(|address| address.to_string())
@@ -841,12 +752,11 @@ fn register_listener(
             notify: Arc::new(tokio::sync::Notify::new()),
         }),
     );
-    Ok(format!("{id}\0{local}"))
+    Ok(ListenerInfo { id, local })
 }
 
 #[op2(async(lazy), fast)]
-#[string]
-async fn op_http2_listen(#[string] host: String, port: u16) -> Result<String, JsErrorBox> {
+async fn op_http2_listen(#[string] host: String, port: u16) -> Result<ListenerInfo, JsErrorBox> {
     let listener = TcpListener::bind((host.as_str(), port))
         .await
         .map_err(io_error)?;
@@ -854,7 +764,6 @@ async fn op_http2_listen(#[string] host: String, port: u16) -> Result<String, Js
 }
 
 #[op2(async(lazy), fast)]
-#[string]
 async fn op_http2_listen_secure(
     #[string] host: String,
     port: u16,
@@ -862,7 +771,7 @@ async fn op_http2_listen_secure(
     #[string] key_pem: String,
     #[string] ca_pem: String,
     request_cert: bool,
-) -> Result<String, JsErrorBox> {
+) -> Result<ListenerInfo, JsErrorBox> {
     let acceptor = thinpack_node_tls::ServerAcceptor::new(
         &cert_pem,
         &key_pem,
@@ -951,7 +860,6 @@ async fn op_http2_accept_session(listener_id: u32) -> Result<u32, JsErrorBox> {
         .lock()
         .expect("http2 listener acceptor")
         .clone();
-    let alpn = if acceptor.is_some() { "h2" } else { "" };
     let transport: Box<dyn thinpack_node_tls::AsyncReadWrite> = if let Some(acceptor) = &acceptor {
         acceptor.accept(tcp).await?
     } else if reject_bad_preface(&mut tcp).await? {
@@ -970,7 +878,7 @@ async fn op_http2_accept_session(listener_id: u32) -> Result<u32, JsErrorBox> {
     let ping = connection.ping_pong();
     let (session, commands) = new_session(
         None,
-        format!("{local}\0{remote}\0{alpn}"),
+        Some(SessionInfo { local, remote }),
         ping,
         Some(inject),
     );
@@ -1005,7 +913,7 @@ async fn reject_bad_preface(tcp: &mut TcpStream) -> Result<bool, JsErrorBox> {
 async fn accept_requests<S>(
     mut connection: ServerConnection<S, Bytes>,
     session_id: u32,
-    events: mpsc::UnboundedSender<Vec<u8>>,
+    events: mpsc::UnboundedSender<SessionEvent>,
     mut commands: mpsc::UnboundedReceiver<SessionCommand>,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin,
@@ -1030,7 +938,7 @@ async fn accept_requests<S>(
             Ok(pair) => pair,
             Err(error) => {
                 if !error.is_go_away() {
-                    send_event(&events, Vec::from([EVENT_ERROR]), &error.to_string());
+                    let _ = events.send(SessionEvent::Failure(error.to_string()));
                 }
                 break;
             }
@@ -1054,27 +962,23 @@ async fn accept_requests<S>(
             .lock()
             .expect("http2 stream table")
             .insert(stream_id, stream);
-        let mut event = Vec::from([EVENT_STREAM]);
-        event.extend_from_slice(&stream_id.to_le_bytes());
-        push_request_headers(&mut event, &request);
+        let event = SessionEvent::Stream {
+            id: stream_id,
+            headers: request_entries(&request),
+        };
         if events.send(event).is_err() {
             break;
         }
         tokio::spawn(read_body(request.into_body(), stream_events));
     }
-    let _ = events.send(Vec::from([EVENT_CLOSE]));
-    let _ = events.send(Vec::new());
+    let _ = events.send(SessionEvent::Close);
 }
 
 #[op2(async(lazy), fast)]
-#[buffer]
-async fn op_http2_session_event(session_id: u32) -> Result<Box<[u8]>, JsErrorBox> {
+async fn op_http2_session_event(session_id: u32) -> Result<Option<SessionEvent>, JsErrorBox> {
     let session = session_of(session_id)?;
     let mut incoming = session.incoming.lock().await;
-    Ok(match incoming.recv().await {
-        Some(event) => event.into_boxed_slice(),
-        None => Box::new([]),
-    })
+    Ok(incoming.recv().await)
 }
 
 #[op2(async(lazy), fast)]

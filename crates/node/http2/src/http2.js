@@ -254,74 +254,20 @@
     HTTP_STATUS_NOT_EXTENDED: 510,
     HTTP_STATUS_NETWORK_AUTHENTICATION_REQUIRED: 511,
   };
-  const EVENT_RESPONSE = 1;
-  const EVENT_DATA = 2;
-  const EVENT_TRAILERS = 3;
-  const EVENT_END = 4;
-  const EVENT_CLOSE = 5;
-  const EVENT_ERROR = 6;
-  const EVENT_STREAM = 7;
-  const EVENT_GOAWAY = 8;
-  const readUInt16 = (bytes, offset) => bytes[offset] | (bytes[offset + 1] << 8);
-  const readUInt32 = (bytes, offset) =>
-    (bytes[offset] |
-      (bytes[offset + 1] << 8) |
-      (bytes[offset + 2] << 16) |
-      (bytes[offset + 3] << 24)) >>> 0;
-
-  const latin1 = (bytes) => {
-    let text = "";
-    for (let index = 0; index < bytes.length; index += 0x8000) {
-      text += String.fromCharCode.apply(null, bytes.subarray(index, index + 0x8000));
-    }
-    return text;
-  };
-
-  const encodeHeaders = (headers) => {
+  const headerEntries = (headers) => {
     const entries = [];
     for (const [name, value] of Object.entries(headers)) {
       if (value === undefined || value === null) continue;
       for (const item of Array.isArray(value) ? value : [value]) {
-        const nameBytes = Buffer.from(name, "latin1");
-        const valueBytes = Buffer.from(String(item), "latin1");
-        entries.push([nameBytes, valueBytes]);
+        entries.push([name, String(item)]);
       }
     }
-    const size = entries.reduce(
-      (total, [name, value]) => total + 2 + name.length + 4 + value.length,
-      2,
-    );
-    const block = Buffer.allocUnsafe(size);
-    let offset = 0;
-    block.writeUInt16LE(entries.length, offset);
-    offset += 2;
-    for (const [name, value] of entries) {
-      block.writeUInt16LE(name.length, offset);
-      offset += 2;
-      name.copy(block, offset);
-      offset += name.length;
-      block.writeUInt32LE(value.length, offset);
-      offset += 4;
-      value.copy(block, offset);
-      offset += value.length;
-    }
-    return block;
+    return entries;
   };
 
-  const decodeHeaders = (bytes) => {
+  const decodeHeaders = (entries) => {
     const headers = {};
-    let offset = 0;
-    const count = readUInt16(bytes, offset);
-    offset += 2;
-    for (let index = 0; index < count; index += 1) {
-      const nameLength = readUInt16(bytes, offset);
-      offset += 2;
-      const name = latin1(bytes.subarray(offset, offset + nameLength));
-      offset += nameLength;
-      const valueLength = readUInt32(bytes, offset);
-      offset += 4;
-      const value = latin1(bytes.subarray(offset, offset + valueLength));
-      offset += valueLength;
+    for (const [name, value] of entries) {
       if (!(name in headers)) {
         headers[name] = value;
       } else if (name === "set-cookie") {
@@ -363,7 +309,7 @@
       try {
         this.#id = Deno.core.ops.op_http2_request(
           sessionId,
-          encodeHeaders(this.#headers),
+          headerEntries(this.#headers),
           this.#endStreamInHeaders,
         );
       } catch (error) {
@@ -472,7 +418,7 @@
           this.destroy(opError(error));
           return;
         }
-        if (event.length === 0 || !this.#handle(event)) {
+        if (event === null || !this.#handle(event)) {
           this.#pumping = false;
           return;
         }
@@ -481,23 +427,22 @@
     }
 
     #handle(event) {
-      const kind = event[0];
-      if (kind === EVENT_RESPONSE) {
-        const flags = event[1];
-        const status = readUInt16(event, 2);
-        const headers = decodeHeaders(event.subarray(4));
-        headers[":status"] = String(status);
-        this.emit("headers", headers, flags);
-        this.emit("response", headers, flags);
-      } else if (kind === EVENT_DATA) {
-        return this.push(event.subarray(1));
-      } else if (kind === EVENT_TRAILERS) {
-        this.emit("trailers", decodeHeaders(event.subarray(1)), 0);
-      } else if (kind === EVENT_END) {
+      if (event.type === "response") {
+        const { endStream, status, headers } = event.value;
+        const flags = endStream ? 1 : 0;
+        const decoded = decodeHeaders(headers);
+        decoded[":status"] = String(status);
+        this.emit("headers", decoded, flags);
+        this.emit("response", decoded, flags);
+      } else if (event.type === "data") {
+        return this.push(event.value);
+      } else if (event.type === "trailers") {
+        this.emit("trailers", decodeHeaders(event.value), 0);
+      } else if (event.type === "end") {
         this.push(null);
         this.read(0);
-      } else if (kind === EVENT_CLOSE) {
-        const reason = readUInt32(event, 1);
+      } else if (event.type === "close") {
+        const { reason } = event.value;
         if (!this.#localClosed) this.rstCode = reason;
         if (reason !== 0 && !this.#localClosed) {
           // Mirror the server twin: a peer-sent RST ends the readable side,
@@ -505,15 +450,10 @@
           this.aborted = true;
           this.push(null);
           this.destroy();
-          return false;
         }
-      } else if (kind === EVENT_ERROR) {
-        this.destroy(
-          http2Error(
-            "ERR_HTTP2_STREAM_ERROR",
-            event.length === 1 ? "stream error" : latin1(event.subarray(1)),
-          ),
-        );
+        return false;
+      } else if (event.type === "error") {
+        this.destroy(http2Error("ERR_HTTP2_STREAM_ERROR", event.value));
         return false;
       }
       return true;
@@ -767,19 +707,25 @@
           this.destroy(opError(error));
           return;
         }
-        if (event.length === 0) break;
-        this.#handle(event);
+        if (event === null) break;
+        if (!this.#handle(event)) break;
       }
       this.#pumping = false;
       this.#close();
     }
 
     #handle(event) {
-      if (event[0] !== EVENT_GOAWAY) return;
-      const code = readUInt32(event, 1);
-      const lastStreamID = readUInt32(event, 5);
-      const opaque = event.length > 9 ? Buffer.from(event.subarray(9)) : undefined;
-      this.emit("goaway", code, lastStreamID, opaque);
+      if (event.type === "goaway") {
+        const { code, lastStreamId, opaque } = event.value;
+        this.emit(
+          "goaway",
+          code,
+          lastStreamId,
+          opaque === undefined ? undefined : Buffer.from(opaque),
+        );
+        return true;
+      }
+      return false;
     }
   }
 
@@ -830,7 +776,7 @@
       this.#waitForTrailers = options.waitForTrailers === true;
       const endStream = options.endStream === true;
       if (endStream) this.#endSent = true;
-      Deno.core.ops.op_http2_respond(this.#id, encodeHeaders(headers), endStream).then(
+      Deno.core.ops.op_http2_respond(this.#id, headerEntries(headers), endStream).then(
         () => {
           if (endStream) this.end();
         },
@@ -839,7 +785,7 @@
       return true;
     }
     sendTrailers(trailers) {
-      Deno.core.ops.op_http2_send_trailers(this.#id, encodeHeaders(trailers)).then(
+      Deno.core.ops.op_http2_send_trailers(this.#id, headerEntries(trailers)).then(
         () => {
           this.#endSent = true;
           const final = this.#pendingFinal;
@@ -934,35 +880,30 @@
           this.destroy(opError(error));
           return;
         }
-        if (event.length === 0 || !this.#handle(event)) break;
+        if (event === null || !this.#handle(event)) break;
       }
       this.#pumping = false;
     }
 
     #handle(event) {
-      const kind = event[0];
-      if (kind === EVENT_DATA) {
-        return this.push(event.subarray(1));
+      if (event.type === "data") {
+        return this.push(event.value);
       }
-      if (kind === EVENT_TRAILERS) {
-        this.emit("trailers", decodeHeaders(event.subarray(1)), 0);
-      } else if (kind === EVENT_END) {
+      if (event.type === "trailers") {
+        this.emit("trailers", decodeHeaders(event.value), 0);
+      } else if (event.type === "end") {
         this.push(null);
         this.read(0);
-      } else if (kind === EVENT_CLOSE) {
-        const reason = readUInt32(event, 1);
+      } else if (event.type === "close") {
+        const { reason } = event.value;
         if (!this.#localClosed) this.rstCode = reason;
         if (reason !== 0 && !this.#localClosed) {
           this.destroy();
           return false;
         }
-      } else if (kind === EVENT_ERROR) {
-        this.destroy(
-          http2Error(
-            "ERR_HTTP2_STREAM_ERROR",
-            event.length === 1 ? "stream error" : latin1(event.subarray(1)),
-          ),
-        );
+        return false;
+      } else if (event.type === "error") {
+        this.destroy(http2Error("ERR_HTTP2_STREAM_ERROR", event.value));
         return false;
       }
       return true;
@@ -985,9 +926,10 @@
       this.closed = false;
       this.destroyed = false;
       this.pendingSettingsAck = false;
-      const [localRaw, remoteRaw] = Deno.core.ops.op_http2_session_info(id).split("\0");
-      const local = parseAddress(localRaw);
-      const remote = parseAddress(remoteRaw);
+      // Only server sessions record the accepted socket's addresses.
+      const info = Deno.core.ops.op_http2_session_info(id);
+      const local = parseAddress(info.local);
+      const remote = parseAddress(info.remote);
       this.socket = {
         localAddress: local.address,
         localPort: local.port,
@@ -1084,28 +1026,35 @@
           this.destroy(opError(error));
           return;
         }
-        if (event.length === 0) break;
-        this.#handle(event);
+        if (event === null) break;
+        if (!this.#handle(event)) break;
       }
       this.#pumping = false;
       this.#close();
     }
 
     #handle(event) {
-      const kind = event[0];
-      if (kind === EVENT_STREAM) {
-        const id = readUInt32(event, 1);
-        const headers = decodeHeaders(event.subarray(5));
+      if (event.type === "stream") {
+        const { id, headers } = event.value;
         const stream = new ServerHttp2Stream(this, id);
-        this.#server.emit("stream", stream, headers);
-      } else if (kind === EVENT_GOAWAY) {
-        const code = readUInt32(event, 1);
-        const lastStreamID = readUInt32(event, 5);
-        const opaque = event.length > 9 ? Buffer.from(event.subarray(9)) : undefined;
-        this.emit("goaway", code, lastStreamID, opaque);
-      } else if (kind === EVENT_ERROR) {
-        this.emit("error", http2Error("ERR_HTTP2_SESSION_ERROR", latin1(event.subarray(1))));
+        this.#server.emit("stream", stream, decodeHeaders(headers));
+        return true;
       }
+      if (event.type === "goaway") {
+        const { code, lastStreamId, opaque } = event.value;
+        this.emit(
+          "goaway",
+          code,
+          lastStreamId,
+          opaque === undefined ? undefined : Buffer.from(opaque),
+        );
+        return true;
+      }
+      if (event.type === "error") {
+        this.emit("error", http2Error("ERR_HTTP2_SESSION_ERROR", event.value));
+        return true;
+      }
+      return false;
     }
   }
 
@@ -1153,10 +1102,9 @@
       const port = Number(options?.port ?? 0);
       const host = options?.host ?? "0.0.0.0";
       this._thinpackListen(String(host), port)
-        .then((payload) => {
-          const [id, local] = payload.split("\0");
-          this.#listenerId = Number(id);
-          this.#local = local;
+        .then((listener) => {
+          this.#listenerId = listener.id;
+          this.#local = listener.local;
           this.listening = true;
           this.emit("listening");
           if (callback) callback();

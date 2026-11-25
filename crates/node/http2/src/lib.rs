@@ -1,3 +1,4 @@
+mod events;
 mod ops;
 
 use std::borrow::Cow;
