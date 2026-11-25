@@ -151,6 +151,11 @@ Every upstream `test/parallel` file for these module families is present; the
 skipped cluster files are the handle-passing, dgram, round-robin and UNIX-socket
 shapes listed below.
 
+`dgram` is a focused port of 29 upstream `test/parallel/test-dgram-*.js` files covering bind,
+send, connect, close, multicast and ref/unref. Its descriptor-adoption, cluster, blocklist,
+synchronous-variant and internal-binding tests are not copied; `docs/gaps.md` records the
+corresponding limits.
+
 Not ported yet: `assert`, `async_hooks`, `child_process`, `constants`,
 `crypto`, `diagnostics_channel`, `dns`, `ffi`, `fs`, `http`, `http2`, `https`,
 `inspector`, `module`, `net`, `perf_hooks`, `process`, `readline`, `sea`,

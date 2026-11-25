@@ -103,7 +103,7 @@ run time.
 Ambient (every template): `console`, `process`, `timers`, `buffer`, `url`, plus `util` because
 `console` formats through it.
 
-On demand: `assert`, `async_hooks`, `child_process`, `constants`, `crypto`,
+On demand: `assert`, `async_hooks`, `child_process`, `constants`, `crypto`, `dgram`,
 `diagnostics_channel`, `dns`, `events`, `fetch`, `ffi`, `fs`, `http`, `http2`, `https`,
 `inspector`, `module`, `net`, `os`, `path`, `perf_hooks`, `querystring`, `readline`, `sea`,
 `sqlite`, `stream`, `string_decoder`, `test`, `tls`, `tty`, `util`, `v8`, `vm`, `worker_threads`,

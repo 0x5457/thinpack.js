@@ -365,6 +365,7 @@ const common = {
   isAIX,
   isIBMi,
   isFreeBSD,
+  inFreeBSDJail: false,
   isOpenBSD,
   isSunOS,
   isDebug: false,
