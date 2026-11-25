@@ -147,7 +147,7 @@ impl std::error::Error for Error {}
 /// non-optional specifiers and [`Error::UnknownBuiltin`] for `node:` builtins that
 /// thinpack does not ship.
 pub fn analyze(entry: &Path, fs: &impl FileSystem) -> Result<Analysis, Error> {
-    analyze_with(entry, fs, &BTreeSet::new(), &[])
+    analyze_roots(entry, &[], fs)
 }
 
 /// [`analyze`], with package names whose missing dependencies the caller has
@@ -162,11 +162,53 @@ pub fn analyze_with(
     allow_missing: &BTreeSet<String>,
     custom_conditions: &[String],
 ) -> Result<Analysis, Error> {
+    analyze_roots_with(entry, &[], fs, allow_missing, custom_conditions)
+}
+
+/// Analyze the entry and explicit include roots as one graph.
+///
+/// Every root is required. A JavaScript root is parsed and its dependencies join
+/// the same traversal; any other root is recorded as a required payload file. A
+/// module shared by several roots is read and parsed once.
+///
+/// # Errors
+///
+/// Returns the same errors as [`analyze`].
+pub fn analyze_roots(
+    entry: &Path,
+    roots: &[PathBuf],
+    fs: &impl FileSystem,
+) -> Result<Analysis, Error> {
+    analyze_roots_with(entry, roots, fs, &BTreeSet::new(), &[])
+}
+
+/// [`analyze_roots`], with package names whose missing dependencies the caller has
+/// explicitly excluded (`--allow-missing`) and custom package conditions.
+///
+/// # Errors
+///
+/// Returns the same errors as [`analyze`].
+pub fn analyze_roots_with(
+    entry: &Path,
+    roots: &[PathBuf],
+    fs: &impl FileSystem,
+    allow_missing: &BTreeSet<String>,
+    custom_conditions: &[String],
+) -> Result<Analysis, Error> {
     let fs = ManifestRecorder::new(fs);
-    // Required targets are queued in front of optional ones, so the entry's
+    let roots: BTreeSet<PathBuf> = roots.iter().cloned().collect();
+    // Declaration files, JSON and assets are payload data, not modules. They join
+    // the result as required files after the walk instead of being parsed.
+    let (data_roots, module_roots): (Vec<_>, Vec<_>) = roots
+        .into_iter()
+        .partition(|root| !thinpack_resolve::is_javascript(root));
+    // Required targets are queued in front of optional ones, so every root's
     // non-optional closure is complete before any optional file is read and a file
-    // reached both ways is classified by its required edge.
-    let mut pending = VecDeque::from([(entry.to_path_buf(), false)]);
+    // reached both ways is classified by its required edge. `files` doubles as the
+    // visited set: each module is read and parsed once however many roots reach it.
+    let mut pending = VecDeque::with_capacity(module_roots.len() + 1);
+    pending.push_back((entry.to_path_buf(), false));
+    pending.extend(module_roots.into_iter().map(|root| (root, false)));
     let mut files = BTreeSet::new();
     let mut required = BTreeSet::new();
     let mut builtins: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
@@ -189,19 +231,9 @@ pub fn analyze_with(
             continue;
         }
 
-        let bytes = fs.read(&path).map_err(|error| Error::Read {
-            path: path.clone(),
-            message: error.to_string(),
-        })?;
-        let source = String::from_utf8(bytes).map_err(|_| Error::Read {
-            path: path.clone(),
-            message: "module is not valid UTF-8".to_owned(),
-        })?;
-        let source = typescript::strip(&path, source, &mut stripped)?;
-
         let optional_dependencies = thinpack_resolve::optional_dependencies(&path, &fs);
         let (specifiers, detected) =
-            parse_specifiers(&source, &path, &fs, &mut warnings, &mut static_files)?;
+            load_module(&path, &fs, &mut stripped, &mut warnings, &mut static_files)?;
         if let Some(format) = detected {
             formats.insert(path.clone(), format);
         }
@@ -262,6 +294,12 @@ pub fn analyze_with(
         }
     }
 
+    warnings.sort();
+    warnings.dedup();
+    // An explicit include is required even if the graph only reaches it through an
+    // optional edge, or does not reach it at all.
+    files.extend(data_roots.iter().cloned());
+    required.extend(data_roots);
     Ok(Analysis {
         files: files.into_iter().collect(),
         required,
@@ -449,6 +487,25 @@ fn format_mismatch(
         .diagnostics
         .is_empty()
         .then_some(message)
+}
+
+fn load_module(
+    path: &Path,
+    fs: &impl FileSystem,
+    stripped: &mut BTreeMap<PathBuf, String>,
+    warnings: &mut Vec<Warning>,
+    static_files: &mut BTreeSet<PathBuf>,
+) -> Result<(Vec<SpecifierEntry>, Option<Format>), Error> {
+    let bytes = fs.read(path).map_err(|error| Error::Read {
+        path: path.to_path_buf(),
+        message: error.to_string(),
+    })?;
+    let source = String::from_utf8(bytes).map_err(|_| Error::Read {
+        path: path.to_path_buf(),
+        message: "module is not valid UTF-8".to_owned(),
+    })?;
+    let source = typescript::strip(path, source, stripped)?;
+    parse_specifiers(&source, path, fs, warnings, static_files)
 }
 
 fn parse_specifiers(
@@ -858,6 +915,7 @@ mod tests {
     struct MemoryFs {
         files: BTreeMap<PathBuf, String>,
         directories: BTreeSet<PathBuf>,
+        reads: RefCell<BTreeMap<PathBuf, usize>>,
     }
 
     impl MemoryFs {
@@ -865,6 +923,7 @@ mod tests {
             let mut fs = Self {
                 files: BTreeMap::new(),
                 directories: BTreeSet::new(),
+                reads: RefCell::new(BTreeMap::new()),
             };
             for (path, contents) in files {
                 let path = PathBuf::from(path);
@@ -891,10 +950,16 @@ mod tests {
         }
 
         fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
-            self.files
+            let contents = self
+                .files
                 .get(path)
-                .map(|contents| contents.clone().into_bytes())
-                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
+                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+            *self
+                .reads
+                .borrow_mut()
+                .entry(path.to_path_buf())
+                .or_default() += 1;
+            Ok(contents.clone().into_bytes())
         }
     }
 
@@ -1309,6 +1374,67 @@ mod tests {
         ]);
         analysis.merge(analyze(Path::new("/app/main.js"), &needed).unwrap());
         assert!(analysis.required.contains(&PathBuf::from("/app/shared.js")));
+    }
+
+    #[test]
+    fn shared_roots_are_read_once_without_changing_the_analysis() {
+        let fixture = [
+            ("/app/package.json", "{}"),
+            (
+                "/app/main.js",
+                "try { require('./shared'); } catch {}\ntry { require('./guarded'); } catch {}\nrequire('./entry-only');\n",
+            ),
+            ("/app/entry-only.js", "require('node:events');\n"),
+            (
+                "/app/extra.js",
+                "require('./shared');\nrequire('node:fs');\n",
+            ),
+            (
+                "/app/shared.js",
+                "require('./leaf');\nrequire('node:path');\n",
+            ),
+            ("/app/leaf.js", "require('node:os');\n"),
+            ("/app/guarded.js", "module.exports = 1;\n"),
+        ];
+        let roots = [
+            PathBuf::from("/app/extra.js"),
+            PathBuf::from("/app/shared.js"),
+            PathBuf::from("/app/leaf.js"),
+        ];
+
+        let separate = MemoryFs::new(&fixture);
+        let mut merged = analyze(Path::new("/app/main.js"), &separate).unwrap();
+        for root in &roots {
+            merged.merge(analyze(root, &separate).unwrap());
+        }
+
+        let fs = MemoryFs::new(&fixture);
+        let analysis = analyze_roots(Path::new("/app/main.js"), &roots, &fs).unwrap();
+        assert_eq!(analysis.files, merged.files);
+        assert_eq!(analysis.required, merged.required);
+        assert_eq!(analysis.builtins, merged.builtins);
+        assert_eq!(analysis.warnings, merged.warnings);
+        assert_eq!(capabilities(&analysis), capabilities(&merged));
+        for root in [
+            "/app/main.js",
+            "/app/entry-only.js",
+            "/app/extra.js",
+            "/app/shared.js",
+            "/app/leaf.js",
+            "/app/guarded.js",
+        ] {
+            assert_eq!(
+                fs.reads.borrow().get(Path::new(root)),
+                Some(&1),
+                "{root} was read more than once"
+            );
+        }
+        assert!(analysis.required.contains(&PathBuf::from("/app/shared.js")));
+        assert!(
+            !analysis
+                .required
+                .contains(&PathBuf::from("/app/guarded.js"))
+        );
     }
 
     #[test]

@@ -450,6 +450,50 @@ mod unix {
     }
 
     #[test]
+    fn overlapping_include_roots_keep_the_entry_capabilities() {
+        let directory = TempDir::new("overlapping-includes");
+        let entry = directory.path().join("main.js");
+        fs::write(
+            &entry,
+            "try { require('./src/shared.js'); } catch {}\nrequire('./src/app.js');\n",
+        )
+        .expect("write entry");
+        let source = directory.path().join("src");
+        fs::create_dir(&source).expect("create include directory");
+        fs::write(
+            source.join("shared.js"),
+            "module.exports = require('node:path');\n",
+        )
+        .expect("write shared module");
+        fs::write(
+            source.join("app.js"),
+            "module.exports = require('node:fs');\n",
+        )
+        .expect("write app module");
+        fs::write(source.join("notes.txt"), "payload data\n").expect("write data file");
+        let cli = Path::new(env!("CARGO_BIN_EXE_thinpack"));
+
+        let entry_only = run_pack(cli, directory.path(), &entry, &["--list-capabilities"]);
+        assert!(
+            entry_only.status.success(),
+            "entry-only analysis failed:\n{}",
+            String::from_utf8_lossy(&entry_only.stderr)
+        );
+        let included = run_pack(
+            cli,
+            directory.path(),
+            &entry,
+            &["--list-capabilities", "--include", "src"],
+        );
+        assert!(
+            included.status.success(),
+            "analysis with overlapping include roots failed:\n{}",
+            String::from_utf8_lossy(&included.stderr)
+        );
+        assert_eq!(entry_only.stdout, included.stdout);
+    }
+
+    #[test]
     fn typescript_in_node_modules_fails_packing() {
         let directory = TempDir::new("typescript-node-modules");
         let entry = directory.path().join("main.ts");
