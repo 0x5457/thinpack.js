@@ -119,7 +119,10 @@ select_assets() {
                 if (backend_name == backend &&
                     (target == platform || index(target, platform "-") == 1)) {
                     if (min_glibc == "") {
-                        if (static != "1") static_pair[++pairs] = archive
+                        # No floor: the static Linux build, or the only archive for a
+                        # non-Linux target. `THINPACK_STATIC=1` rules out the glibc build, not
+                        # these.
+                        fallback[++fallbacks] = archive
                     } else if (static == "1") {
                         skipped[++skips] = archive " THINPACK_STATIC=1 asks for the static build"
                     } else if (glibc == "") {
@@ -127,7 +130,7 @@ select_assets() {
                     } else if (!at_least(glibc, min_glibc)) {
                         skipped[++skips] = archive " the host glibc " glibc " is older than " min_glibc
                     } else {
-                        ready[++readied] = archive
+                        preferred[++preferred_count] = archive
                     }
                 }
                 archive = ""
@@ -142,8 +145,8 @@ select_assets() {
             /^min_glibc[[:space:]]*=/ { min_glibc = value($0); next }
             END {
                 finish()
-                for (i = 1; i <= readied; i++) print "asset " ready[i]
-                for (i = 1; i <= pairs; i++) print "asset " static_pair[i]
+                for (i = 1; i <= preferred_count; i++) print "asset " preferred[i]
+                for (i = 1; i <= fallbacks; i++) print "asset " fallback[i]
                 for (i = 1; i <= skips; i++) print "skip " skipped[i]
             }'
         return
