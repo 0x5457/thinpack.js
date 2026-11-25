@@ -158,9 +158,80 @@ assert.deepEqual(
     absolute: '/app/main.js',
   },
 );
+
+// Node answers null only for a built-in, including built-ins that this template
+// does not contain. `test` is a package name; Node exposes that built-in as
+// `node:test`.
+assert.equal(require.resolve.paths('fs'), null);
+assert.equal(require.resolve.paths('node:fs'), null);
+assert.equal(require.resolve.paths('node:test'), null);
+assert.notEqual(require.resolve.paths('test'), null);
+assert.notEqual(require.resolve.paths('node:missing'), null);
+
+// Relative requests look in their own directory; bare and absolute requests
+// walk node_modules to the root and then the global paths.
+assert.deepEqual(require.resolve.paths('./main.js'), ['/app']);
+assert.deepEqual(require.resolve.paths('../app/main.js'), ['/app']);
+const lookup = require.resolve.paths('lodash');
+assert.deepEqual(lookup.slice(0, 2), ['/app/node_modules', '/node_modules']);
+assert.ok(lookup.length > 2);
+
+assert.throws(() => require.resolve.paths(), { code: 'ERR_INVALID_ARG_TYPE' });
+assert.throws(() => require.resolve.paths(null), { code: 'ERR_INVALID_ARG_TYPE' });
 ",
         )],
         capabilities: &["assert"],
+        error: None,
+    },
+    PackedTest {
+        name: "packed::module-global-paths",
+        directory: "module-global-paths",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r"
+const assert = require('node:assert/strict');
+const Module = require('node:module');
+const path = require('node:path');
+
+assert.ok(Array.isArray(Module.globalPaths));
+assert.ok(Module.globalPaths.length > 0);
+assert.ok(Module.globalPaths.every((entry) => typeof entry === 'string'));
+const prefix = process.platform === 'win32'
+  ? path.resolve(process.execPath, '..')
+  : path.resolve(process.execPath, '..', '..');
+assert.equal(Module.globalPaths.at(-1), path.resolve(prefix, 'lib', 'node'));
+
+// Module.globalPaths is a mutable introspection copy; resolving reads the
+// internal paths, as Node does.
+const lookup = require.resolve.paths('lodash');
+assert.deepEqual(lookup.slice(-Module.globalPaths.length), Module.globalPaths);
+const original = Module.globalPaths;
+Module.globalPaths = ['/custom'];
+assert.deepEqual(
+  require.resolve.paths('lodash').slice(-original.length),
+  original,
+);
+Module._initPaths();
+assert.deepEqual(Module.globalPaths, original);
+
+// createRequire scopes the lookup to the file it names.
+const custom = Module.createRequire('/app/sub/main.js');
+assert.deepEqual(custom.resolve.paths('./x'), ['/app/sub']);
+assert.deepEqual(custom.resolve.paths('../x'), ['/app/sub']);
+assert.deepEqual(
+  custom.resolve.paths('lodash').slice(0, 3),
+  ['/app/sub/node_modules', '/app/node_modules', '/node_modules'],
+);
+assert.deepEqual(
+  custom.resolve.paths('lodash').slice(-original.length),
+  original,
+);
+assert.equal(custom.resolve.paths('fs'), null);
+console.log('module global paths ok');
+",
+        )],
+        capabilities: &["assert", "module"],
         error: None,
     },
     PackedTest {
@@ -949,6 +1020,89 @@ for (const [type, options] of [
         error: None,
     },
     PackedTest {
+        name: "packed::crypto-secret-key-commonjs",
+        directory: "crypto-secret-key-commonjs",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r"
+const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
+
+const raw = Buffer.from('thinpack secret key');
+const key = crypto.createSecretKey(raw);
+raw.fill(0);
+
+assert.equal(key.type, 'secret');
+assert.equal(key.symmetricKeySize, 19);
+assert.equal(key.asymmetricKeyType, undefined);
+assert.equal(key.asymmetricKeyDetails, undefined);
+assert.ok(key instanceof crypto.KeyObject);
+assert.equal(key.export().toString(), 'thinpack secret key');
+assert.equal(key.export({ format: 'buffer' }).toString(), 'thinpack secret key');
+assert.deepEqual(key.export({ format: 'jwk' }), {
+  kty: 'oct',
+  k: 'dGhpbnBhY2sgc2VjcmV0IGtleQ',
+});
+assert.ok(key.equals(crypto.createSecretKey('thinpack secret key')));
+assert.ok(!key.equals(crypto.createSecretKey('another secret key')));
+
+assert.equal(
+  crypto.createHmac('sha256', key).update('garden hmac payload').digest('hex'),
+  'a0f071602f4e0f82f13d5aaa490cc3f82f3a10672abf6f1db12340d2f4b0c2bf',
+);
+assert.equal(
+  crypto.hkdfSync('sha256', key, Buffer.from('salt'), Buffer.from('info'), 16).toString('hex'),
+  'c4f08cf4a2c1fa1b18c2fb2aebdfd569',
+);
+
+const cipher = crypto.createCipheriv(
+  'aes-128-gcm',
+  crypto.createSecretKey(Buffer.from('0123456789abcdef')),
+  Buffer.alloc(12),
+);
+cipher.setAAD(Buffer.from('aad'));
+assert.equal(Buffer.concat([cipher.update('payload'), cipher.final()]).toString('hex'), '3283532996ebe8');
+assert.equal(cipher.getAuthTag().toString('hex'), '9f2f2c0cfff096b71237c8671b0a4c54');
+
+const privateKey = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey;
+assert.throws(
+  () => crypto.createHmac('sha256', privateKey),
+  { code: 'ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE' },
+);
+assert.throws(() => crypto.createSecretKey(42), { code: 'ERR_INVALID_ARG_TYPE' });
+assert.throws(() => key.export({ format: 'pem' }), { code: 'ERR_INVALID_ARG_VALUE' });
+",
+        )],
+        capabilities: &["assert", "crypto"],
+        error: None,
+    },
+    PackedTest {
+        name: "packed::crypto-secret-key-esm",
+        directory: "crypto-secret-key-esm",
+        entry: "/app/main.mjs",
+        files: &[(
+            "/app/main.mjs",
+            r"
+import assert from 'node:assert/strict';
+import { KeyObject, createHmac, createSecretKey } from 'node:crypto';
+
+const key = createSecretKey('thinpack secret key');
+assert.equal(key.type, 'secret');
+assert.equal(key.symmetricKeySize, 19);
+assert.ok(key instanceof KeyObject);
+assert.equal(key.export().toString(), 'thinpack secret key');
+assert.equal(key.export({ format: 'jwk' }).k, 'dGhpbnBhY2sgc2VjcmV0IGtleQ');
+assert.equal(
+  createHmac('sha256', key).update('garden hmac payload').digest('hex'),
+  'a0f071602f4e0f82f13d5aaa490cc3f82f3a10672abf6f1db12340d2f4b0c2bf',
+);
+",
+        )],
+        capabilities: &["assert", "crypto"],
+        error: None,
+    },
+    PackedTest {
         name: "packed::ffi-dlopen",
         directory: "ffi-dlopen",
         entry: "/app/main.js",
@@ -1326,6 +1480,65 @@ console.log('builtin named exports ok');
         ],
         capabilities: &["events"],
         error: None,
+    },
+    PackedTest {
+        name: "packed::fs-named-exports",
+        directory: "fs-named-exports",
+        entry: "/app/main.mjs",
+        files: &[
+            (
+                "/app/main.mjs",
+                r"import {
+  Dir,
+  FileReadStream,
+  FileWriteStream,
+  ReadStream,
+  Utf8Stream,
+  WriteStream,
+  opendir,
+  opendirSync,
+  promises,
+  promises as promisesAgain,
+} from 'node:fs';
+import { createRequire } from 'node:module';
+
+if (promises !== promisesAgain) throw new Error('fs.promises identity mismatch');
+for (const [name, value] of Object.entries({
+  Dir, FileReadStream, FileWriteStream, ReadStream, Utf8Stream, WriteStream, opendir, opendirSync,
+})) {
+  if (typeof value !== 'function') throw new Error(`fs.${name} is not a function`);
+}
+
+// The named export must not have replaced Node's lazy getter.
+const fs = createRequire(import.meta.url)('node:fs');
+const descriptor = Object.getOwnPropertyDescriptor(fs, 'promises');
+if (typeof descriptor.get !== 'function' || 'value' in descriptor) {
+  throw new Error('fs.promises is no longer a getter');
+}
+if (fs.promises !== promises) throw new Error('fs.promises differs from the named export');
+if ((await promises.readFile('/app/fixture.txt', 'utf8')).trim() !== 'fs named exports ok') {
+  throw new Error('fs.promises.readFile mismatch');
+}
+console.log('fs named exports ok');
+",
+            ),
+            ("/app/fixture.txt", "fs named exports ok\n"),
+        ],
+        capabilities: &["fs", "module"],
+        error: None,
+    },
+    PackedTest {
+        name: "packed::fs-named-exports-missing",
+        directory: "fs-named-exports-missing",
+        entry: "/app/main.mjs",
+        files: &[(
+            "/app/main.mjs",
+            "import { notAnExport } from 'node:fs';\nconsole.log(notAnExport);\n",
+        )],
+        capabilities: &["fs"],
+        error: Some(&[
+            "The requested module 'node:fs' does not provide an export named 'notAnExport'",
+        ]),
     },
     PackedTest {
         name: "packed::cjs-named-exports",

@@ -18,9 +18,10 @@ oxc_str = "0.159"
 # Node's type stripping is SWC's strip-only pass (the `amaro` engine); packing
 # runs the same pass so TypeScript becomes JavaScript before it is packed and
 # the runtime links no TypeScript parser.
-swc_common = "17"
-swc_ecma_parser = "27"
-swc_ts_fast_strip = "36"
+# Keep these versions in sync with the target Node release's amaro.
+swc_common = "=23.0.2"
+swc_ecma_parser = "=41.1.2"
+swc_ts_fast_strip = "=53.0.0"
 
 [lints]
 workspace = true
