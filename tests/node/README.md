@@ -136,7 +136,7 @@ behavior thinpack does not provide, Node's `internal/*` modules, or
 | cluster | 46 | 37 | 83 |
 | path | 17 | 0 | 17 |
 | querystring | 3 | 1 | 4 |
-| events | 32 | 13 | 45 |
+| events | 34 | 12 | 46 |
 | os | 2 | 6 | 8 |
 | string_decoder | 1 | 3 | 4 |
 | buffer | 51 | 23 | 74 |

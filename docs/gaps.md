@@ -68,6 +68,10 @@ the divergence, why it exists, and where it lives.
 - `Blob` parts are read through a JS reader (`crates/node/buffer/src/binding_blob.js`). Node's
   reader is C++ and can answer `STATUS_BLOCK`; these parts are already in memory and always
   answer synchronously, so `setWakeup` accepts Node's callback and never invokes it.
+- `EventTarget`, `CustomEvent` and `AbortSignal` share one listener table, so
+  `events.getEventListeners()` sees the same listeners and `AbortSignal` dispatches real
+  `Event`s. Node's max-listener warning and weak-listener cleanup are not implemented
+  (`crates/thinpack-rt/src/bootstrap/event_globals.js`).
 
 ## Event loop
 
