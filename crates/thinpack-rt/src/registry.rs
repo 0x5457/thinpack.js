@@ -52,6 +52,8 @@ pub(crate) fn extensions() -> Vec<deno_core::Extension> {
     extensions.push(thinpack_node_test::init());
     #[cfg(feature = "node-tty")]
     extensions.push(thinpack_node_tty::init());
+    #[cfg(feature = "node-domain")]
+    extensions.push(thinpack_node_domain::init());
     #[cfg(feature = "node-module")]
     extensions.push(thinpack_node_module::init());
     #[cfg(feature = "node-querystring")]
@@ -147,6 +149,8 @@ pub(crate) fn enabled() -> Vec<&'static str> {
     names.push("test");
     #[cfg(feature = "node-tty")]
     names.push("tty");
+    #[cfg(feature = "node-domain")]
+    names.push("domain");
     #[cfg(feature = "node-module")]
     names.push("module");
     #[cfg(feature = "node-querystring")]

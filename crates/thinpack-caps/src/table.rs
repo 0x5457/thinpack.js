@@ -91,6 +91,14 @@ pub const MODULES: &[Module] = &[
         optional: false,
     },
     Module {
+        name: "domain",
+        feature: "node-domain",
+        builtins: &["domain"],
+        deps: &["events"],
+        ambient: false,
+        optional: false,
+    },
+    Module {
         name: "events",
         feature: "node-events",
         builtins: &["events"],
