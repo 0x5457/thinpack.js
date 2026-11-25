@@ -1200,6 +1200,23 @@ assert.throws(() => vm.createContext({}), { code: 'ERR_NOT_IMPLEMENTED' });
 assert.equal(vm.runInNewContext('6 * 7'), 42);
 const script = new vm.Script('40 + 2', { filename: 'unit.js' });
 assert.equal(script.runInContext(context), 42);
+
+// A thrown value reaches the caller unchanged. A thrown null or undefined must
+// not be confused with a normal return, and returning null is not a throw.
+const calls = [
+  ['runInContext', (source) => vm.runInContext(source, context)],
+  ['runInNewContext', (source) => vm.runInNewContext(source)],
+  ['Script.runInContext', (source) => new vm.Script(source).runInContext(context)],
+  ['Script.runInNewContext', (source) => new vm.Script(source).runInNewContext()],
+  ['runInThisContext', (source) => vm.runInThisContext(source)],
+  ['Script.runInThisContext', (source) => new vm.Script(source).runInThisContext()],
+];
+for (const [api, call] of calls) {
+  assert.throws(() => call('throw null'), (thrown) => thrown === null, api);
+  assert.throws(() => call('throw undefined'), (thrown) => thrown === undefined, api);
+  assert.equal(call('null'), null, api);
+}
+assert.throws(() => vm.runInThisContext('throw new TypeError("boom")'), TypeError);
 console.log('vm context ok');
 "#,
         )],
