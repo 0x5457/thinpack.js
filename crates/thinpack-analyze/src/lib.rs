@@ -126,6 +126,20 @@ impl std::error::Error for Error {}
 /// for unresolvable non-optional specifiers and [`Error::UnknownBuiltin`] for
 /// `node:` builtins that thinpack does not ship.
 pub fn analyze(entry: &Path, fs: &impl FileSystem) -> Result<Analysis, Error> {
+    analyze_with(entry, fs, &BTreeSet::new())
+}
+
+/// [`analyze`], with package names whose missing dependencies the caller has
+/// explicitly excluded (`--allow-missing`).
+///
+/// # Errors
+///
+/// Returns the same errors as [`analyze`].
+pub fn analyze_with(
+    entry: &Path,
+    fs: &impl FileSystem,
+    allow_missing: &BTreeSet<String>,
+) -> Result<Analysis, Error> {
     let fs = ManifestRecorder::new(fs);
     // Required targets are queued in front of optional ones, so the entry's
     // non-optional closure is complete before any optional file is read and a file
@@ -185,6 +199,18 @@ pub fn analyze(entry: &Path, fs: &impl FileSystem) -> Result<Analysis, Error> {
                     warnings.push(Warning {
                         message: format!(
                             "{}: optional dependency `{specifier}` is missing ({error}); the app must handle the error",
+                            path.display()
+                        ),
+                        strict: false,
+                    });
+                    continue;
+                }
+                Err(error)
+                    if allow_missing.contains(thinpack_resolve::package_name(&specifier)) =>
+                {
+                    warnings.push(Warning {
+                        message: format!(
+                            "{}: dependency `{specifier}` is missing ({error}); excluded by --allow-missing",
                             path.display()
                         ),
                         strict: false,

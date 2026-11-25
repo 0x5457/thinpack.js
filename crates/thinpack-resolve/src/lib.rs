@@ -8,7 +8,9 @@ use std::path::{Component, Path, PathBuf};
 
 use package::Manifest;
 
-pub use package::{declares_optional, is_optional_dependency, optional_dependencies, package_type};
+pub use package::{
+    declares_optional, is_optional_dependency, optional_dependencies, package_name, package_type,
+};
 
 pub trait FileSystem {
     fn is_file(&self, path: &Path) -> bool;

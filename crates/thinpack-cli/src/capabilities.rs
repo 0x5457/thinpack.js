@@ -25,11 +25,17 @@ pub(crate) fn analyze_entry(options: &Options, pack: bool) -> Result<Analyzed, B
         options.entry.as_ref().expect("entry checked"),
     )?);
     let root = project_root(&entry)?;
-    let mut analysis = thinpack_analyze::analyze(&entry, &thinpack_resolve::HostFs)?;
+    let allow_missing: BTreeSet<String> = options.allow_missing.iter().cloned().collect();
+    let mut analysis =
+        thinpack_analyze::analyze_with(&entry, &thinpack_resolve::HostFs, &allow_missing)?;
     let included = expand_includes(&root, &options.include)?;
     for file in &included {
         if is_javascript(file) {
-            analysis.merge(thinpack_analyze::analyze(file, &thinpack_resolve::HostFs)?);
+            analysis.merge(thinpack_analyze::analyze_with(
+                file,
+                &thinpack_resolve::HostFs,
+                &allow_missing,
+            )?);
         } else {
             if !analysis.files.contains(file) {
                 analysis.files.push(file.clone());

@@ -97,7 +97,8 @@ pub fn declares_optional(specifier: &str, path: &Path, fs: &impl FileSystem) -> 
     is_optional_dependency(specifier, &optional_dependencies(path, fs))
 }
 
-fn package_name(specifier: &str) -> &str {
+#[must_use]
+pub fn package_name(specifier: &str) -> &str {
     specifier.strip_prefix('@').map_or_else(
         || {
             specifier

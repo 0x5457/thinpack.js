@@ -346,6 +346,64 @@ mod unix {
     }
 
     #[test]
+    fn an_allowed_missing_package_packs_with_a_warning() {
+        let directory = TempDir::new("allow-missing");
+        let entry = directory.path().join("main.js");
+        fs::write(&entry, "require('spdy');\n").expect("write entry requiring a missing package");
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let output = directory.path().join("packed-app");
+
+        let blocked = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            directory.path(),
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+            ],
+        );
+        assert!(!blocked.status.success(), "packed an unresolved package");
+
+        let allowed = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            directory.path(),
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+                "--allow-missing",
+                "spdy",
+            ],
+        );
+        assert!(
+            allowed.status.success(),
+            "pack failed:\n{}",
+            String::from_utf8_lossy(&allowed.stderr)
+        );
+        let error = String::from_utf8_lossy(&allowed.stderr);
+        assert!(error.contains("excluded by --allow-missing"), "{error}");
+
+        let pack = thinpack_pack::read_from_executable(&output)
+            .expect("read packed executable")
+            .expect("packed payload");
+        assert!(
+            !pack
+                .manifest
+                .files
+                .iter()
+                .any(|file| file.path.contains("spdy")),
+            "packed an excluded package"
+        );
+    }
+
+    #[test]
     fn a_symlinked_package_manifest_is_packed() {
         let directory = TempDir::new("symlinked-package-manifest");
         let project = directory.path().join("project");
