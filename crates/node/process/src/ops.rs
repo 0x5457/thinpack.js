@@ -364,7 +364,7 @@ mod tty {
     use std::sync::{LazyLock, Mutex};
 
     use deno_core::uv_compat::{
-        self, uv_guess_handle, uv_handle_type, uv_loop_t, uv_tty_init, uv_tty_t,
+        self, uv_guess_handle, uv_handle_type, uv_loop_t, uv_tty_init, uv_tty_mode_t, uv_tty_t,
     };
 
     struct Terminals {
@@ -393,9 +393,7 @@ mod tty {
         })
     });
 
-    /// This process's handle for `fd`, initialized on first use. `None` when
-    /// `fd` is not a terminal or its handle cannot be created.
-    pub(super) fn handle(fd: c_int) -> Option<*mut uv_tty_t> {
+    fn with_handle<R>(fd: c_int, use_handle: impl FnOnce(&mut uv_tty_t) -> R) -> Option<R> {
         if uv_guess_handle(fd) != uv_handle_type::UV_TTY {
             return None;
         }
@@ -411,10 +409,25 @@ mod tty {
             }
             terminals.handles.insert(fd, handle);
         }
-        // Entries are never removed, so the pointer stays valid once the lock is
-        // released.
-        let handle = terminals.handles.get_mut(&fd)?;
-        Some(&raw mut **handle)
+        Some(use_handle(terminals.handles.get_mut(&fd)?))
+    }
+
+    pub(super) fn size(fd: c_int) -> (c_int, c_int) {
+        let mut columns = 0;
+        let mut rows = 0;
+        with_handle(fd, |tty| {
+            // SAFETY: the registry lock guards the initialized handle, and both outputs are valid.
+            unsafe { uv_compat::uv_tty_get_winsize(tty, &raw mut columns, &raw mut rows) }
+        });
+        (columns, rows)
+    }
+
+    pub(super) fn set_mode(fd: c_int, mode: uv_tty_mode_t) -> c_int {
+        with_handle(fd, |tty| {
+            // SAFETY: the registry lock guards the initialized handle.
+            unsafe { uv_compat::uv_tty_set_mode(tty, mode) }
+        })
+        .unwrap_or(uv_compat::UV_EINVAL)
     }
 }
 
@@ -433,13 +446,7 @@ fn tty_mode(mode: &str) -> uv_compat::uv_tty_mode_t {
 #[op2]
 #[string]
 pub(crate) fn op_process_tty_size(#[smi] fd: i32) -> String {
-    let mut columns = 0;
-    let mut rows = 0;
-    if let Some(tty) = tty::handle(fd) {
-        // SAFETY: `tty` is an initialized handle and both out-pointers are valid.
-        // The size stays zero when the query fails, as in Node.
-        let _ = unsafe { uv_compat::uv_tty_get_winsize(tty, &raw mut columns, &raw mut rows) };
-    }
+    let (columns, rows) = tty::size(fd);
     format!("{columns}\0{rows}")
 }
 
@@ -448,11 +455,7 @@ pub(crate) fn op_process_set_raw_mode(
     #[smi] fd: i32,
     #[string] mode: &str,
 ) -> Result<(), JsErrorBox> {
-    let Some(tty) = tty::handle(fd) else {
-        return Err(JsErrorBox::new("Error", uv_compat::UV_EINVAL.to_string()));
-    };
-    // SAFETY: `tty` is an initialized handle owned by the registry.
-    match unsafe { uv_compat::uv_tty_set_mode(tty, tty_mode(mode)) } {
+    match tty::set_mode(fd, tty_mode(mode)) {
         0 => Ok(()),
         status => Err(JsErrorBox::new("Error", status.to_string())),
     }
