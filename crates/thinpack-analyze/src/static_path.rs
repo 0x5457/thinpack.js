@@ -29,6 +29,88 @@ pub(super) fn evaluate<'a>(
     }))
 }
 
+/// The directory a computed module path selects from, when its literal arguments
+/// are followed by one computed final argument. The optional extension is the
+/// literal suffix that computed argument appends (`.js` in
+/// `` `${name}.js` ``), so packing can keep only the matching candidates.
+///
+/// The module's own directory and its ancestors are rejected: a computed load
+/// there would sweep every sibling instead of a shipped candidate directory.
+pub(super) fn module_directory<'a>(
+    expression: &'a Expression<'a>,
+    base: &Path,
+    semantic: &Semantic<'a>,
+) -> Option<(PathBuf, Option<&'a str>)> {
+    let Expression::CallExpression(call) = expression.without_parentheses() else {
+        return None;
+    };
+    let callee = match call.callee.without_parentheses() {
+        Expression::Identifier(identifier) => identifier.name.as_str(),
+        Expression::StaticMemberExpression(member) => member.property.name.as_str(),
+        _ => return None,
+    };
+    if callee != "join" && callee != "resolve" {
+        return None;
+    }
+    let mut arguments = Vec::new();
+    let mut dynamic = None;
+    for (index, argument) in call.arguments.iter().enumerate() {
+        let expression = argument.as_expression()?;
+        if let Some(value) = path_value(expression, base, semantic, &mut BTreeSet::new()) {
+            arguments.push(value);
+            continue;
+        }
+        // A static argument after the computed one would make the directory
+        // depend on the computed value, so only a final computed segment is stable.
+        if index + 1 != call.arguments.len() {
+            return None;
+        }
+        dynamic = Some(expression);
+        break;
+    }
+    let dynamic = dynamic?;
+    if !arguments
+        .first()
+        .is_some_and(|first| first == base || first.starts_with(base))
+    {
+        return None;
+    }
+    let path = if callee == "join" {
+        join(&arguments)
+    } else {
+        resolve(&arguments, base)
+    };
+    if path == base || base.starts_with(&path) {
+        return None;
+    }
+    Some((path, extension(dynamic)))
+}
+
+/// The literal extension a computed final path segment appends.
+fn extension<'a>(expression: &'a Expression<'a>) -> Option<&'a str> {
+    let suffix = match expression.without_parentheses() {
+        Expression::TemplateLiteral(template) if !template.expressions.is_empty() => template
+            .quasis
+            .last()?
+            .value
+            .cooked
+            .and_then(oxc_str::JSStr::as_str)?,
+        Expression::BinaryExpression(binary)
+            if binary.operator == BinaryOperator::Addition
+                && let Expression::StringLiteral(literal) = binary.right.without_parentheses() =>
+        {
+            literal.value.as_str()?
+        }
+        _ => return None,
+    };
+    let extension = suffix.strip_prefix('.')?;
+    (!extension.is_empty()
+        && extension.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '_' || character == '-'
+        }))
+    .then_some(extension)
+}
+
 /// The path an expression evaluates to, before a relative result is anchored.
 fn path_value<'a>(
     expression: &'a Expression<'a>,

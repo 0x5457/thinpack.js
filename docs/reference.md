@@ -72,7 +72,11 @@ A path built from `__dirname` can name files the module never imports: files rea
 a directory listed with `fs.readdir` or `readdirSync`. Enumeration counts only on the `fs` module,
 and a scanned directory is expanded like `--include` only when it is below the project root and is
 neither a package root nor `node_modules`; anything broader still needs `--include`. `path.join`,
-`path.resolve`, string concatenation, and single-assignment bindings of them are evaluated.
+`path.resolve`, string concatenation, and single-assignment bindings of them are evaluated. A
+computed `require`/`import` whose loaded binding has a `path.join`/`path.resolve` call with a
+literal `__dirname` directory and one final computed segment packs that directory's files matching
+the segment's literal suffix, or JavaScript modules when it has none; other computed module paths
+still need `--include`.
 
 The optionality of a guarded `require`/`import()` or an `optionalDependencies` entry extends
 through the static dependencies it reaches: a missing module there becomes a warning, and the

@@ -86,6 +86,30 @@ pub(super) fn specifiers<'a>(
     complete
 }
 
+/// Every expression assigned to a binding: its initializer and each assignment.
+/// A computed module path often has no initializer and several assignments, so
+/// the literal prefix cannot be read from the declaration alone.
+pub(super) fn assigned_values<'a>(
+    symbol: SymbolId,
+    semantic: &Semantic<'a>,
+) -> Vec<&'a Expression<'a>> {
+    let mut values = Vec::new();
+    if let AstKind::VariableDeclarator(declaration) = semantic.symbol_declaration(symbol).kind()
+        && let Some(init) = &declaration.init
+    {
+        values.push(init.without_parentheses());
+    }
+    for reference in semantic.symbol_references(symbol) {
+        if reference.is_write()
+            && let AstKind::AssignmentExpression(assignment) =
+                semantic.nodes().parent_kind(reference.node_id())
+        {
+            values.push(assignment.right.without_parentheses());
+        }
+    }
+    values
+}
+
 pub(super) fn initializer<'a>(
     symbol: SymbolId,
     semantic: &Semantic<'a>,

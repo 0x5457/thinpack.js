@@ -27,6 +27,50 @@ pub struct Warning {
     pub strict: bool,
 }
 
+/// Which files an implicitly scanned directory contributes.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum StaticDir {
+    /// Every file, as `fs.readdir` followed by a load of each name can reach.
+    #[default]
+    All,
+    /// Only files with one of these extensions, for a computed module path whose
+    /// literal prefix names the directory and whose suffix names the candidates.
+    Extensions(BTreeSet<String>),
+}
+
+impl StaticDir {
+    fn extensions<'a>(extensions: impl IntoIterator<Item = &'a str>) -> Self {
+        Self::Extensions(extensions.into_iter().map(str::to_owned).collect())
+    }
+
+    fn modules() -> Self {
+        Self::extensions(["js", "cjs", "mjs", "ts", "cts", "mts", "tsx"])
+    }
+
+    fn merge(&mut self, other: &Self) {
+        match other {
+            Self::All => *self = Self::All,
+            Self::Extensions(right) => {
+                if let Self::Extensions(left) = self {
+                    left.extend(right.iter().cloned());
+                }
+            }
+        }
+    }
+
+    /// Whether a file in the directory is one of the candidates.
+    #[must_use]
+    pub fn accepts(&self, path: &Path) -> bool {
+        match self {
+            Self::All => true,
+            Self::Extensions(extensions) => path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extensions.contains(extension)),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Analysis {
     pub files: Vec<PathBuf>,
@@ -47,10 +91,12 @@ pub struct Analysis {
     /// `require.resolve`/`import.meta.resolve`. Resolving a path does not make it a
     /// module, so the analyzer keeps its bytes and parses nothing.
     pub data_files: BTreeSet<PathBuf>,
-    /// Directories enumerated through `fs.readdir`/`readdirSync` with a path built
-    /// from `__dirname`. The CLI expands a bounded one like an `--include` root, so
-    /// the files the application can name are packed and their imports are analyzed.
-    pub static_dirs: BTreeSet<PathBuf>,
+    /// Directories enumerated through `fs.readdir`/`readdirSync`, or named by a
+    /// literal `__dirname` prefix of a computed module load. The CLI expands a
+    /// bounded one like an `--include` root, so the files the application can name
+    /// are packed and their imports are analyzed. The filter keeps a computed load
+    /// to the candidates its literal suffix names.
+    pub static_dirs: BTreeMap<PathBuf, StaticDir>,
     /// TypeScript files replaced by the JavaScript packing stripped them to. The
     /// payload stores this text under the original path, so neither the loader nor
     /// the packed app ever evaluates TypeScript.
@@ -72,7 +118,12 @@ impl Analysis {
         }
         self.formats.extend(other.formats);
         self.data_files.extend(other.data_files);
-        self.static_dirs.extend(other.static_dirs);
+        for (directory, filter) in other.static_dirs {
+            self.static_dirs
+                .entry(directory)
+                .and_modify(|existing| existing.merge(&filter))
+                .or_insert(filter);
+        }
         self.stripped.extend(other.stripped);
         self.warnings.extend(other.warnings);
         self.warnings.sort();
@@ -544,7 +595,7 @@ fn format_mismatch(
 struct WalkOutput {
     warnings: Vec<Warning>,
     data_files: BTreeSet<PathBuf>,
-    static_dirs: BTreeSet<PathBuf>,
+    static_dirs: BTreeMap<PathBuf, StaticDir>,
     stripped: BTreeMap<PathBuf, String>,
 }
 
@@ -635,6 +686,26 @@ fn parse_specifiers(
     Ok((collector.specifiers.into_iter().collect(), detected))
 }
 
+/// The path expression a module load names, unwrapping `pathToFileURL(...)`.
+fn module_target<'a>(expression: &'a Expression<'a>) -> &'a Expression<'a> {
+    let Expression::CallExpression(call) = expression.without_parentheses() else {
+        return expression;
+    };
+    let is_path_to_file_url = matches!(
+        call.callee.without_parentheses(),
+        Expression::Identifier(identifier) if identifier.name == "pathToFileURL"
+    ) || matches!(
+        call.callee.without_parentheses(),
+        Expression::StaticMemberExpression(member) if member.property.name == "pathToFileURL"
+    );
+    if is_path_to_file_url {
+        if let Some(argument) = call.arguments.first().and_then(Argument::as_expression) {
+            return argument.without_parentheses();
+        }
+    }
+    expression
+}
+
 fn js_string(value: oxc_str::JSStr<'_>) -> String {
     value
         .as_str()
@@ -663,7 +734,7 @@ struct SpecifierCollector<'a, 's> {
     require_bindings: BTreeSet<SymbolId>,
     warnings: &'s mut Vec<Warning>,
     data_files: &'s mut BTreeSet<PathBuf>,
-    static_dirs: &'s mut BTreeSet<PathBuf>,
+    static_dirs: &'s mut BTreeMap<PathBuf, StaticDir>,
     fs: &'s dyn FileSystem,
 }
 
@@ -752,7 +823,8 @@ impl SpecifierCollector<'_, '_> {
         let Some(argument) = call.arguments.first() else {
             return;
         };
-        let complete = argument.as_expression().is_some_and(|argument| {
+        let expression = argument.as_expression();
+        let complete = expression.is_some_and(|argument| {
             require::specifiers(argument, self.semantic, |specifier| {
                 self.add(
                     js_string(specifier),
@@ -762,7 +834,7 @@ impl SpecifierCollector<'_, '_> {
                 );
             })
         });
-        if !complete {
+        if !complete && !expression.is_some_and(|argument| self.add_static_module_dir(argument)) {
             self.warnings.push(Warning {
                 message: format!(
                     "{}: `{target}{member}(...)` with a non-literal argument cannot be analyzed. Add required built-ins with `--with <module>`, and computed local files with `--include <path>` (relative to the project root).",
@@ -833,6 +905,46 @@ impl SpecifierCollector<'_, '_> {
         }
     }
 
+    /// Record the directory named by a computed module load when the loaded
+    /// binding has a `path.join`/`path.resolve` assignment with a literal
+    /// `__dirname` prefix and one final computed segment. The filter keeps only
+    /// files with the literal suffix that segment appends, or JavaScript modules
+    /// when it has none.
+    fn add_static_module_dir(&mut self, expression: &Expression<'_>) -> bool {
+        let expression = module_target(expression);
+        let values: Vec<&Expression<'_>> = match expression.without_parentheses() {
+            Expression::Identifier(identifier) => {
+                let Some(symbol) = require::referenced_symbol(identifier, self.semantic.scoping())
+                else {
+                    return false;
+                };
+                require::assigned_values(symbol, self.semantic)
+            }
+            _ => vec![expression],
+        };
+        let base = self.path.parent().unwrap_or_else(|| Path::new("/"));
+        let mut found = false;
+        for value in values {
+            let Some((directory, extension)) =
+                static_path::module_directory(value, base, self.semantic)
+            else {
+                continue;
+            };
+            if !self.fs.is_dir(&directory) {
+                continue;
+            }
+            let filter = extension.map_or_else(StaticDir::modules, |extension| {
+                StaticDir::extensions([extension])
+            });
+            self.static_dirs
+                .entry(directory)
+                .and_modify(|existing| existing.merge(&filter))
+                .or_insert(filter);
+            found = true;
+        }
+        found
+    }
+
     /// Record a package-relative directory enumerated through `fs.readdir` or
     /// `fs.readdirSync`. The names it returns are not known statically, but the
     /// directory is, so it can be packed like `--include <directory>`. Only a call
@@ -859,7 +971,10 @@ impl SpecifierCollector<'_, '_> {
             return;
         };
         if self.fs.is_dir(&path) {
-            self.static_dirs.insert(path);
+            self.static_dirs
+                .entry(path)
+                .and_modify(|filter| filter.merge(&StaticDir::All))
+                .or_insert(StaticDir::All);
         }
     }
 
@@ -915,13 +1030,14 @@ impl<'a> VisitJs<'a> for SpecifierCollector<'a, '_> {
             Expression::StringLiteral(literal) => {
                 self.add_specifier(js_string(literal.value), true);
             }
-            _ => self.warnings.push(Warning {
+            _ if !self.add_static_module_dir(&expression.source) => self.warnings.push(Warning {
                 message: format!(
                     "{}: `import(...)` with a non-literal argument cannot be analyzed; add computed local files with `--include <path>` (relative to the project root)",
                     self.path.display()
                 ),
                 strict: true,
             }),
+            _ => {}
         }
         walk_js::walk_import_expression(self, expression);
     }
@@ -1819,8 +1935,46 @@ mod tests {
         let analysis = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
         assert_eq!(
             analysis.static_dirs,
-            BTreeSet::from([PathBuf::from("/app/plugins")])
+            BTreeMap::from([(PathBuf::from("/app/plugins"), StaticDir::All)])
         );
+    }
+
+    #[test]
+    fn a_computed_module_load_records_its_candidate_directory() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/lib/main.cjs",
+                "const path = require('node:path');\n\
+                 const { pathToFileURL } = require('node:url');\n\
+                 async function load(name) {\n\
+                   let formatterPath = path.resolve(process.cwd(), name);\n\
+                   formatterPath = path.resolve(__dirname, '../', 'formatters', `${name}.js`);\n\
+                   return import(pathToFileURL(formatterPath));\n\
+                 }\n\
+                 console.log(load);\n",
+            ),
+            ("/app/formatters/stylish.js", "module.exports = () => '';\n"),
+            ("/app/formatters/meta.json", "[]\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/lib/main.cjs"), &fs).unwrap();
+        let filter = &analysis.static_dirs[Path::new("/app/formatters")];
+        assert!(filter.accepts(Path::new("/app/formatters/stylish.js")));
+        assert!(!filter.accepts(Path::new("/app/formatters/meta.json")));
+        assert!(analysis.warnings.is_empty(), "{:?}", analysis.warnings);
+    }
+
+    #[test]
+    fn a_computed_module_load_without_a_literal_dir_keeps_its_warning() {
+        let fs = MemoryFs::new(&[(
+            "/app/lib/main.cjs",
+            "const path = require('node:path');\n\
+             const name = process.argv[2];\n\
+             require(path.resolve(process.cwd(), name));\n",
+        )]);
+        let analysis = analyze(Path::new("/app/lib/main.cjs"), &fs).unwrap();
+        assert!(analysis.static_dirs.is_empty());
+        assert_eq!(analysis.warnings.len(), 1);
+        assert!(analysis.warnings[0].message.contains("non-literal"));
     }
 
     #[test]

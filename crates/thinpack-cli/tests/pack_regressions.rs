@@ -973,6 +973,86 @@ mod unix {
     }
 
     #[test]
+    fn a_computed_module_load_packs_only_its_literal_extension() {
+        let directory = TempDir::new("computed-module-directory");
+        let project = directory.path().join("project");
+        fs::create_dir_all(project.join("lib/formatters")).expect("create formatter directory");
+        fs::write(
+            project.join("package.json"),
+            r#"{ "name": "app", "type": "commonjs" }"#,
+        )
+        .expect("write project manifest");
+        let entry = project.join("main.js");
+        fs::write(
+            &entry,
+            "const path = require('node:path');\n\
+             const { pathToFileURL } = require('node:url');\n\
+             async function load(name) {\n\
+               let formatterPath = path.resolve(process.cwd(), name);\n\
+               formatterPath = path.resolve(__dirname, 'lib', 'formatters', `${name}.js`);\n\
+               return import(pathToFileURL(formatterPath));\n\
+             }\n\
+             console.log(load);\n",
+        )
+        .expect("write entry loading a computed formatter path");
+        fs::write(
+            project.join("lib/formatters/stylish.js"),
+            "module.exports = () => '';\n",
+        )
+        .expect("write shipped formatter");
+        fs::write(project.join("lib/formatters/meta.json"), "[]\n")
+            .expect("write formatter metadata");
+        fs::write(project.join("lib/formatters/notes.txt"), "not a module\n")
+            .expect("write unrelated file");
+
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let output = directory.path().join("packed-app");
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            &project,
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+            ],
+        );
+        assert!(
+            result.status.success(),
+            "pack failed:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(!stderr.contains("non-literal argument"), "{stderr}");
+
+        let pack = thinpack_pack::read_from_executable(&output)
+            .expect("read packed executable")
+            .expect("packed payload");
+        let paths: Vec<&str> = pack
+            .manifest
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect();
+        assert!(
+            paths.contains(&"/app/lib/formatters/stylish.js"),
+            "{paths:?}"
+        );
+        assert!(
+            !paths.contains(&"/app/lib/formatters/meta.json"),
+            "{paths:?}"
+        );
+        assert!(
+            !paths.contains(&"/app/lib/formatters/notes.txt"),
+            "{paths:?}"
+        );
+    }
+
+    #[test]
     fn a_scanned_directory_above_the_project_root_is_left_out() {
         let directory = TempDir::new("scanned-outside");
         let project = directory.path().join("project");
