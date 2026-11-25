@@ -421,7 +421,6 @@
       healthCheck(this);
       const state = this[kState];
       this[kState] = { ...state, handle: null };
-      if (state.recv !== undefined) Deno.core.ops.op_dgram_cancel_recv(state.id);
       if (state.id !== 0) Deno.core.ops.op_dgram_close(state.id);
       process.nextTick(() => this.emit("close"));
       return this;

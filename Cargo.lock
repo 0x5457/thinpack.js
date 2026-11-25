@@ -4542,7 +4542,6 @@ dependencies = [
  "deno_error",
  "libc",
  "socket2 0.5.10",
- "thinpack-core",
  "thinpack-js",
  "tokio",
  "windows-sys 0.59.0",

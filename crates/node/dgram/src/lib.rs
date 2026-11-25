@@ -15,6 +15,7 @@ pub fn init() -> Extension {
         name: "thinpack_node_dgram",
         deps: &["thinpack_node_internals", "thinpack_node_events"],
         ops: Cow::Borrowed(ops::OPS),
+        op_state_fn: Some(Box::new(|state| state.put(ops::DgramSockets::default()))),
         lazy_loaded_js_files: Cow::Borrowed(BUILTINS),
         ..Default::default()
     }

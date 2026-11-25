@@ -2,18 +2,19 @@
 //!
 //! `dgram.js` owns Node's public API: argument parsing, lookup, the receive pump, and
 //! the wait that lets `send()` implicitly bind. This layer is the libuv-shaped core:
-//! a table of bound sockets addressed by an id, one pending `recv_from` per bound socket,
-//! and the socket options `dgram.Socket` exposes. Addresses are always numeric here;
+//! a per-runtime table of bound sockets addressed by an id, one pending `recv_from` per
+//! bound socket, and the socket options `dgram.Socket` exposes. Addresses are always numeric here;
 //! `op_dgram_lookup` is the only name-resolution entry point, which keeps a custom
 //! `lookup` option in JavaScript where Node keeps it.
 
-use std::collections::{HashMap, HashSet};
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::rc::Rc;
 
 use deno_core::convert::Uint8Array;
-use deno_core::{OpDecl, ToV8, op2};
+use deno_core::{CancelFuture, CancelHandle, OpDecl, OpState, ToV8, op2};
 use deno_error::JsErrorBox;
 use socket2::{Domain, Protocol, SockRef, Socket, Type};
 use tokio::net::UdpSocket;
@@ -38,7 +39,6 @@ pub(crate) const OPS: &[OpDecl] = &[
     op_dgram_disconnect(),
     op_dgram_send(),
     op_dgram_recv(),
-    op_dgram_cancel_recv(),
     op_dgram_close(),
     op_dgram_local_info(),
     op_dgram_remote_info(),
@@ -55,33 +55,71 @@ pub(crate) const OPS: &[OpDecl] = &[
     op_dgram_set_buffer_size(),
 ];
 
-fn sockets() -> MutexGuard<'static, HashMap<u32, Arc<UdpSocket>>> {
-    static SOCKETS: OnceLock<Mutex<HashMap<u32, Arc<UdpSocket>>>> = OnceLock::new();
-    SOCKETS
-        .get_or_init(Default::default)
-        .lock()
-        .expect("dgram socket table")
+/// Sockets owned by one runtime. Keeping the table in `OpState` gives every isolate
+/// (including a worker) its own handles and cancellation state; closing an entry
+/// cancels its pending receive before the socket is dropped.
+#[derive(Debug)]
+pub(crate) struct DgramSockets {
+    next_id: u32,
+    sockets: HashMap<u32, Rc<DgramSocket>>,
 }
 
-static IDS: thinpack_core::IdCounter = thinpack_core::IdCounter::new();
-static RECV_CANCELS: thinpack_core::CancelTable = thinpack_core::CancelTable::new();
-
-/// `op_dgram_recv` is lazy: its body may start after `close()` has already cancelled the
-/// descriptor. The tombstone keeps that cancellation from being lost and leaving a pending
-/// receive that keeps the event loop alive.
-fn cancelled() -> MutexGuard<'static, HashSet<u32>> {
-    static CANCELLED: OnceLock<Mutex<HashSet<u32>>> = OnceLock::new();
-    CANCELLED
-        .get_or_init(Default::default)
-        .lock()
-        .expect("dgram cancelled receives")
+#[derive(Debug)]
+struct DgramSocket {
+    socket: UdpSocket,
+    cancel: Rc<CancelHandle>,
 }
 
-fn socket_of(id: u32) -> Result<Arc<UdpSocket>, JsErrorBox> {
-    sockets()
-        .get(&id)
-        .map(Arc::clone)
-        .ok_or_else(|| errno(EBADF))
+impl Default for DgramSockets {
+    fn default() -> Self {
+        Self {
+            next_id: 1,
+            sockets: HashMap::new(),
+        }
+    }
+}
+
+impl DgramSockets {
+    fn insert(&mut self, socket: UdpSocket) -> u32 {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.sockets.insert(
+            id,
+            Rc::new(DgramSocket {
+                socket,
+                cancel: CancelHandle::new_rc(),
+            }),
+        );
+        id
+    }
+
+    fn get(&self, id: u32) -> Result<Rc<DgramSocket>, JsErrorBox> {
+        self.sockets
+            .get(&id)
+            .map(Rc::clone)
+            .ok_or_else(|| errno(EBADF))
+    }
+
+    fn remove(&mut self, id: u32) -> Option<Rc<DgramSocket>> {
+        self.sockets.remove(&id)
+    }
+}
+
+impl Drop for DgramSockets {
+    fn drop(&mut self) {
+        for socket in self.sockets.values() {
+            socket.cancel.cancel();
+        }
+    }
+}
+
+fn socket_of(state: &OpState, id: u32) -> Result<Rc<DgramSocket>, JsErrorBox> {
+    state.borrow::<DgramSockets>().get(id)
+}
+
+fn socket_in(state: &Rc<RefCell<OpState>>, id: u32) -> Result<Rc<DgramSocket>, JsErrorBox> {
+    let state = state.borrow();
+    socket_of(&state, id)
 }
 
 fn errno(code: i32) -> JsErrorBox {
@@ -156,7 +194,12 @@ fn name_error() -> JsErrorBox {
 }
 
 #[op2(fast)]
-fn op_dgram_bind(#[string] address: &str, #[smi] port: u16, flags: u8) -> Result<u32, JsErrorBox> {
+fn op_dgram_bind(
+    state: &mut OpState,
+    #[string] address: &str,
+    #[smi] port: u16,
+    flags: u8,
+) -> Result<u32, JsErrorBox> {
     let ip: IpAddr = address.parse().map_err(|_| invalid())?;
     if ip.is_ipv6() != (flags & FLAG_UDP6 != 0) {
         return Err(invalid());
@@ -183,9 +226,7 @@ fn op_dgram_bind(#[string] address: &str, #[smi] port: u16, flags: u8) -> Result
 
     let socket: std::net::UdpSocket = socket.into();
     let socket = UdpSocket::from_std(socket).map_err(io_error)?;
-    let id = IDS.next();
-    sockets().insert(id, Arc::new(socket));
-    Ok(id)
+    Ok(state.borrow_mut::<DgramSockets>().insert(socket))
 }
 
 #[cfg(unix)]
@@ -230,22 +271,23 @@ fn set_reuse_port(_socket: &Socket) -> io::Result<()> {
 
 #[op2(async(lazy), fast)]
 async fn op_dgram_connect(
+    state: Rc<RefCell<OpState>>,
     id: u32,
     #[string] address: String,
     #[smi] port: u16,
 ) -> Result<(), JsErrorBox> {
-    let socket = socket_of(id)?;
+    let socket = socket_in(&state, id)?;
     let ip: IpAddr = address.parse().map_err(|_| invalid())?;
     socket
+        .socket
         .connect(SocketAddr::new(ip, port))
         .await
         .map_err(io_error)
 }
 
 #[op2(fast)]
-fn op_dgram_disconnect(id: u32) -> Result<(), JsErrorBox> {
-    let socket = socket_of(id)?;
-    disconnect(&socket).map_err(io_error)
+fn op_dgram_disconnect(state: &OpState, id: u32) -> Result<(), JsErrorBox> {
+    disconnect(&socket_of(state, id)?.socket).map_err(io_error)
 }
 
 #[cfg(unix)]
@@ -299,21 +341,23 @@ fn disconnect(socket: &UdpSocket) -> io::Result<()> {
 
 #[op2(async(lazy))]
 async fn op_dgram_send(
+    state: Rc<RefCell<OpState>>,
     id: u32,
     #[buffer(copy)] data: Vec<u8>,
     #[string] address: Option<String>,
     #[smi] port: u16,
 ) -> Result<u32, JsErrorBox> {
-    let socket = socket_of(id)?;
+    let socket = socket_in(&state, id)?;
     let sent = match address {
         Some(address) => {
             let ip: IpAddr = address.parse().map_err(|_| invalid())?;
             socket
+                .socket
                 .send_to(&data, SocketAddr::new(ip, port))
                 .await
                 .map_err(io_error)?
         }
-        None => socket.send(&data).await.map_err(io_error)?,
+        None => socket.socket.send(&data).await.map_err(io_error)?,
     };
     #[expect(
         clippy::cast_possible_truncation,
@@ -322,30 +366,18 @@ async fn op_dgram_send(
     Ok(sent as u32)
 }
 
-#[op2(fast)]
-fn op_dgram_cancel_recv(id: u32) {
-    cancelled().insert(id);
-    let _ = RECV_CANCELS.cancel(id);
-}
-
 #[op2(async(lazy), fast)]
-async fn op_dgram_recv(id: u32) -> Result<Datagram, JsErrorBox> {
-    let socket = socket_of(id)?;
-    if cancelled().remove(&id) {
-        return Err(cancelled_error());
-    }
-    let cancelled_signal = RECV_CANCELS.register(id);
+async fn op_dgram_recv(state: Rc<RefCell<OpState>>, id: u32) -> Result<Datagram, JsErrorBox> {
+    let socket = socket_in(&state, id)?;
     let mut buffer = vec![0u8; MAX_DATAGRAM];
-    let outcome = tokio::select! {
-        result = socket.recv_from(&mut buffer) => Some(result),
-        _ = cancelled_signal => None,
-    };
-    RECV_CANCELS.remove(id);
-    cancelled().remove(&id);
-
-    let (read, remote) = match outcome {
-        Some(result) => result.map_err(io_error)?,
-        None => return Err(cancelled_error()),
+    let (read, remote) = match socket
+        .socket
+        .recv_from(&mut buffer)
+        .or_cancel(&socket.cancel)
+        .await
+    {
+        Ok(result) => result.map_err(io_error)?,
+        Err(_) => return Err(cancelled_error()),
     };
     buffer.truncate(read);
     Ok(Datagram {
@@ -356,15 +388,16 @@ async fn op_dgram_recv(id: u32) -> Result<Datagram, JsErrorBox> {
 }
 
 #[op2(fast)]
-fn op_dgram_close(id: u32) {
-    sockets().remove(&id);
-    let _ = RECV_CANCELS.cancel(id);
+fn op_dgram_close(state: &mut OpState, id: u32) {
+    if let Some(socket) = state.borrow_mut::<DgramSockets>().remove(id) {
+        socket.cancel.cancel();
+    }
 }
 
 #[op2]
-fn op_dgram_local_info(id: u32) -> Result<SocketInfo, JsErrorBox> {
-    let socket = socket_of(id)?;
-    let local = socket.local_addr().map_err(io_error)?;
+fn op_dgram_local_info(state: &OpState, id: u32) -> Result<SocketInfo, JsErrorBox> {
+    let socket = socket_of(state, id)?;
+    let local = socket.socket.local_addr().map_err(io_error)?;
     Ok(SocketInfo {
         address: local.ip().to_string(),
         family: family_name(&local.ip()),
@@ -373,9 +406,9 @@ fn op_dgram_local_info(id: u32) -> Result<SocketInfo, JsErrorBox> {
 }
 
 #[op2]
-fn op_dgram_remote_info(id: u32) -> Result<SocketInfo, JsErrorBox> {
-    let socket = socket_of(id)?;
-    let remote = socket.peer_addr().map_err(io_error)?;
+fn op_dgram_remote_info(state: &OpState, id: u32) -> Result<SocketInfo, JsErrorBox> {
+    let socket = socket_of(state, id)?;
+    let remote = socket.socket.peer_addr().map_err(io_error)?;
     Ok(SocketInfo {
         address: remote.ip().to_string(),
         family: family_name(&remote.ip()),
@@ -384,24 +417,27 @@ fn op_dgram_remote_info(id: u32) -> Result<SocketInfo, JsErrorBox> {
 }
 
 #[op2(fast)]
-fn op_dgram_set_broadcast(id: u32, broadcast: bool) -> Result<(), JsErrorBox> {
-    socket_of(id)?.set_broadcast(broadcast).map_err(io_error)
+fn op_dgram_set_broadcast(state: &OpState, id: u32, broadcast: bool) -> Result<(), JsErrorBox> {
+    socket_of(state, id)?
+        .socket
+        .set_broadcast(broadcast)
+        .map_err(io_error)
 }
 
 #[op2(fast)]
-fn op_dgram_set_ttl(id: u32, #[smi] ttl: i32) -> Result<(), JsErrorBox> {
+fn op_dgram_set_ttl(state: &OpState, id: u32, #[smi] ttl: i32) -> Result<(), JsErrorBox> {
     let ttl = ttl_value(ttl, 1)?;
-    SockRef::from(&*socket_of(id)?)
+    SockRef::from(&socket_of(state, id)?.socket)
         .set_ttl(ttl)
         .map_err(io_error)
 }
 
 #[op2(fast)]
-fn op_dgram_set_multicast_ttl(id: u32, #[smi] ttl: i32) -> Result<(), JsErrorBox> {
+fn op_dgram_set_multicast_ttl(state: &OpState, id: u32, #[smi] ttl: i32) -> Result<(), JsErrorBox> {
     let ttl = ttl_value(ttl, 0)?;
-    let socket = socket_of(id)?;
-    let sock = SockRef::from(&*socket);
-    if socket.local_addr().map_err(io_error)?.is_ipv4() {
+    let socket = socket_of(state, id)?;
+    let sock = SockRef::from(&socket.socket);
+    if socket.socket.local_addr().map_err(io_error)?.is_ipv4() {
         sock.set_multicast_ttl_v4(ttl).map_err(io_error)
     } else {
         sock.set_multicast_hops_v6(ttl).map_err(io_error)
@@ -422,10 +458,14 @@ fn ttl_value(value: i32, minimum: i32) -> Result<u32, JsErrorBox> {
 }
 
 #[op2(fast)]
-fn op_dgram_set_multicast_loopback(id: u32, enabled: bool) -> Result<(), JsErrorBox> {
-    let socket = socket_of(id)?;
-    let sock = SockRef::from(&*socket);
-    if socket.local_addr().map_err(io_error)?.is_ipv4() {
+fn op_dgram_set_multicast_loopback(
+    state: &OpState,
+    id: u32,
+    enabled: bool,
+) -> Result<(), JsErrorBox> {
+    let socket = socket_of(state, id)?;
+    let sock = SockRef::from(&socket.socket);
+    if socket.socket.local_addr().map_err(io_error)?.is_ipv4() {
         sock.set_multicast_loop_v4(enabled).map_err(io_error)
     } else {
         sock.set_multicast_loop_v6(enabled).map_err(io_error)
@@ -433,17 +473,21 @@ fn op_dgram_set_multicast_loopback(id: u32, enabled: bool) -> Result<(), JsError
 }
 
 #[op2(fast)]
-fn op_dgram_set_multicast_interface(id: u32, #[string] interface: &str) -> Result<(), JsErrorBox> {
+fn op_dgram_set_multicast_interface(
+    state: &OpState,
+    id: u32,
+    #[string] interface: &str,
+) -> Result<(), JsErrorBox> {
     // libuv accepts either family regardless of the socket's own family, and parses
     // the interface before the descriptor is used, so an invalid address reports
     // EINVAL on an unbound socket just as it does on a bound one.
     if let Ok(interface) = interface.parse::<Ipv4Addr>() {
-        SockRef::from(&*socket_of(id)?)
+        SockRef::from(&socket_of(state, id)?.socket)
             .set_multicast_if_v4(&interface)
             .map_err(io_error)
     } else {
         let index = interface_index(interface)?;
-        SockRef::from(&*socket_of(id)?)
+        SockRef::from(&socket_of(state, id)?.socket)
             .set_multicast_if_v6(index)
             .map_err(io_error)
     }
@@ -451,23 +495,26 @@ fn op_dgram_set_multicast_interface(id: u32, #[string] interface: &str) -> Resul
 
 #[op2]
 fn op_dgram_add_membership(
+    state: &OpState,
     id: u32,
     #[string] group: &str,
     #[string] interface: Option<String>,
 ) -> Result<(), JsErrorBox> {
-    membership(id, group, interface, true)
+    membership(state, id, group, interface, true)
 }
 
 #[op2]
 fn op_dgram_drop_membership(
+    state: &OpState,
     id: u32,
     #[string] group: &str,
     #[string] interface: Option<String>,
 ) -> Result<(), JsErrorBox> {
-    membership(id, group, interface, false)
+    membership(state, id, group, interface, false)
 }
 
 fn membership(
+    state: &OpState,
     id: u32,
     group: &str,
     interface: Option<String>,
@@ -476,9 +523,12 @@ fn membership(
     // libuv parses the group before it inspects the handle, so an invalid address
     // reports EINVAL even on a socket that has not been bound yet.
     let group: IpAddr = group.parse().map_err(|_| invalid())?;
-    let socket = socket_of(id)?;
-    let sock = SockRef::from(&*socket);
-    match (socket.local_addr().map_err(io_error)?.is_ipv4(), group) {
+    let socket = socket_of(state, id)?;
+    let sock = SockRef::from(&socket.socket);
+    match (
+        socket.socket.local_addr().map_err(io_error)?.is_ipv4(),
+        group,
+    ) {
         (true, IpAddr::V4(group)) => {
             let interface = match interface {
                 Some(interface) if !interface.is_empty() => {
@@ -508,25 +558,28 @@ fn membership(
 
 #[op2]
 fn op_dgram_add_source_membership(
+    state: &OpState,
     id: u32,
     #[string] source: &str,
     #[string] group: &str,
     #[string] interface: Option<String>,
 ) -> Result<(), JsErrorBox> {
-    source_membership(id, source, group, interface, true)
+    source_membership(state, id, source, group, interface, true)
 }
 
 #[op2]
 fn op_dgram_drop_source_membership(
+    state: &OpState,
     id: u32,
     #[string] source: &str,
     #[string] group: &str,
     #[string] interface: Option<String>,
 ) -> Result<(), JsErrorBox> {
-    source_membership(id, source, group, interface, false)
+    source_membership(state, id, source, group, interface, false)
 }
 
 fn source_membership(
+    state: &OpState,
     id: u32,
     source: &str,
     group: &str,
@@ -541,11 +594,11 @@ fn source_membership(
         }
         _ => Ipv4Addr::UNSPECIFIED,
     };
-    let socket = socket_of(id)?;
-    if !socket.local_addr().map_err(io_error)?.is_ipv4() {
+    let socket = socket_of(state, id)?;
+    if !socket.socket.local_addr().map_err(io_error)?.is_ipv4() {
         return Err(invalid());
     }
-    source_membership_socket(&socket, source, group, interface, join).map_err(io_error)
+    source_membership_socket(&socket.socket, source, group, interface, join).map_err(io_error)
 }
 
 #[cfg(unix)]
@@ -681,22 +734,27 @@ fn interface_index(interface: &str) -> Result<u32, JsErrorBox> {
 }
 
 #[op2(fast)]
-fn op_dgram_get_buffer_size(id: u32, recv: bool) -> Result<u32, JsErrorBox> {
-    let socket = socket_of(id)?;
+fn op_dgram_get_buffer_size(state: &OpState, id: u32, recv: bool) -> Result<u32, JsErrorBox> {
+    let socket = socket_of(state, id)?;
     let size = if recv {
-        SockRef::from(&*socket).recv_buffer_size()
+        SockRef::from(&socket.socket).recv_buffer_size()
     } else {
-        SockRef::from(&*socket).send_buffer_size()
+        SockRef::from(&socket.socket).send_buffer_size()
     }
     .map_err(io_error)?;
     u32::try_from(size).map_err(|_| errno(EINVAL))
 }
 
 #[op2(fast)]
-fn op_dgram_set_buffer_size(id: u32, #[smi] size: u32, recv: bool) -> Result<(), JsErrorBox> {
-    let socket = socket_of(id)?;
+fn op_dgram_set_buffer_size(
+    state: &OpState,
+    id: u32,
+    #[smi] size: u32,
+    recv: bool,
+) -> Result<(), JsErrorBox> {
+    let socket = socket_of(state, id)?;
     let size = usize::try_from(size).map_err(|_| invalid())?;
-    let sock = SockRef::from(&*socket);
+    let sock = SockRef::from(&socket.socket);
     if recv {
         sock.set_recv_buffer_size(size).map_err(io_error)
     } else {
