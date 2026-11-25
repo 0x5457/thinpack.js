@@ -1427,6 +1427,41 @@ module.exports = function loadSystemModule(networkEnabled) {
     }
 
     #[test]
+    fn dgram_is_a_selectable_capability() {
+        let directory = TempDir::new("dgram-capability");
+        let entry = directory.path().join("main.js");
+        fs::write(
+            &entry,
+            "const dgram = require('dgram');\nconsole.log(typeof dgram.createSocket);\n",
+        )
+        .expect("write entry");
+        let cli = Path::new(env!("CARGO_BIN_EXE_thinpack"));
+
+        let listed = run_pack(cli, directory.path(), &entry, &["--list-capabilities"]);
+        assert!(
+            listed.status.success(),
+            "capability listing failed:\n{}",
+            String::from_utf8_lossy(&listed.stderr)
+        );
+        let output = String::from_utf8_lossy(&listed.stdout);
+        assert!(
+            output.lines().any(|line| line.starts_with("dgram ")),
+            "missing dgram:\n{output}"
+        );
+
+        let removed = run_pack(
+            cli,
+            directory.path(),
+            &entry,
+            &["--list-capabilities", "--without", "dgram"],
+        );
+        assert!(!removed.status.success(), "removed a required capability");
+        let error = String::from_utf8_lossy(&removed.stderr);
+        assert!(error.contains("cannot remove `dgram`"), "{error}");
+        assert!(error.contains("main.js"), "{error}");
+    }
+
+    #[test]
     fn comma_delimited_with_accumulates_capabilities() {
         let directory = TempDir::new("comma-with");
         let entry = directory.path().join("main.js");

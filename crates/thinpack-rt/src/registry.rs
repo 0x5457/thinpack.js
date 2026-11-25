@@ -58,6 +58,8 @@ pub(crate) fn extensions(isolate: &thinpack_core::IsolateInputs) -> Vec<deno_cor
     extensions.push(thinpack_node_test::init());
     #[cfg(feature = "node-tty")]
     extensions.push(thinpack_node_tty::init());
+    #[cfg(feature = "node-dgram")]
+    extensions.push(thinpack_node_dgram::init());
     #[cfg(feature = "node-domain")]
     extensions.push(thinpack_node_domain::init());
     #[cfg(feature = "node-module")]
@@ -157,6 +159,8 @@ pub(crate) fn enabled() -> Vec<&'static str> {
     names.push("test");
     #[cfg(feature = "node-tty")]
     names.push("tty");
+    #[cfg(feature = "node-dgram")]
+    names.push("dgram");
     #[cfg(feature = "node-domain")]
     names.push("domain");
     #[cfg(feature = "node-module")]
