@@ -13,6 +13,10 @@
 #   deps           Hard dependencies: enabling this module enables them as well. Must be acyclic.
 #   optional_deps  Lazy dependencies: used by a single API only, excluded from the capability
 #                  closure; that API fails explicitly when the module is absent.
+#   layers         Shared layer crates (by package name) registered as one extension when any
+#                  module that lists them is enabled. A layer provides no builtin of its own;
+#                  it holds the runtime code several modules share, so linking one module does
+#                  not link a second copy of that code.
 #   ambient        Always-on module: present in every template, cannot be removed by --without.
 #   optional       Optional module: target packages probe for it; static analysis only warns
 #                  when it is absent instead of failing.
@@ -28,6 +32,7 @@ deps = ["util"]
 [modules.cluster]
 builtins = ["cluster"]
 deps = ["events", "net", "path", "process"]
+layers = ["thinpack-child"]
 
 [modules.constants]
 builtins = ["constants"]
@@ -92,6 +97,7 @@ deps = ["events", "path"]
 [modules.child_process]
 builtins = ["child_process"]
 deps = ["events", "stream"]
+layers = ["thinpack-child"]
 
 [modules.tty]
 builtins = ["tty"]

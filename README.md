@@ -195,6 +195,7 @@ crates/
   thinpack-pack/     payload format: manifest, compression, trailer
   thinpack-vfs/      virtual file system of an artifact (virtual root /app)
   thinpack-io/       shared stdio ops
+  thinpack-child/    spawned-process table and stdio pipes shared by child_process and cluster
   thinpack-js/       proc macro: brotli-compress the embedded JavaScript at build time
   thinpack-node-internals/  vendored Node internals: primordials, errors, inspect, encoding bindings
   thinpack-cli/      the thinpack CLI, links no JS engine

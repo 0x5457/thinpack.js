@@ -14,6 +14,7 @@ pub fn init() -> Extension {
     Extension {
         name: "thinpack_node_child_process",
         deps: &[
+            "thinpack_child",
             "thinpack_node_internals",
             "thinpack_node_events",
             "thinpack_node_stream",

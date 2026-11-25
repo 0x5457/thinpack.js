@@ -10,23 +10,23 @@
 mod unix {
     //! Ops backing `node:cluster`.
     //!
-    //! The primary and the worker both use the same two tables: one entry per spawned worker
-    //! process (child handle, stdio pipes) and one entry per IPC channel. They share an id so a
-    //! worker process has a single number on both sides of the channel.
+    //! The worker process itself — its pid, stdio pipes, wait and kill — lives in the shared
+    //! `thinpack-child` table, the same one `node:child_process` uses. This module adds what
+    //! makes a cluster worker a worker: the IPC channel and the descriptor the child inherits
+    //! across `exec`, both keyed by the table entry's id.
 
     use std::collections::HashMap;
     use std::io;
     use std::mem::size_of;
     use std::os::fd::{AsRawFd, FromRawFd, RawFd};
-    use std::os::unix::process::{CommandExt, ExitStatusExt};
-    use std::process::Stdio;
     use std::sync::{Arc, Mutex, OnceLock};
 
     use deno_core::{OpDecl, op2};
     use deno_error::JsErrorBox;
-    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixStream;
-    use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout};
+    use tokio::sync::Mutex as AsyncMutex;
+
+    use thinpack_child::{ChildError, InheritedFd, Spawn, Stdio};
 
     pub(crate) const OPS: &[OpDecl] = &[
         op_cluster_spawn(),
@@ -38,33 +38,14 @@ mod unix {
         op_cluster_channel_write(),
         op_cluster_channel_write_sync(),
         op_cluster_channel_close(),
-        op_cluster_wait(),
-        op_cluster_kill(),
-        op_cluster_read_pipe(),
-        op_cluster_write_stdin(),
-        op_cluster_close_stdin(),
     ];
 
     /// The descriptor the child side of the channel is moved to before `exec`.
     const CHANNEL_FD: RawFd = 3;
-    const PIPE_CHUNK: usize = 65536;
-
-    struct WorkerEntry {
-        child: Arc<tokio::sync::Mutex<Child>>,
-        pid: u32,
-        stdin: Arc<tokio::sync::Mutex<Option<ChildStdin>>>,
-        stdout: Arc<tokio::sync::Mutex<Option<ChildStdout>>>,
-        stderr: Arc<tokio::sync::Mutex<Option<ChildStderr>>>,
-    }
 
     struct ChannelEntry {
         stream: UnixStream,
-        write: tokio::sync::Mutex<()>,
-    }
-
-    fn workers() -> &'static Mutex<HashMap<u32, Arc<WorkerEntry>>> {
-        static WORKERS: OnceLock<Mutex<HashMap<u32, Arc<WorkerEntry>>>> = OnceLock::new();
-        WORKERS.get_or_init(|| Mutex::new(HashMap::new()))
+        write: AsyncMutex<()>,
     }
 
     fn channels() -> &'static Mutex<HashMap<u32, Arc<ChannelEntry>>> {
@@ -87,13 +68,13 @@ mod unix {
         JsErrorBox::new("Error", format!("-{errno}\0{error}"))
     }
 
-    fn worker_of(id: u32) -> Result<Arc<WorkerEntry>, JsErrorBox> {
-        workers()
-            .lock()
-            .expect("worker table")
-            .get(&id)
-            .map(Arc::clone)
-            .ok_or_else(|| cluster_error("ESRCH", "cluster worker not found"))
+    /// A spawn failure in the errno form `UVException` is raised from.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "`ChildError` is a `map_err` sink; taking a reference would force a closure at every call site"
+    )]
+    fn spawn_error(error: ChildError) -> JsErrorBox {
+        JsErrorBox::new("Error", error.to_uv_wire())
     }
 
     fn channel_of(id: u32) -> Result<Arc<ChannelEntry>, JsErrorBox> {
@@ -114,84 +95,40 @@ mod unix {
         silent: bool,
         worker_id: u32,
     ) -> Result<String, JsErrorBox> {
-        let mut parts = argv.split('\0');
-        let program = parts.next().unwrap_or_default();
-        if program.is_empty() {
-            return Err(cluster_error("ERR_INVALID_ARG_VALUE", "empty command"));
-        }
-        let rest: Vec<String> = parts.map(str::to_owned).collect();
+        let request = Spawn::parse(argv, env, cwd)
+            .map_err(spawn_error)?
+            .with_env("NODE_UNIQUE_ID", worker_id)
+            .with_env("NODE_CHANNEL_FD", CHANNEL_FD);
 
         let (parent, child_end) = std::os::unix::net::UnixStream::pair().map_err(io_error)?;
         parent.set_nonblocking(true).map_err(io_error)?;
         let channel_fd = child_end.as_raw_fd();
 
-        let mut command = tokio::process::Command::new(program);
-        command
-            .args(&rest)
-            .env("NODE_UNIQUE_ID", worker_id.to_string())
-            .env("NODE_CHANNEL_FD", CHANNEL_FD.to_string());
-        for pair in env.split('\0').filter(|pair| !pair.is_empty()) {
-            if let Some((key, value)) = pair.split_once('=') {
-                command.env(key, value);
-            }
-        }
-        if !cwd.is_empty() {
-            command.current_dir(cwd);
-        }
-        command.stdin(stdio(silent));
-        command.stdout(stdio(silent));
-        command.stderr(stdio(silent));
-
-        // SAFETY: the hook runs in the child between fork and exec. `dup2` and `fcntl` are
-        // async-signal-safe and only touch descriptors, which is what `pre_exec` requires.
-        unsafe {
-            command.as_std_mut().pre_exec(move || {
-                if channel_fd != CHANNEL_FD {
-                    if libc::dup2(channel_fd, CHANNEL_FD) == -1 {
-                        return Err(io::Error::last_os_error());
-                    }
-                } else if libc::fcntl(CHANNEL_FD, libc::F_SETFD, 0) == -1 {
-                    return Err(io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-
-        let mut child = command.spawn().map_err(io_error)?;
+        let stdio = if silent { Stdio::Piped } else { Stdio::Inherit };
+        let inherited = InheritedFd {
+            source: channel_fd,
+            target: CHANNEL_FD,
+        };
+        let spawned =
+            thinpack_child::spawn(&request, stdio, Some(inherited)).map_err(spawn_error)?;
         drop(child_end);
-        let pid = child.id().unwrap_or_default();
-        let stdin = child.stdin.take();
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
-        let stream = UnixStream::from_std(parent).map_err(io_error)?;
 
-        let id = ENTRIES.next();
-        workers().lock().expect("worker table").insert(
-            id,
-            Arc::new(WorkerEntry {
-                child: Arc::new(tokio::sync::Mutex::new(child)),
-                pid,
-                stdin: Arc::new(tokio::sync::Mutex::new(stdin)),
-                stdout: Arc::new(tokio::sync::Mutex::new(stdout)),
-                stderr: Arc::new(tokio::sync::Mutex::new(stderr)),
-            }),
-        );
+        let stream = UnixStream::from_std(parent).map_err(io_error)?;
         channels().lock().expect("channel table").insert(
-            id,
+            spawned.id,
             Arc::new(ChannelEntry {
                 stream,
-                write: tokio::sync::Mutex::new(()),
+                write: AsyncMutex::new(()),
             }),
         );
-        Ok(format!("{id}\0{pid}"))
+        Ok(format!("{}\0{}", spawned.id, spawned.pid))
     }
 
     #[op2(async(lazy), fast)]
-    async fn op_cluster_channel_accept(id: u32) -> Result<(), JsErrorBox> {
-        // On unix the channel is complete once `op_cluster_spawn` returns; the op exists
-        // so the shared JS layer can run the same handshake on every platform (Windows
-        // connects its loopback channel here).
-        worker_of(id)?;
+    async fn op_cluster_channel_accept(_id: u32) -> Result<(), JsErrorBox> {
+        // On unix the channel is complete once `op_cluster_spawn` returns; the op exists so
+        // the shared JS layer runs the same handshake on every platform (Windows connects
+        // its loopback channel here).
         Ok(())
     }
 
@@ -203,14 +140,6 @@ mod unix {
         unsafe {
             std::env::remove_var("NODE_UNIQUE_ID");
             std::env::remove_var("NODE_CHANNEL_FD");
-        }
-    }
-
-    fn stdio(silent: bool) -> Stdio {
-        if silent {
-            Stdio::piped()
-        } else {
-            Stdio::inherit()
         }
     }
 
@@ -267,7 +196,7 @@ mod unix {
             id,
             Arc::new(ChannelEntry {
                 stream,
-                write: tokio::sync::Mutex::new(()),
+                write: AsyncMutex::new(()),
             }),
         );
         Ok(id)
@@ -303,10 +232,8 @@ mod unix {
     async fn op_cluster_channel_write(id: u32, #[string] frame: String) -> Result<(), JsErrorBox> {
         let entry = channel_of(id)?;
         let _guard = entry.write.lock().await;
-        let length = u32::try_from(frame.len())
-            .map_err(|_| cluster_error("E2BIG", "the channel frame is larger than 4 GiB"))?;
         let mut bytes = Vec::with_capacity(4 + frame.len());
-        bytes.extend_from_slice(&length.to_be_bytes());
+        bytes.extend_from_slice(&frame_length(&frame)?);
         bytes.extend_from_slice(frame.as_bytes());
         write_all(&entry.stream, &bytes).await.map_err(io_error)
     }
@@ -319,10 +246,8 @@ mod unix {
         // libuv-backed channel has. The write is tiny and the primary is reading, so blocking
         // for the socket to become writable is bounded in practice.
         let entry = channel_of(id)?;
-        let length = u32::try_from(frame.len())
-            .map_err(|_| cluster_error("E2BIG", "the channel frame is larger than 4 GiB"))?;
         let mut bytes = Vec::with_capacity(4 + frame.len());
-        bytes.extend_from_slice(&length.to_be_bytes());
+        bytes.extend_from_slice(&frame_length(frame)?);
         bytes.extend_from_slice(frame.as_bytes());
 
         let fd = entry.stream.as_raw_fd();
@@ -367,72 +292,11 @@ mod unix {
         unsafe { libc::shutdown(entry.stream.as_raw_fd(), libc::SHUT_RDWR) };
     }
 
-    #[op2(async(lazy), fast)]
-    #[string]
-    async fn op_cluster_wait(id: u32) -> Result<String, JsErrorBox> {
-        let child = Arc::clone(&worker_of(id)?.child);
-        let mut child = child.lock().await;
-        let status = child.wait().await.map_err(io_error)?;
-        Ok(format!(
-            "{}\0{}",
-            status.code().unwrap_or(-1),
-            status.signal().unwrap_or(0)
-        ))
-    }
-
-    #[op2(fast)]
-    fn op_cluster_kill(id: u32, signal: i32) -> Result<(), JsErrorBox> {
-        let pid = worker_of(id)?.pid.cast_signed();
-        // SAFETY: `kill(2)` takes plain integers and reports a bad pid or signal through its
-        // return value instead of being undefined behaviour.
-        if unsafe { libc::kill(pid, signal) } == -1 {
-            return Err(io_error(io::Error::last_os_error()));
-        }
-        Ok(())
-    }
-
-    #[op2(async(lazy), fast)]
-    #[buffer]
-    async fn op_cluster_read_pipe(id: u32, which: u32) -> Result<Box<[u8]>, JsErrorBox> {
-        let entry = worker_of(id)?;
-        let mut buffer = vec![0u8; PIPE_CHUNK];
-        let count = if which == 1 {
-            read_pipe(&entry.stdout, &mut buffer).await?
-        } else {
-            read_pipe(&entry.stderr, &mut buffer).await?
-        };
-        buffer.truncate(count);
-        Ok(buffer.into_boxed_slice())
-    }
-
-    async fn read_pipe<T: AsyncRead + Unpin>(
-        pipe: &tokio::sync::Mutex<Option<T>>,
-        buffer: &mut [u8],
-    ) -> Result<usize, JsErrorBox> {
-        match pipe.lock().await.as_mut() {
-            Some(pipe) => pipe.read(buffer).await.map_err(io_error),
-            None => Ok(0),
-        }
-    }
-
-    #[op2(async(lazy), fast)]
-    async fn op_cluster_write_stdin(
-        id: u32,
-        #[buffer(copy)] data: Vec<u8>,
-    ) -> Result<(), JsErrorBox> {
-        let entry = worker_of(id)?;
-        let mut pipe = entry.stdin.lock().await;
-        match pipe.as_mut() {
-            Some(stdin) => stdin.write_all(&data).await.map_err(io_error),
-            None => Err(cluster_error("EPIPE", "the worker stdin is closed")),
-        }
-    }
-
-    #[op2(async(lazy), fast)]
-    async fn op_cluster_close_stdin(id: u32) -> Result<(), JsErrorBox> {
-        let entry = worker_of(id)?;
-        entry.stdin.lock().await.take();
-        Ok(())
+    /// The big-endian frame length that prefixes every channel message.
+    fn frame_length(frame: &str) -> Result<[u8; 4], JsErrorBox> {
+        let length = u32::try_from(frame.len())
+            .map_err(|_| cluster_error("E2BIG", "the channel frame is larger than 4 GiB"))?;
+        Ok(length.to_be_bytes())
     }
 
     async fn fill_exact(stream: &UnixStream, buffer: &mut [u8]) -> io::Result<bool> {
@@ -470,19 +334,23 @@ pub(crate) use unix::*;
 
 #[cfg(windows)]
 mod windows {
+    //! Windows has no socketpair, so a worker's IPC channel is a loopback TCP connection:
+    //! the primary listens on an ephemeral port, passes the port in the child's environment
+    //! and accepts the connection during `op_cluster_channel_accept`. Everything about the
+    //! process itself — pid, stdio pipes, wait, kill — is the shared `thinpack-child` table.
+
     use std::collections::HashMap;
-    use std::io::{self, Write};
-    use std::process::Stdio;
+    use std::io::{self, Write as _};
     use std::sync::{Arc, Mutex, OnceLock};
     use std::time::Duration;
 
     use deno_core::{OpDecl, op2};
     use deno_error::JsErrorBox;
-    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
-    use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::sync::Mutex as AsyncMutex;
 
-    const PIPE_CHUNK: usize = 65536;
+    use thinpack_child::{ChildError, Spawn, Stdio};
+
     /// How long the primary waits for a spawned worker to connect its channel before
     /// giving up on the handshake.
     const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -497,22 +365,7 @@ mod windows {
         op_cluster_channel_write(),
         op_cluster_channel_write_sync(),
         op_cluster_channel_close(),
-        op_cluster_wait(),
-        op_cluster_kill(),
-        op_cluster_read_pipe(),
-        op_cluster_write_stdin(),
-        op_cluster_close_stdin(),
     ];
-
-    struct WorkerEntry {
-        child: Arc<AsyncMutex<Child>>,
-        pid: u32,
-        stdin: Arc<AsyncMutex<Option<ChildStdin>>>,
-        stdout: Arc<AsyncMutex<Option<ChildStdout>>>,
-        stderr: Arc<AsyncMutex<Option<ChildStderr>>>,
-        /// The listener the worker connects back to; taken by the channel handshake.
-        accept: AsyncMutex<Option<tokio::net::TcpListener>>,
-    }
 
     struct ChannelEntry {
         read: AsyncMutex<tokio::net::tcp::OwnedReadHalf>,
@@ -521,14 +374,14 @@ mod windows {
         write: AsyncMutex<()>,
     }
 
-    fn workers() -> &'static Mutex<HashMap<u32, Arc<WorkerEntry>>> {
-        static WORKERS: OnceLock<Mutex<HashMap<u32, Arc<WorkerEntry>>>> = OnceLock::new();
-        WORKERS.get_or_init(|| Mutex::new(HashMap::new()))
-    }
-
     fn channels() -> &'static Mutex<HashMap<u32, Arc<ChannelEntry>>> {
         static CHANNELS: OnceLock<Mutex<HashMap<u32, Arc<ChannelEntry>>>> = OnceLock::new();
         CHANNELS.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    fn listeners() -> &'static Mutex<HashMap<u32, tokio::net::TcpListener>> {
+        static LISTENERS: OnceLock<Mutex<HashMap<u32, tokio::net::TcpListener>>> = OnceLock::new();
+        LISTENERS.get_or_init(|| Mutex::new(HashMap::new()))
     }
 
     static ENTRIES: thinpack_core::IdCounter = thinpack_core::IdCounter::new();
@@ -542,13 +395,13 @@ mod windows {
         JsErrorBox::new("Error", format!("{errno}\0{error}"))
     }
 
-    fn worker_of(id: u32) -> Result<Arc<WorkerEntry>, JsErrorBox> {
-        workers()
-            .lock()
-            .expect("worker table")
-            .get(&id)
-            .map(Arc::clone)
-            .ok_or_else(|| cluster_error("ESRCH", "cluster worker not found"))
+    /// A spawn failure in the errno form `UVException` is raised from.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "`ChildError` is a `map_err` sink; taking a reference would force a closure at every call site"
+    )]
+    fn spawn_error(error: ChildError) -> JsErrorBox {
+        JsErrorBox::new("Error", error.to_uv_wire())
     }
 
     fn channel_of(id: u32) -> Result<Arc<ChannelEntry>, JsErrorBox> {
@@ -558,14 +411,6 @@ mod windows {
             .get(&id)
             .map(Arc::clone)
             .ok_or_else(|| cluster_error("EPIPE", "cluster channel is closed"))
-    }
-
-    fn stdio(silent: bool) -> Stdio {
-        if silent {
-            Stdio::piped()
-        } else {
-            Stdio::inherit()
-        }
     }
 
     fn channel_entry(stream: std::net::TcpStream) -> Result<Arc<ChannelEntry>, JsErrorBox> {
@@ -590,69 +435,32 @@ mod windows {
         silent: bool,
         worker_id: u32,
     ) -> Result<String, JsErrorBox> {
-        let mut parts = argv.split('\0');
-        let program = parts.next().unwrap_or_default();
-        if program.is_empty() {
-            return Err(cluster_error("ERR_INVALID_ARG_VALUE", "empty command"));
-        }
-        let rest: Vec<String> = parts.map(str::to_owned).collect();
-
-        // Windows has no socketpair; a loopback TCP channel is the portable
-        // equivalent of Node's IPC pipe. The child gets the port in its env and connects
-        // during its bootstrap; the primary completes the handshake through
-        // `op_cluster_channel_accept` without blocking the event loop.
+        // The child gets the port in its environment and connects during its bootstrap; the
+        // primary completes the handshake in `op_cluster_channel_accept`.
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).map_err(io_error)?;
         listener.set_nonblocking(true).map_err(io_error)?;
         let port = listener.local_addr().map_err(io_error)?.port();
         let listener = tokio::net::TcpListener::from_std(listener).map_err(io_error)?;
 
-        let mut command = tokio::process::Command::new(program);
-        command
-            .args(&rest)
-            .env("NODE_UNIQUE_ID", worker_id.to_string())
-            .env("NODE_CHANNEL_PORT", port.to_string());
-        for pair in env.split('\0').filter(|pair| !pair.is_empty()) {
-            if let Some((key, value)) = pair.split_once('=') {
-                command.env(key, value);
-            }
-        }
-        if !cwd.is_empty() {
-            command.current_dir(cwd);
-        }
-        command.stdin(stdio(silent));
-        command.stdout(stdio(silent));
-        command.stderr(stdio(silent));
-
-        let mut child = command.spawn().map_err(io_error)?;
-        let pid = child.id().unwrap_or_default();
-        let stdin = child.stdin.take();
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
-
-        let id = ENTRIES.next();
-        workers().lock().expect("worker table").insert(
-            id,
-            Arc::new(WorkerEntry {
-                child: Arc::new(AsyncMutex::new(child)),
-                pid,
-                stdin: Arc::new(AsyncMutex::new(stdin)),
-                stdout: Arc::new(AsyncMutex::new(stdout)),
-                stderr: Arc::new(AsyncMutex::new(stderr)),
-                accept: AsyncMutex::new(Some(listener)),
-            }),
-        );
-        Ok(format!("{id}\0{pid}"))
+        let request = Spawn::parse(argv, env, cwd)
+            .map_err(spawn_error)?
+            .with_env("NODE_UNIQUE_ID", worker_id)
+            .with_env("NODE_CHANNEL_PORT", port);
+        let stdio = if silent { Stdio::Piped } else { Stdio::Inherit };
+        let spawned = thinpack_child::spawn(&request, stdio, None).map_err(spawn_error)?;
+        listeners()
+            .lock()
+            .expect("listener table")
+            .insert(spawned.id, listener);
+        Ok(format!("{}\0{}", spawned.id, spawned.pid))
     }
 
     #[op2(async(lazy), fast)]
     async fn op_cluster_channel_accept(id: u32) -> Result<(), JsErrorBox> {
-        let entry = worker_of(id)?;
-        let listener = entry
-            .accept
-            .lock()
-            .await
-            .take()
-            .ok_or_else(|| cluster_error("EINVAL", "the channel handshake already ran"))?;
+        let listener = listeners().lock().expect("listener table").remove(&id);
+        let Some(listener) = listener else {
+            return Err(cluster_error("EINVAL", "the channel handshake already ran"));
+        };
         // The handshake runs asynchronously so a worker that never connects never blocks
         // the event loop with sleep polling; `cluster.fork` has already returned by now.
         let accepted = tokio::time::timeout(HANDSHAKE_TIMEOUT, listener.accept()).await;
@@ -660,7 +468,9 @@ mod windows {
             Ok(Ok((stream, _))) => stream.into_std().map_err(io_error)?,
             Ok(Err(error)) => return Err(io_error(error)),
             Err(_) => {
-                let _ = entry.child.lock().await.start_kill();
+                // A worker that never connected is useless; any signal terminates it on
+                // Windows, and 9 is the `SIGKILL` the unix path would use.
+                let _ = thinpack_child::kill(id, 9);
                 return Err(cluster_error(
                     "ETIMEDOUT",
                     "the cluster worker did not connect",
@@ -755,10 +565,8 @@ mod windows {
     async fn op_cluster_channel_write(id: u32, #[string] frame: String) -> Result<(), JsErrorBox> {
         let entry = channel_of(id)?;
         let _guard = entry.write.lock().await;
-        let length = u32::try_from(frame.len())
-            .map_err(|_| cluster_error("E2BIG", "the channel frame is larger than 4 GiB"))?;
         let mut bytes = Vec::with_capacity(4 + frame.len());
-        bytes.extend_from_slice(&length.to_be_bytes());
+        bytes.extend_from_slice(&frame_length(&frame)?);
         bytes.extend_from_slice(frame.as_bytes());
         entry
             .write_stream
@@ -772,10 +580,8 @@ mod windows {
     #[op2(fast)]
     fn op_cluster_channel_write_sync(id: u32, #[string] frame: &str) -> Result<(), JsErrorBox> {
         let entry = channel_of(id)?;
-        let length = u32::try_from(frame.len())
-            .map_err(|_| cluster_error("E2BIG", "the channel frame is larger than 4 GiB"))?;
         let mut bytes = Vec::with_capacity(4 + frame.len());
-        bytes.extend_from_slice(&length.to_be_bytes());
+        bytes.extend_from_slice(&frame_length(frame)?);
         bytes.extend_from_slice(frame.as_bytes());
         let mut stream = &entry.blocking;
         stream.write_all(&bytes).map_err(io_error)
@@ -788,88 +594,11 @@ mod windows {
         }
     }
 
-    #[op2(async(lazy), fast)]
-    #[string]
-    async fn op_cluster_wait(id: u32) -> Result<String, JsErrorBox> {
-        let child = Arc::clone(&worker_of(id)?.child);
-        let mut child = child.lock().await;
-        let status = child.wait().await.map_err(io_error)?;
-        Ok(format!("{}\0{}", status.code().unwrap_or(-1), 0))
-    }
-
-    #[op2(fast)]
-    fn op_cluster_kill(id: u32, signal: i32) -> Result<(), JsErrorBox> {
-        use windows_sys::Win32::Foundation::CloseHandle;
-        use windows_sys::Win32::System::Threading::{
-            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, TerminateProcess,
-        };
-
-        let pid = worker_of(id)?.pid;
-        let access = if signal == 0 {
-            PROCESS_QUERY_LIMITED_INFORMATION
-        } else {
-            PROCESS_TERMINATE
-        };
-        // SAFETY: plain Win32 call; the handle is closed before returning.
-        let process = unsafe { OpenProcess(access, 0, pid) };
-        if process.is_null() {
-            return Err(io_error(io::Error::last_os_error()));
-        }
-        let result = if signal == 0 {
-            Ok(())
-        // SAFETY: `process` is the handle opened above.
-        } else if unsafe { TerminateProcess(process, 1) } == 0 {
-            Err(io_error(io::Error::last_os_error()))
-        } else {
-            Ok(())
-        };
-        // SAFETY: `process` is a valid handle opened by OpenProcess.
-        unsafe { CloseHandle(process) };
-        result
-    }
-
-    #[op2(async(lazy), fast)]
-    #[buffer]
-    async fn op_cluster_read_pipe(id: u32, which: u32) -> Result<Box<[u8]>, JsErrorBox> {
-        let entry = worker_of(id)?;
-        let mut buffer = vec![0u8; PIPE_CHUNK];
-        let count = if which == 1 {
-            read_pipe(&entry.stdout, &mut buffer).await?
-        } else {
-            read_pipe(&entry.stderr, &mut buffer).await?
-        };
-        buffer.truncate(count);
-        Ok(buffer.into_boxed_slice())
-    }
-
-    async fn read_pipe<T: AsyncRead + Unpin>(
-        pipe: &AsyncMutex<Option<T>>,
-        buffer: &mut [u8],
-    ) -> Result<usize, JsErrorBox> {
-        match pipe.lock().await.as_mut() {
-            Some(pipe) => pipe.read(buffer).await.map_err(io_error),
-            None => Ok(0),
-        }
-    }
-
-    #[op2(async(lazy), fast)]
-    async fn op_cluster_write_stdin(
-        id: u32,
-        #[buffer(copy)] data: Vec<u8>,
-    ) -> Result<(), JsErrorBox> {
-        let entry = worker_of(id)?;
-        let mut pipe = entry.stdin.lock().await;
-        match pipe.as_mut() {
-            Some(stdin) => stdin.write_all(&data).await.map_err(io_error),
-            None => Err(cluster_error("EPIPE", "the worker stdin is closed")),
-        }
-    }
-
-    #[op2(async(lazy), fast)]
-    async fn op_cluster_close_stdin(id: u32) -> Result<(), JsErrorBox> {
-        let entry = worker_of(id)?;
-        entry.stdin.lock().await.take();
-        Ok(())
+    /// The big-endian frame length that prefixes every channel message.
+    fn frame_length(frame: &str) -> Result<[u8; 4], JsErrorBox> {
+        let length = u32::try_from(frame.len())
+            .map_err(|_| cluster_error("E2BIG", "the channel frame is larger than 4 GiB"))?;
+        Ok(length.to_be_bytes())
     }
 }
 

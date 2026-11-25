@@ -41,6 +41,7 @@ pub fn init() -> Extension {
     Extension {
         name: "thinpack_node_cluster",
         deps: &[
+            "thinpack_child",
             "thinpack_node_events",
             "thinpack_node_net",
             "thinpack_node_path",

@@ -1,7 +1,9 @@
 (() => {
-  const { Readable, Writable } = require("node:stream");
-  const { EventEmitter } = require("node:events");
   const { codes, opErrorParts } = require("node:thinpack/internal/errors");
+  const {
+    Child,
+    signalName,
+  } = require("node:thinpack/internal/child_process");
 
   const notImplemented = (name) => new codes.ERR_NOT_IMPLEMENTED(`child_process.${name}`);
 
@@ -16,33 +18,12 @@
     return failure;
   };
 
-  const { signals: SIGNALS } = require("node:thinpack/internal/constants").os;
-  const SIGNAL_NAMES = {};
-  // Keep the first name for a number: the table lists canonical names before aliases
-  // (SIGABRT before SIGIOT, SIGIO before SIGPOLL).
-  for (const [name, number] of Object.entries(SIGNALS)) SIGNAL_NAMES[number] ??= name;
-
-  const signalName = (signal) =>
-    signal > 0 ? (SIGNAL_NAMES[signal] ?? `SIG${signal}`) : null;
-
   // `exec` runs the command through the platform shell; Windows resolves the shell the
   // way Node does, through ComSpec.
   const shell = () =>
     process.platform === "win32"
       ? [process.env.ComSpec ?? "cmd.exe", "/d", "/s", "/c"]
       : ["/bin/sh", "-c"];
-
-  const signalNumber = (signal) => {
-    if (signal === undefined || signal === null) return SIGNALS.SIGTERM;
-    if (typeof signal === "number") return signal;
-    const number = SIGNALS[String(signal)];
-    if (number === undefined) {
-      const error = new Error("Unknown signal: " + signal);
-      error.code = "ERR_UNKNOWN_SIGNAL";
-      throw error;
-    }
-    return number;
-  };
 
   const envString = (env) => {
     if (!env) return "";
@@ -52,32 +33,21 @@
       .join("\0");
   };
 
-  class ChildProcess extends EventEmitter {
-    #id = 0;
-    #stdoutDone;
-    #stderrDone;
+  class ChildProcess extends Child {
+    #options;
 
     constructor(command, args, options) {
       super();
       this.spawnfile = command;
       this.spawnargs = [command, ...args];
-      this.pid = undefined;
-      this.exitCode = undefined;
-      this.signalCode = null;
-      this.killed = false;
-      this.stdout = null;
-      this.stderr = null;
-      this.stdin = null;
       this.#options = options;
     }
 
-    #options;
-
     start() {
       const argv = [this.spawnfile, ...this.spawnargs.slice(1)].join("\0");
-      let id;
+      let spawned;
       try {
-        id = Deno.core.ops.op_child_spawn(
+        spawned = Deno.core.ops.op_child_spawn(
           argv,
           envString(this.#options.env),
           this.#options.cwd ? String(this.#options.cwd) : "",
@@ -86,89 +56,9 @@
         queueMicrotask(() => this.emit("error", spawnError(error, this.spawnfile)));
         return;
       }
-      this.#id = id;
-      this.pid = Deno.core.ops.op_child_pid(id);
-      this.stdout = this.#pipe(1);
-      this.stderr = this.#pipe(2);
-      this.stdin = this.#stdinPipe();
+      const [id, pid] = spawned.split("\0").map(Number);
+      this._attach(id, pid, true);
       queueMicrotask(() => this.emit("spawn"));
-
-      const wait = Deno.core.ops.op_child_wait(id).then((payload) => {
-        const [code, signal] = payload.split("\0").map(Number);
-        this.exitCode = code >= 0 ? code : null;
-        this.signalCode = signalName(signal);
-        this.emit("exit", this.exitCode, this.signalCode);
-        return Promise.all([this.#stdoutDone, this.#stderrDone]).then(() => {
-          this.emit("close", this.exitCode, this.signalCode);
-        });
-      });
-      wait.catch((error) => this.emit("error", spawnError(error, this.spawnfile)));
-    }
-
-    #pipe(which) {
-      let resolveDone;
-      const done = new Promise((resolve) => {
-        resolveDone = resolve;
-      });
-      if (which === 1) this.#stdoutDone = done;
-      else this.#stderrDone = done;
-      const stream = new Readable({ read() {} });
-      const pump = () => {
-        Deno.core.ops
-          .op_child_read(this.#id, which)
-          .then((chunk) => {
-            if (chunk.length === 0) {
-              resolveDone();
-              stream.push(null);
-              return;
-            }
-            stream.push(chunk);
-            pump();
-          })
-          .catch((error) => {
-            resolveDone();
-            stream.destroy(spawnError(error, this.spawnfile));
-          });
-      };
-      pump();
-      return stream;
-    }
-
-    #stdinPipe() {
-      const child = this;
-      return new Writable({
-        write(chunk, encoding, callback) {
-          Deno.core.ops
-            .op_child_write(child.#id, chunk)
-            .then(() => callback())
-            .catch((error) => callback(spawnError(error, child.spawnfile)));
-        },
-        final(callback) {
-          Deno.core.ops
-            .op_child_close_stdin(child.#id)
-            .then(() => callback())
-            .catch((error) => callback(spawnError(error, child.spawnfile)));
-        },
-      });
-    }
-
-    kill(signal) {
-      try {
-        Deno.core.ops.op_child_kill(this.#id, signalNumber(signal));
-      } catch (error) {
-        queueMicrotask(() => this.emit("error", error));
-        return false;
-      }
-      this.killed = true;
-      return true;
-    }
-
-    ref() {
-      return this;
-    }
-
-    unref() {
-      return this;
     }
   }
 

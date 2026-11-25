@@ -1,0 +1,22 @@
+[package]
+name = "thinpack-child"
+description = "Spawned-process table and stdio pipes shared by node:child_process and node:cluster"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thinpack-js.workspace = true
+thinpack-core.workspace = true
+deno_core.workspace = true
+deno_error.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }

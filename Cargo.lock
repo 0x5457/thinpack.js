@@ -3749,6 +3749,19 @@ name = "thinpack-caps"
 version = "0.2.0"
 
 [[package]]
+name = "thinpack-child"
+version = "0.2.0"
+dependencies = [
+ "deno_core",
+ "deno_error",
+ "libc",
+ "thinpack-core",
+ "thinpack-js",
+ "tokio",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "thinpack-cjs-lexer"
 version = "0.2.0"
 dependencies = [
@@ -3837,11 +3850,8 @@ version = "0.2.0"
 dependencies = [
  "deno_core",
  "deno_error",
- "libc",
- "thinpack-core",
+ "thinpack-child",
  "thinpack-js",
- "tokio",
- "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3851,10 +3861,10 @@ dependencies = [
  "deno_core",
  "deno_error",
  "libc",
+ "thinpack-child",
  "thinpack-core",
  "thinpack-js",
  "tokio",
- "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4252,6 +4262,7 @@ dependencies = [
  "libc",
  "serde",
  "thinpack-caps",
+ "thinpack-child",
  "thinpack-core",
  "thinpack-io",
  "thinpack-js",

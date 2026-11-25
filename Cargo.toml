@@ -14,6 +14,7 @@ members = [
     "crates/thinpack-vfs",
     "crates/thinpack-cli",
     "crates/thinpack-node-internals",
+    "crates/thinpack-child",
     "crates/thinpack-rt",
     "crates/node/console",
     "crates/node/constants",
@@ -87,6 +88,7 @@ thinpack-loader = { path = "crates/thinpack-loader" }
 thinpack-cjs-lexer = { path = "crates/thinpack-cjs-lexer" }
 thinpack-io = { path = "crates/thinpack-io" }
 thinpack-node-internals = { path = "crates/thinpack-node-internals" }
+thinpack-child = { path = "crates/thinpack-child" }
 thinpack-pack = { path = "crates/thinpack-pack" }
 thinpack-analyze = { path = "crates/thinpack-analyze" }
 thinpack-vfs = { path = "crates/thinpack-vfs" }
