@@ -135,12 +135,20 @@ fn analyze_graph(
 /// part of the project instead of sweeping the project root, a package root,
 /// `node_modules`, or a symlinked copy of one of those.
 fn expandable_scan(root: &Path, directory: &Path) -> bool {
-    directory != root
-        && directory
-            .file_name()
-            .is_some_and(|name| name != "node_modules")
-        && !directory.join("package.json").is_file()
-        && std::fs::symlink_metadata(directory).is_ok_and(|metadata| metadata.is_dir())
+    let Ok(relative) = directory.strip_prefix(root) else {
+        return false;
+    };
+    if relative.as_os_str().is_empty() || relative.ends_with("node_modules") {
+        return false;
+    }
+    let mut path = root.to_path_buf();
+    for part in relative {
+        path.push(part);
+        if !std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_dir()) {
+            return false;
+        }
+    }
+    !directory.join("package.json").is_file()
 }
 
 fn expand_includes(root: &Path, includes: &[PathBuf]) -> Result<Vec<PathBuf>, Box<dyn Error>> {
@@ -200,7 +208,8 @@ fn collect_files(
             entry.file_type()?
         };
         if file_type.is_dir() {
-            if entry.file_name() != ".git" {
+            if entry.file_name() != ".git" && (follow_links || entry.file_name() != "node_modules")
+            {
                 collect_files(&path, follow_links, files)?;
             }
         } else if file_type.is_file() {
