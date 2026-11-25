@@ -6,6 +6,7 @@
     validateFunction,
     validateInt32,
     validateObject,
+    validateOneOf,
     validateString,
     validateUint32,
   } = require("node:thinpack/internal/validators");
@@ -46,13 +47,39 @@
   }
 
   function toKeyBytes(value, name, encoding) {
-    if (typeof value === "string") return Buffer.from(value, encoding);
+    if (typeof value === "string") return Buffer.from(value, encoding === "buffer" ? "utf8" : encoding);
     if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
       return ArrayBuffer.isView(value)
         ? Buffer.from(value.buffer, value.byteOffset, value.byteLength)
         : Buffer.from(value);
     }
     throw keyBytesTypeError(name, value);
+  }
+
+  function prepareSecretKey(key, encoding, bufferOnly = false) {
+    if (!bufferOnly) {
+      const data = keyData.get(key);
+      if (data !== undefined) {
+        if (data.type !== "secret") {
+          throw errorWithCode(
+            "ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE",
+            `Invalid key object type ${data.type}, expected secret.`,
+            TypeError,
+          );
+        }
+        return Buffer.from(data.der);
+      }
+    }
+    if (!isKeyBytes(key)) {
+      throw new codes.ERR_INVALID_ARG_TYPE(
+        "key",
+        bufferOnly
+          ? ["ArrayBuffer", "Buffer", "TypedArray", "DataView"]
+          : ["string", "ArrayBuffer", "Buffer", "TypedArray", "DataView", "KeyObject"],
+        key,
+      );
+    }
+    return Buffer.from(toKeyBytes(key, "key", encoding));
   }
 
   function incompatibleKeyOptions(message) {
@@ -120,10 +147,17 @@
 
     get type() { return keyData.get(this).type; }
 
+    get symmetricKeySize() {
+      const data = keyData.get(this);
+      return data.type === "secret" ? data.der.length : undefined;
+    }
+
     get asymmetricKeyType() { return keyData.get(this).kind || undefined; }
 
     get asymmetricKeyDetails() {
-      const { namedCurve, modulusLength, divisorLength, publicExponent } = keyData.get(this);
+      const data = keyData.get(this);
+      if (data.type === "secret") return undefined;
+      const { namedCurve, modulusLength, divisorLength, publicExponent } = data;
       const details = {};
       if (namedCurve !== undefined) details.namedCurve = namedCurve;
       if (modulusLength !== undefined) details.modulusLength = modulusLength;
@@ -136,6 +170,16 @@
 
     export(options) {
       const data = keyData.get(this);
+      if (data.type === "secret") {
+        if (options !== undefined) {
+          validateObject(options, "options");
+          validateOneOf(options.format, "options.format", [undefined, "buffer", "jwk"]);
+          if (options.format === "jwk") {
+            return { kty: "oct", k: data.der.toString("base64url") };
+          }
+        }
+        return Buffer.from(data.der);
+      }
       return exportKey(data, data.type, parseEncoding(options, data.type, data.kind, "options"));
     }
 
@@ -186,6 +230,9 @@
     return new KeyObject(keyToken, type, call(ops.op_crypto_import_key, type, format, options.type ?? "", bytes, passphrase));
   }
 
+  function createSecretKey(key, encoding) {
+    return new KeyObject(keyToken, "secret", { der: prepareSecretKey(key, encoding, true) });
+  }
   function createPrivateKey(key) { return importKey("private", key); }
   function createPublicKey(key) { return importKey("public", key); }
 
@@ -348,9 +395,11 @@
     KeyObject,
     createPrivateKey,
     createPublicKey,
+    createSecretKey,
     diffieHellman,
     generateKeyPair,
     generateKeyPairSync,
     keyDer,
+    prepareSecretKey,
   };
 })();
