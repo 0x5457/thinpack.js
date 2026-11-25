@@ -513,4 +513,257 @@ Version needs section '.gnu.version_r' contains 3 entries:
         assert_eq!(version_text((2, 2, 5)), "2.2.5");
         assert_eq!(parse_version("2"), None);
     }
+
+    /// `install.sh` against a release directory served over `file://`. The stubbed `uname` and
+    /// `ldd` put the host's libc to the test instead of whatever built the suite.
+    #[cfg(unix)]
+    mod installer {
+        use std::fmt::Write as _;
+        use std::fs::{self, File};
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::path::PathBuf;
+        use std::process::{Command, Output};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use tar::{Builder, EntryType, Header};
+
+        use crate::build;
+
+        use super::super::{Asset, Release};
+
+        const VERSION: &str = env!("CARGO_PKG_VERSION");
+        const GNU: &str = "x86_64-unknown-linux-gnu";
+        const MUSL: &str = "x86_64-unknown-linux-musl";
+        const DARWIN: &str = "aarch64-apple-darwin";
+
+        #[derive(Clone, Copy)]
+        struct Host {
+            system: &'static str,
+            machine: &'static str,
+            ldd: Option<&'static str>,
+        }
+
+        const GLIBC_HOST: Host = Host {
+            system: "Linux",
+            machine: "x86_64",
+            ldd: Some("ldd (Ubuntu GLIBC 2.39-0ubuntu8.3) 2.39"),
+        };
+        const MUSL_HOST: Host = Host {
+            system: "Linux",
+            machine: "x86_64",
+            ldd: Some("musl libc (x86_64)"),
+        };
+        const MACOS_HOST: Host = Host {
+            system: "Darwin",
+            machine: "arm64",
+            ldd: None,
+        };
+
+        /// A release directory as `cargo xtask dist` and the release job leave it.
+        struct Mirror {
+            root: PathBuf,
+            assets: PathBuf,
+            bin: PathBuf,
+            install: PathBuf,
+        }
+
+        impl Mirror {
+            fn new(name: &str, host: Host) -> Self {
+                static NEXT: AtomicUsize = AtomicUsize::new(0);
+                let root = std::env::temp_dir().join(format!(
+                    "thinpack-install-{}-{name}-{}",
+                    std::process::id(),
+                    NEXT.fetch_add(1, Ordering::Relaxed)
+                ));
+                let (assets, bin, install) =
+                    (root.join("assets"), root.join("bin"), root.join("install"));
+                for dir in [&assets, &bin, &install] {
+                    fs::create_dir_all(dir).expect("create the fixture directory");
+                }
+
+                let mirror = Self {
+                    root,
+                    assets,
+                    bin,
+                    install,
+                };
+                mirror.stub(
+                    "uname",
+                    &format!(
+                        "#!/bin/sh\ncase \"$1\" in\n    -s) echo {} ;;\n    -m) echo {} ;;\nesac\n",
+                        host.system, host.machine
+                    ),
+                );
+                if let Some(banner) = host.ldd {
+                    mirror.stub("ldd", &format!("#!/bin/sh\necho '{banner}'\n"));
+                }
+                mirror
+            }
+
+            fn stub(&self, name: &str, body: &str) {
+                let path = self.bin.join(name);
+                fs::write(&path, body).expect("write the stub");
+                let mut permissions = fs::metadata(&path).expect("read the stub").permissions();
+                permissions.set_mode(0o755);
+                fs::set_permissions(&path, permissions).expect("make the stub executable");
+            }
+
+            /// Publishes one archive per `(target, min_glibc)` with its checksums and the
+            /// `[[asset]]` tables concatenated the way the release job merges the fragments.
+            fn publish(&self, assets: &[(&str, Option<&str>)]) {
+                let mut manifest = String::new();
+                let mut sums = String::new();
+                for (target, min_glibc) in assets {
+                    let archive = format!("thinpack-{VERSION}-{target}.tar.gz");
+                    self.archive(&archive, target);
+                    let digest = build::sha256_file(&self.assets.join(&archive)).expect("digest");
+                    let _ = writeln!(sums, "{digest}  {archive}");
+                    manifest.push_str(
+                        &toml::to_string(&Release {
+                            asset: [Asset {
+                                archive,
+                                backend: "quickjs",
+                                target: (*target).to_owned(),
+                                min_glibc: min_glibc.map(ToOwned::to_owned),
+                            }],
+                        })
+                        .expect("encode one release table"),
+                    );
+                }
+                fs::write(self.assets.join("thinpack-release.toml"), manifest)
+                    .expect("write the manifest");
+                fs::write(self.assets.join("SHA256SUMS"), sums).expect("write the checksums");
+            }
+
+            /// Drops the manifest, leaving the layout of a release published before it existed.
+            fn predate_manifest(&self) {
+                fs::remove_file(self.assets.join("thinpack-release.toml"))
+                    .expect("drop the manifest");
+            }
+
+            /// A tarball whose two binaries are a marker naming their target, so the installed
+            /// file says which archive the installer chose.
+            fn archive(&self, archive: &str, marker: &str) {
+                let stem = archive.strip_suffix(".tar.gz").expect("archive suffix");
+                let encoder = GzEncoder::new(
+                    File::create(self.assets.join(archive)).expect("create the archive"),
+                    Compression::fast(),
+                );
+                let mut tar = Builder::new(encoder);
+                for binary in ["thinpack", "thinpack-rt"] {
+                    let mut header = Header::new_ustar();
+                    header.set_entry_type(EntryType::Regular);
+                    header.set_size(marker.len() as u64);
+                    header.set_mode(0o755);
+                    header.set_cksum();
+                    tar.append_data(&mut header, format!("{stem}/{binary}"), marker.as_bytes())
+                        .expect("append the staged binary");
+                }
+                tar.into_inner()
+                    .expect("finish the tarball")
+                    .finish()
+                    .expect("compress the tarball");
+            }
+
+            /// Runs the installer and returns the marker it installed.
+            fn installed(&self, static_: bool) -> String {
+                let output = self.install(static_);
+                assert!(
+                    output.status.success(),
+                    "install failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                fs::read_to_string(self.install.join("thinpack"))
+                    .expect("read the installed binary")
+            }
+
+            fn install(&self, static_: bool) -> Output {
+                let path = std::iter::once(self.bin.clone())
+                    .chain(std::env::split_paths(
+                        &std::env::var_os("PATH").unwrap_or_default(),
+                    ))
+                    .collect::<Vec<_>>();
+                let mut command = Command::new("sh");
+                command
+                    .arg(crate::repo_root().join("scripts/install.sh"))
+                    .env("HOME", &self.root)
+                    .env("PATH", std::env::join_paths(path).expect("join PATH"))
+                    .env("THINPACK_BACKEND", "quickjs")
+                    .env("THINPACK_VERSION", VERSION)
+                    .env(
+                        "THINPACK_BASE_URL",
+                        format!("file://{}", self.assets.display()),
+                    )
+                    .env("THINPACK_INSTALL_DIR", &self.install)
+                    .env_remove("THINPACK_STATIC");
+                if static_ {
+                    command.env("THINPACK_STATIC", "1");
+                }
+                command.output().expect("run the installer")
+            }
+        }
+
+        impl Drop for Mirror {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.root);
+            }
+        }
+
+        #[test]
+        fn manifest_prefers_a_runnable_glibc_archive() {
+            let release = Mirror::new("glibc", GLIBC_HOST);
+            release.publish(&[(GNU, Some("2.39")), (MUSL, None)]);
+            assert_eq!(release.installed(false), GNU);
+
+            // A floor above the host's glibc leaves only the static archive.
+            let old = Mirror::new("old-glibc", GLIBC_HOST);
+            old.publish(&[(GNU, Some("99.0")), (MUSL, None)]);
+            assert_eq!(old.installed(false), MUSL);
+
+            // A musl host has no glibc at all.
+            let alpine = Mirror::new("musl-host", MUSL_HOST);
+            alpine.publish(&[(GNU, Some("2.39")), (MUSL, None)]);
+            assert_eq!(alpine.installed(false), MUSL);
+
+            // macOS publishes a single archive and no glibc floor.
+            let mac = Mirror::new("darwin", MACOS_HOST);
+            mac.publish(&[(DARWIN, None)]);
+            assert_eq!(mac.installed(false), DARWIN);
+        }
+
+        #[test]
+        fn static_flag_selects_the_static_archive() {
+            let release = Mirror::new("static", GLIBC_HOST);
+            release.publish(&[(GNU, Some("2.39")), (MUSL, None)]);
+            assert_eq!(release.installed(true), MUSL);
+
+            // The flag is a Linux choice: macOS installs its only archive either way.
+            let mac = Mirror::new("static-darwin", MACOS_HOST);
+            mac.publish(&[(DARWIN, None)]);
+            assert_eq!(mac.installed(true), DARWIN);
+        }
+
+        #[test]
+        fn legacy_layout_still_installs() {
+            let release = Mirror::new("legacy", GLIBC_HOST);
+            release.publish(&[(GNU, Some("2.39")), (MUSL, None)]);
+            release.predate_manifest();
+            assert_eq!(release.installed(false), GNU);
+            assert_eq!(release.installed(true), MUSL);
+
+            // A release without the glibc archive falls through to the static one.
+            let static_only = Mirror::new("legacy-static", GLIBC_HOST);
+            static_only.publish(&[(MUSL, None)]);
+            static_only.predate_manifest();
+            assert_eq!(static_only.installed(false), MUSL);
+
+            let mac = Mirror::new("legacy-darwin", MACOS_HOST);
+            mac.publish(&[(DARWIN, None)]);
+            mac.predate_manifest();
+            assert_eq!(mac.installed(false), DARWIN);
+            assert_eq!(mac.installed(true), DARWIN);
+        }
+    }
 }

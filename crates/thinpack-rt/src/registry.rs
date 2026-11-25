@@ -7,7 +7,11 @@
     clippy::missing_const_for_fn,
     reason = "the body is only const when every capability is compiled out"
 )]
-pub(crate) fn extensions() -> Vec<deno_core::Extension> {
+#[allow(
+    unused_variables,
+    reason = "only a per-isolate capability reads the inputs"
+)]
+pub(crate) fn extensions(isolate: &thinpack_core::IsolateInputs) -> Vec<deno_core::Extension> {
     #[allow(unused_mut, reason = "nothing is pushed when every capability is compiled out")]
     let mut extensions = Vec::new();
     #[cfg(any(feature = "node-child-process", feature = "node-cluster"))]
@@ -21,7 +25,7 @@ pub(crate) fn extensions() -> Vec<deno_core::Extension> {
     #[cfg(feature = "node-dns")]
     extensions.push(thinpack_node_dns::init());
     #[cfg(feature = "node-ffi")]
-    extensions.push(thinpack_node_ffi::init());
+    extensions.extend(thinpack_node_ffi::init(isolate));
     #[cfg(feature = "node-inspector")]
     extensions.push(thinpack_node_inspector::init());
     #[cfg(feature = "node-perf-hooks")]
@@ -79,7 +83,7 @@ pub(crate) fn extensions() -> Vec<deno_core::Extension> {
     #[cfg(feature = "node-crypto")]
     extensions.push(thinpack_node_crypto::init());
     #[cfg(feature = "node-fs")]
-    extensions.push(thinpack_node_fs::init());
+    extensions.extend(thinpack_node_fs::init(isolate));
     #[cfg(feature = "node-net")]
     extensions.push(thinpack_node_net::init());
     #[cfg(feature = "node-zlib")]
@@ -90,6 +94,8 @@ pub(crate) fn extensions() -> Vec<deno_core::Extension> {
     extensions.push(thinpack_node_http::init());
     #[cfg(feature = "node-tls")]
     extensions.push(thinpack_node_tls::init());
+    #[cfg(feature = "node-fetch")]
+    extensions.push(thinpack_node_fetch::init());
     #[cfg(feature = "node-http2")]
     extensions.push(thinpack_node_http2::init());
     #[cfg(feature = "node-https")]
@@ -187,6 +193,8 @@ pub(crate) fn enabled() -> Vec<&'static str> {
     names.push("http");
     #[cfg(feature = "node-tls")]
     names.push("tls");
+    #[cfg(feature = "node-fetch")]
+    names.push("fetch");
     #[cfg(feature = "node-http2")]
     names.push("http2");
     #[cfg(feature = "node-https")]
