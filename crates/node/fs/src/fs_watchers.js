@@ -1,7 +1,7 @@
 (() => {
   const { EventEmitter } = require("node:events");
   const { Buffer } = require("node:buffer");
-  const { codes, UVException } = require("node:thinpack/internal/errors");
+  const { UVException } = require("node:thinpack/internal/errors");
   const { setInterval } = require("node:timers");
   const { validateIgnoreOption } = require("node:thinpack/internal/validators");
 
@@ -15,15 +15,13 @@
     #timer = null;
     #encoding = "utf8";
     #closed = false;
+    #persistent = true;
     #queue = [];
     #waiters = [];
     #ignoreMatcher = null;
 
     [kFSWatchStart](path, persistent = true, recursive = false, encoding = "utf8",
                     ignore, throwIfNoEntry = true) {
-      if (recursive) {
-        throw new codes.ERR_NOT_IMPLEMENTED("fs.watch with { recursive: true }");
-      }
       validateIgnoreOption(ignore, "options.ignore");
       this.#ignoreMatcher = createIgnoreMatcher(ignore);
       this.#encoding = encoding;
@@ -35,16 +33,49 @@
         if (throwIfNoEntry === false) return this;
         throw new UVException({ errno: -2, syscall: "watch", path: String(path) });
       }
-      this.#id = Deno.core.ops.op_fs_watch_start(String(path));
-      this.#timer = setInterval(() => this.#poll(), WATCH_POLL_MS);
-      if (!persistent) this.#timer.unref();
+      this.#id = Deno.core.ops.op_fs_watch_start(String(path), Boolean(recursive));
+      this.#persistent = persistent;
+      if (persistent) this.#startDraining();
+      else this.#startPolling();
       return this;
+    }
+
+    // A referenced watcher awaits the next batch; an unref'd one polls so the
+    // process can exit. `ref()`/`unref()` switch between the two.
+    #startPolling() {
+      if (this.#timer !== null) clearInterval(this.#timer);
+      this.#timer = setInterval(() => this.#poll(), WATCH_POLL_MS);
+      this.#timer.unref();
+    }
+
+    #startDraining() {
+      if (this.#timer !== null) {
+        clearInterval(this.#timer);
+        this.#timer = null;
+      }
+      this.#drain();
+    }
+
+    async #drain() {
+      while (!this.#closed) {
+        const payload = await Deno.core.ops.op_fs_watch_wait(this.#id);
+        if (this.#closed) return;
+        if (payload !== "") this.#deliver(payload);
+        if (!this.#persistent) {
+          this.#startPolling();
+          return;
+        }
+        if (payload === "") return;
+      }
     }
 
     #poll() {
       if (this.#closed) return;
       const payload = Deno.core.ops.op_fs_watch_take(this.#id);
-      if (payload === "") return;
+      if (payload !== "") this.#deliver(payload);
+    }
+
+    #deliver(payload) {
       const parts = payload.split("\0");
       for (let index = 0; index + 1 < parts.length; index += 2) {
         const eventType = parts[index];
@@ -104,11 +135,20 @@
     }
 
     ref() {
-      this.#timer?.ref();
+      if (!this.#closed && !this.#persistent) {
+        this.#persistent = true;
+        this.#startDraining();
+      }
+      return this;
     }
 
     unref() {
+      if (!this.#closed && this.#persistent) {
+        this.#persistent = false;
+        if (this.#id !== null) Deno.core.ops.op_fs_watch_wake(this.#id);
+      }
       this.#timer?.unref();
+      return this;
     }
   }
 

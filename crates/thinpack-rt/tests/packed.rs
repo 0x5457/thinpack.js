@@ -976,8 +976,7 @@ console.log('module.parent ok');
         entry: "/app/main.js",
         files: &[(
             "/app/main.js",
-            r"
-const assert = require('node:assert/strict');
+            r"const assert = require('node:assert/strict');
 const domain = require('node:domain');
 const d = domain.create();
 let caught;
@@ -994,8 +993,62 @@ console.log('domain ok');
         capabilities: &["assert", "domain"],
         error: None,
     },
+    PackedTest {
+        name: "packed::fs-watch",
+        directory: "fs-watch",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r"const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'thinpack-watch-'));
+const timeout = setTimeout(() => {
+  console.log('watch timeout');
+  process.exit(1);
+}, 10000);
+const watcher = fs.watch(dir, (eventType, filename) => {
+  if (filename !== 'file.txt') return;
+  console.log('watched', eventType, filename);
+  clearTimeout(timeout);
+  watcher.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+fs.writeFileSync(path.join(dir, 'file.txt'), 'x');
+",
+        )],
+        capabilities: &["fs", "os"],
+        error: None,
+    },
+    PackedTest {
+        name: "packed::fs-watch-recursive",
+        directory: "fs-watch-recursive",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r"const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'thinpack-watch-rec-'));
+fs.mkdirSync(path.join(dir, 'sub'));
+const timeout = setTimeout(() => {
+  console.log('watch timeout');
+  process.exit(1);
+}, 10000);
+const watcher = fs.watch(dir, { recursive: true }, (eventType, filename) => {
+  if (!filename || !filename.includes('file.txt')) return;
+  console.log('recursive watched', eventType, filename);
+  clearTimeout(timeout);
+  watcher.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+fs.writeFileSync(path.join(dir, 'sub', 'file.txt'), 'x');
+",
+        )],
+        capabilities: &["fs", "os"],
+        error: None,
+    },
 ];
-
 /// Packed startup cases whose source is generated because the payload is large.
 struct StartupTest {
     name: &'static str,

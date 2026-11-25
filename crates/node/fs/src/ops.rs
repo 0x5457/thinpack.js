@@ -18,6 +18,7 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle};
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -70,6 +71,8 @@ pub(crate) const OPS: &[OpDecl] = &[
     op_fs_lutimes(),
     op_fs_watch_start(),
     op_fs_watch_take(),
+    op_fs_watch_wait(),
+    op_fs_watch_wake(),
     op_fs_watch_close(),
 ];
 
@@ -1112,6 +1115,9 @@ fn op_fs_lutimes(#[string] path: &str, atime: f64, mtime: f64) -> Result<(), JsE
 
 struct Watch {
     events: Arc<Mutex<Vec<String>>>,
+    notify: Arc<tokio::sync::Notify>,
+    closed: Arc<AtomicBool>,
+    wake: Arc<AtomicBool>,
     _watcher: notify::RecommendedWatcher,
 }
 
@@ -1123,18 +1129,20 @@ fn watch_registry() -> &'static Mutex<HashMap<u32, Watch>> {
 static WATCHES: thinpack_core::IdCounter = thinpack_core::IdCounter::new();
 
 #[op2(fast)]
-fn op_fs_watch_start(#[string] path: &str) -> Result<u32, JsErrorBox> {
-    let watch = start_watch(path)?;
+fn op_fs_watch_start(#[string] path: &str, recursive: bool) -> Result<u32, JsErrorBox> {
+    let watch = start_watch(path, recursive)?;
     let id = WATCHES.next();
     watch_registry().lock().unwrap().insert(id, watch);
     Ok(id)
 }
 
-fn start_watch(path: &str) -> Result<Watch, JsErrorBox> {
+fn start_watch(path: &str, recursive: bool) -> Result<Watch, JsErrorBox> {
     use notify::Watcher as _;
 
     let events = Arc::new(Mutex::new(Vec::new()));
     let handler_events = Arc::clone(&events);
+    let notify = Arc::new(tokio::sync::Notify::new());
+    let handler_notify = Arc::clone(&notify);
     let watched_name = Path::new(path)
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -1158,16 +1166,25 @@ fn start_watch(path: &str) -> Result<Watch, JsErrorBox> {
         }
         if !batch.is_empty() {
             handler_events.lock().unwrap().extend(batch);
+            handler_notify.notify_one();
         }
     })
     .map_err(watcher_error)?;
 
+    let mode = if recursive {
+        notify::RecursiveMode::Recursive
+    } else {
+        notify::RecursiveMode::NonRecursive
+    };
     watcher
-        .watch(Path::new(path), notify::RecursiveMode::NonRecursive)
+        .watch(Path::new(path), mode)
         .map_err(watcher_error)?;
 
     Ok(Watch {
         events,
+        notify,
+        closed: Arc::new(AtomicBool::new(false)),
+        wake: Arc::new(AtomicBool::new(false)),
         _watcher: watcher,
     })
 }
@@ -1202,6 +1219,14 @@ fn watcher_error(error: notify::Error) -> JsErrorBox {
     fs_error(io::Error::from_raw_os_error(errno))
 }
 
+fn take_events(events: &Mutex<Vec<String>>) -> Option<String> {
+    let mut events = events.lock().unwrap();
+    if events.is_empty() {
+        return None;
+    }
+    Some(std::mem::take(&mut *events).join("\0"))
+}
+
 #[op2]
 #[string]
 fn op_fs_watch_take(#[smi] id: u32) -> String {
@@ -1209,13 +1234,54 @@ fn op_fs_watch_take(#[smi] id: u32) -> String {
     let Some(watch) = registry.get(&id) else {
         return String::new();
     };
-    let mut events = watch.events.lock().unwrap();
-    std::mem::take(&mut *events).join("\0")
+    take_events(&watch.events).unwrap_or_default()
+}
+
+/// Wait for the watcher's next batch. A close or a `wake` (the JS side switching
+/// between the referenced async wait and the unref'd timer) returns an empty string.
+#[op2(async(lazy), fast)]
+#[string]
+async fn op_fs_watch_wait(#[smi] id: u32) -> String {
+    let (events, notify, closed, wake) = {
+        let registry = watch_registry().lock().unwrap();
+        let Some(watch) = registry.get(&id) else {
+            return String::new();
+        };
+        (
+            Arc::clone(&watch.events),
+            Arc::clone(&watch.notify),
+            Arc::clone(&watch.closed),
+            Arc::clone(&watch.wake),
+        )
+    };
+    loop {
+        if let Some(payload) = take_events(&events) {
+            return payload;
+        }
+        if closed.load(Ordering::Relaxed) || wake.swap(false, Ordering::Relaxed) {
+            return String::new();
+        }
+        notify.notified().await;
+    }
+}
+
+#[op2(fast)]
+fn op_fs_watch_wake(#[smi] id: u32) {
+    let registry = watch_registry().lock().unwrap();
+    let Some(watch) = registry.get(&id) else {
+        return;
+    };
+    watch.wake.store(true, Ordering::Relaxed);
+    watch.notify.notify_one();
 }
 
 #[op2(fast)]
 fn op_fs_watch_close(#[smi] id: u32) {
-    watch_registry().lock().unwrap().remove(&id);
+    let watch = watch_registry().lock().unwrap().remove(&id);
+    if let Some(watch) = watch {
+        watch.closed.store(true, Ordering::Relaxed);
+        watch.notify.notify_one();
+    }
 }
 
 #[cfg(test)]
