@@ -249,6 +249,10 @@ for adding a module.
 - The payload is rooted at the entry's nearest `package.json`. A required dependency resolved
   above that root (a hoisted monorepo install) fails the pack; an optional one is left out with
   a warning, and the app must handle its absence.
+- Resolution is lexical, i.e. Node's `--preserve-symlinks` semantics: the payload records the
+  path a symlink names, so `__dirname`, `require.resolve` and a linked package's own dependency
+  lookup see the link location rather than the real path. Run Node with `--preserve-symlinks`
+  when comparing a pnpm/workspace layout.
 - The artifact's `process.argv` is `[execPath, invoked path, ...args]` (same shape as Node
   SEA); the only runtime switch is `--warm-cache`, every other argument goes to the app.
 - `require.extensions` handlers are invoked for required files (a custom handler replaces the
