@@ -240,53 +240,41 @@ pub fn analyze_roots_with(
         for ((specifier, is_import), guarded) in specifiers {
             // A dependency listed in `optionalDependencies` is optional even when the
             // request is unguarded, so a hoisted install the payload cannot reach is
-            // omitted with a warning instead of failing the pack.
-            let optional = guarded
+            // omitted with a warning instead of failing the pack. The inherited edge is
+            // deliberately excluded here: `record_builtin` decides whether to link an
+            // optional builtin from the reference itself.
+            let direct_optional = guarded
                 || thinpack_resolve::is_optional_dependency(&specifier, &optional_dependencies);
-            if record_builtin(&specifier, optional, &path, &mut builtins, &mut warnings)? {
+            if record_builtin(
+                &specifier,
+                direct_optional,
+                &path,
+                &mut builtins,
+                &mut warnings,
+            )? {
                 continue;
             }
+            // Every file under an optional edge is optional, however the file itself
+            // reaches its dependencies. Required targets are visited first, so a file
+            // also reachable by a required edge still fails the pack.
+            let optional_edge = optional_subtree || direct_optional;
             let conditions = Conditions {
                 import: is_import,
                 custom: custom_conditions.to_vec(),
             };
-            let resolved =
-                thinpack_resolve::resolve_path_with_conditions(&specifier, &path, &fs, &conditions);
-            let resolved = match resolved {
-                Ok(resolved) => resolved,
-                Err(error) if optional => {
-                    warnings.push(Warning {
-                        message: format!(
-                            "{}: optional dependency `{specifier}` is missing ({error}); the app must handle the error",
-                            path.display()
-                        ),
-                        strict: false,
-                    });
-                    continue;
-                }
-                Err(error)
-                    if allow_missing.contains(thinpack_resolve::package_name(&specifier)) =>
-                {
-                    warnings.push(Warning {
-                        message: format!(
-                            "{}: dependency `{specifier}` is missing ({error}); excluded by --allow-missing",
-                            path.display()
-                        ),
-                        strict: false,
-                    });
-                    continue;
-                }
-                Err(error) => {
-                    return Err(Error::Resolve {
-                        specifier,
-                        from: path.clone(),
-                        message: error.to_string(),
-                    });
-                }
+            let Some(resolved) = resolve_dependency(
+                &specifier,
+                &path,
+                optional_edge,
+                &conditions,
+                &fs,
+                allow_missing,
+                &mut warnings,
+            )?
+            else {
+                continue;
             };
-            // Every file under an optional edge is optional, however the file
-            // itself reaches its dependencies.
-            if optional_subtree || optional {
+            if optional_edge {
                 pending.push_back((resolved, true));
             } else {
                 pending.push_front((resolved, false));
@@ -310,6 +298,47 @@ pub fn analyze_roots_with(
         stripped,
         warnings,
     })
+}
+
+/// Resolve one dependency edge. `optional` covers a guard, an `optionalDependencies`
+/// entry, and every file below either: a missing target then fails the import the app
+/// already handles at run time, so it only warns. Returns `None` for such a warning.
+fn resolve_dependency(
+    specifier: &str,
+    from: &Path,
+    optional: bool,
+    conditions: &Conditions,
+    fs: &impl FileSystem,
+    allow_missing: &BTreeSet<String>,
+    warnings: &mut Vec<Warning>,
+) -> Result<Option<PathBuf>, Error> {
+    let resolved = thinpack_resolve::resolve_path_with_conditions(specifier, from, fs, conditions);
+    let error = match resolved {
+        Ok(resolved) => return Ok(Some(resolved)),
+        Err(error) => error,
+    };
+    let message = if optional {
+        format!(
+            "{}: optional dependency `{specifier}` is missing ({error}); the app must handle the error",
+            from.display()
+        )
+    } else if allow_missing.contains(thinpack_resolve::package_name(specifier)) {
+        format!(
+            "{}: dependency `{specifier}` is missing ({error}); excluded by --allow-missing",
+            from.display()
+        )
+    } else {
+        return Err(Error::Resolve {
+            specifier: specifier.to_owned(),
+            from: from.to_path_buf(),
+            message: error.to_string(),
+        });
+    };
+    warnings.push(Warning {
+        message,
+        strict: false,
+    });
+    Ok(None)
 }
 
 /// A [`FileSystem`] that remembers every `package.json` it reads. The resolver and
@@ -1242,6 +1271,72 @@ mod tests {
 
         let required = MemoryFs::new(&[("/app/main.js", "require('required-dep');\n")]);
         assert!(analyze(Path::new("/app/main.js"), &required).is_err());
+    }
+
+    #[test]
+    fn a_missing_dependency_under_a_guarded_import_only_warns() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.mjs",
+                "try { await import('./feature.mjs'); } catch (error) { if (error.code !== 'ERR_MODULE_NOT_FOUND') throw error; }\n",
+            ),
+            ("/app/feature.mjs", "import './nested.mjs';\n"),
+            (
+                "/app/nested.mjs",
+                "import 'optional-package-not-installed';\n",
+            ),
+        ]);
+        let analysis = analyze(Path::new("/app/main.mjs"), &fs).unwrap();
+        for path in ["/app/feature.mjs", "/app/nested.mjs"] {
+            assert!(analysis.files.contains(&PathBuf::from(path)), "{path}");
+            assert!(!analysis.required.contains(&PathBuf::from(path)), "{path}");
+        }
+        assert!(
+            analysis.warnings.iter().any(|warning| warning
+                .message
+                .contains("optional dependency `optional-package-not-installed` is missing")),
+            "{:?}",
+            analysis.warnings
+        );
+    }
+
+    #[test]
+    fn a_missing_dependency_under_an_unhandled_import_fails() {
+        let fs = MemoryFs::new(&[
+            ("/app/main.mjs", "await import('./feature.mjs');\n"),
+            (
+                "/app/feature.mjs",
+                "import 'optional-package-not-installed';\n",
+            ),
+        ]);
+        match analyze(Path::new("/app/main.mjs"), &fs) {
+            Err(Error::Resolve { specifier, .. }) => {
+                assert_eq!(specifier, "optional-package-not-installed");
+            }
+            other => panic!("expected a resolve error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_required_edge_keeps_a_shared_file_required() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.js",
+                "try { require('./optional-path'); } catch {}\nrequire('./required-path');\n",
+            ),
+            ("/app/optional-path.js", "require('./feature');\n"),
+            ("/app/required-path.js", "require('./feature');\n"),
+            (
+                "/app/feature.js",
+                "require('optional-package-not-installed');\n",
+            ),
+        ]);
+        match analyze(Path::new("/app/main.js"), &fs) {
+            Err(Error::Resolve { specifier, .. }) => {
+                assert_eq!(specifier, "optional-package-not-installed");
+            }
+            other => panic!("expected a resolve error, got {other:?}"),
+        }
     }
 
     #[test]
