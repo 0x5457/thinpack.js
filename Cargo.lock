@@ -4564,6 +4564,7 @@ version = "0.2.0"
 dependencies = [
  "deno_core",
  "deno_ffi",
+ "thinpack-core",
  "thinpack-js",
 ]
 

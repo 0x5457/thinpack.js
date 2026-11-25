@@ -238,6 +238,48 @@ parentPort.postMessage('worker loaded from the packed VFS');
         capabilities: &["assert", "worker_threads"],
         error: None,
     },
+    PackedTest {
+        name: "packed::fs-main-and-worker-mount",
+        directory: "fs-main-and-worker-mount",
+        entry: "/app/main.js",
+        files: &[
+            (
+                "/app/main.js",
+                r"
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const { Worker } = require('node:worker_threads');
+
+assert.equal(fs.readFileSync('/app/data.txt', 'utf8'), 'packed\n');
+const worker = new Worker('/app/worker.js');
+worker.once('error', (error) => {
+  throw error;
+});
+worker.once('message', (message) => {
+  assert.deepEqual(message, { contents: 'packed\n', size: 7 });
+});
+worker.once('exit', (code) => {
+  assert.equal(code, 0);
+});
+",
+            ),
+            (
+                "/app/worker.js",
+                r"
+const fs = require('node:fs');
+const { parentPort } = require('node:worker_threads');
+
+parentPort.postMessage({
+  contents: fs.readFileSync('/app/data.txt', 'utf8'),
+  size: fs.statSync('/app/data.txt').size,
+});
+",
+            ),
+            ("/app/data.txt", "packed\n"),
+        ],
+        capabilities: &["assert", "fs", "worker_threads"],
+        error: None,
+    },
     // The analyzer's format check rests on this: a packed `package.json` makes the
     // runtime read `.js` files as ES modules.
     PackedTest {
@@ -752,6 +794,33 @@ for (const [type, options] of [
 ",
         )],
         capabilities: &["assert", "crypto"],
+        error: None,
+    },
+    PackedTest {
+        name: "packed::ffi-dlopen",
+        directory: "ffi-dlopen",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r"
+const assert = require('node:assert/strict');
+const ffi = require('node:ffi');
+
+const library = process.platform === 'win32'
+  ? 'kernel32.dll'
+  : process.platform === 'darwin' ? 'libSystem.B.dylib' : 'libc.so.6';
+const symbol = process.platform === 'win32' ? 'GetCurrentProcessId' : 'getpid';
+const { lib, functions } = ffi.dlopen(library, {
+  [symbol]: {
+    arguments: [],
+    return: process.platform === 'win32' ? 'u32' : 'i32',
+  },
+});
+assert.ok(functions[symbol]() > 0);
+lib.close();
+",
+        )],
+        capabilities: &["assert", "ffi"],
         error: None,
     },
     PackedTest {

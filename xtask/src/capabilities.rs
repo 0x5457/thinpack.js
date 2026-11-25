@@ -31,6 +31,7 @@ pub(crate) struct Module {
     pub deps: Vec<String>,
     pub optional_deps: Vec<String>,
     pub layers: Vec<String>,
+    pub per_isolate: bool,
     pub ambient: bool,
     pub optional: bool,
 }
@@ -45,6 +46,7 @@ impl Module {
             deps: entry.deps,
             optional_deps: entry.optional_deps,
             layers: entry.layers,
+            per_isolate: entry.per_isolate,
             ambient: entry.ambient,
             optional: entry.optional,
             name,
@@ -67,6 +69,8 @@ struct Entry {
     optional_deps: Vec<String>,
     #[serde(default)]
     layers: Vec<String>,
+    #[serde(default)]
+    per_isolate: bool,
     #[serde(default)]
     ambient: bool,
     #[serde(default)]
@@ -349,8 +353,8 @@ pub const MODULES: &[Module] = &[
 }
 
 fn render_registry(ordered: &[&Module]) -> String {
-    // Generated code goes through the same lints. The three suppressions only hold for
-    // specific feature sets, so they are `allow` rather than `expect`.
+    // Generated code goes through the same lints. The suppressions only hold for specific
+    // feature sets, so they are `allow` rather than `expect`.
     let mut source = String::from(
         r#"#[rustfmt::skip]
 #[allow(
@@ -361,7 +365,11 @@ fn render_registry(ordered: &[&Module]) -> String {
     clippy::missing_const_for_fn,
     reason = "the body is only const when every capability is compiled out"
 )]
-pub(crate) fn extensions() -> Vec<deno_core::Extension> {
+#[allow(
+    unused_variables,
+    reason = "only a per-isolate capability reads the inputs"
+)]
+pub(crate) fn extensions(isolate: &thinpack_core::IsolateInputs) -> Vec<deno_core::Extension> {
     #[allow(unused_mut, reason = "nothing is pushed when every capability is compiled out")]
     let mut extensions = Vec::new();
 "#,
@@ -385,11 +393,12 @@ pub(crate) fn extensions() -> Vec<deno_core::Extension> {
     }
     for module in ordered {
         let _ = writeln!(source, "    #[cfg(feature = {:?})]", module.feature);
-        let _ = writeln!(
-            source,
-            "    extensions.push({}::init());",
-            module.krate.replace('-', "_")
-        );
+        let krate = module.krate.replace('-', "_");
+        if module.per_isolate {
+            let _ = writeln!(source, "    extensions.extend({krate}::init(isolate));");
+        } else {
+            let _ = writeln!(source, "    extensions.push({krate}::init());");
+        }
     }
     source.push_str("    extensions\n}\n\n");
 
@@ -545,6 +554,23 @@ mod tests {
             rendered
                 .contains("node-cluster = [\"dep:thinpack-node-cluster\", \"dep:thinpack-child\"]")
         );
+    }
+
+    #[test]
+    fn a_per_isolate_module_receives_the_isolate_inputs() {
+        let modules = [Module::new(
+            "isolate".to_owned(),
+            Entry {
+                builtins: vec!["isolate".to_owned()],
+                per_isolate: true,
+                ..Entry::default()
+            },
+        )];
+        let order = dependency_order(&modules).expect("the graph is acyclic");
+        let rendered = render_registry(&order);
+
+        assert!(rendered.contains("thinpack_node_isolate::init(isolate)"));
+        assert!(!rendered.contains("thinpack_node_isolate::init()"));
     }
 
     #[test]
