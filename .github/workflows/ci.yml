@@ -241,7 +241,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         id: cache
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: true
 
       # `Swatinem/rust-cache` stores `~/.cargo/registry` but prunes the sparse
       # index entries of anything outside the dependency graph, so cargo
@@ -333,7 +333,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         id: cache
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: true
 
       # `Swatinem/rust-cache` stores `~/.cargo/registry` but prunes the sparse
       # index entries of anything outside the dependency graph, so cargo
@@ -362,3 +362,17 @@ jobs:
       # from the staged directory. Prove the new linker handles the path that ships.
       - name: Release build through the release target (temporary)
         run: cargo xtask dist --target x86_64-pc-windows-msvc --out dist
+
+      - name: Linker proof (temporary)
+        shell: bash
+        run: |
+          touch crates/thinpack-rt/src/main.rs
+          cargo build -p thinpack-rt -v 2>&1 | grep -m1 -o -- "-C linker=rust-lld"
+          python - <<'PY'
+          import pathlib, struct
+          data = pathlib.Path("target/debug/thinpack-rt.exe").read_bytes()
+          pe = struct.unpack_from("<I", data, 0x3C)[0]
+          assert data[pe:pe + 4] == b"PE\0\0", "no PE signature"
+          print(f"linker version {data[pe + 26]}.{data[pe + 27]}, "
+                f"msvc rich header present: {b'Rich' in data[:pe]}")
+          PY
