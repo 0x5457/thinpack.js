@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/thinpack-logo.png" alt="Thinpack.js logo" width="112">
+  <img src="docs/assets/thinpack-logo.png" alt="Thinpack.js logo" width="160">
 </p>
 
 <h1 align="center">thinpack.js</h1>
