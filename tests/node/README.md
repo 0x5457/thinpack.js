@@ -154,9 +154,11 @@ shapes listed below.
 Not ported yet: `assert`, `async_hooks`, `child_process`, `constants`,
 `crypto`, `diagnostics_channel`, `dns`, `ffi`, `fs`, `http`, `http2`, `https`,
 `inspector`, `module`, `net`, `perf_hooks`, `process`, `readline`, `sea`,
-`sqlite`, `stream`, `tls`, `v8`, `vm`, `worker_threads`, and `zlib`. The
-hand-written async_hooks check in `crates/node/async-hooks/tests/` predates
-this suite and stays there until the upstream files are ported.
+`sqlite`, `stream`, `tls`, `v8`, `vm`, `worker_threads`, and `zlib`. For
+`async_hooks`, the local `test-thinpack-async-local-storage.js` and
+`test-thinpack-async-resource.js` cases cover async-local propagation through
+promises and timers and `AsyncResource` scoping. They are not upstream ports,
+and the upstream files remain unported.
 
 ## Cluster notes
 

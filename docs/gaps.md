@@ -79,6 +79,17 @@ the divergence, why it exists, and where it lives.
   callbacks differs, and the handle lacks Node's `Immediate` shape
   (`crates/node/timers/src/timers.js`).
 
+## Async hooks
+
+- `destroy` hooks run synchronously where a resource is released:
+  `AsyncResource.emitDestroy()` before it returns, and timers/immediates before
+  their queued microtasks. Node defers them to a later tick; the runtime has no
+  deferred destroy queue (`crates/thinpack-node-internals/src/async_hooks.js`).
+- The JSC backend exposes no promise hooks and does not preserve the async
+  context across promise continuations, so `AsyncLocalStorage` does not follow
+  promises there; the local async-local case is skipped on JSC
+  (`vendor/v8x/src/jsc/isolate.rs`).
+
 ## TLS
 
 - rustls performs real hostname verification, but the peer certificate never
