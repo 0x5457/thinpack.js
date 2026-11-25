@@ -22,6 +22,11 @@ use tokio::net::UdpSocket;
 const EBADF: i32 = 9;
 const EINVAL: i32 = 22;
 
+/// libuv's Windows fallback for `EMSGSIZE` (`include/uv/errno.h`); Winsock has no
+/// `EMSGSIZE` errno, so its `WSAEMSGSIZE` translation uses this fixed value.
+#[cfg(windows)]
+const UV_EMSGSIZE: i32 = -4065;
+
 /// Receive buffer large enough for any UDP payload (the IPv6 maximum is 65527 bytes).
 const MAX_DATAGRAM: usize = 65536;
 
@@ -137,7 +142,14 @@ fn io_error(error: io::Error) -> JsErrorBox {
     #[cfg(unix)]
     let errno = error.raw_os_error().map_or(-EINVAL, |code| -code);
     #[cfg(windows)]
-    let errno = deno_core::uv_compat::io_error_to_uv(&error);
+    let errno =
+        if error.raw_os_error() == Some(windows_sys::Win32::Networking::WinSock::WSAEMSGSIZE) {
+            UV_EMSGSIZE
+        } else {
+            // The shared mapping collapses `ErrorKind::InvalidInput` to `UV_EINVAL`,
+            // which would turn an oversized datagram into the wrong Node error.
+            deno_core::uv_compat::io_error_to_uv(&error)
+        };
     JsErrorBox::new("Error", errno.to_string())
 }
 
