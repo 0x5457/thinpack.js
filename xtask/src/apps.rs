@@ -62,7 +62,10 @@ const APPS: &[App] = &[
         name: "eslint",
         package: "eslint",
         entry: None,
-        includes: &[],
+        // The default formatter is resolved by path at run time, not imported statically.
+        includes: &[Include::Path(
+            "node_modules/eslint/lib/cli-engine/formatters",
+        )],
     },
     App {
         name: "terser",

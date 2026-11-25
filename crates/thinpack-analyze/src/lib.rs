@@ -47,11 +47,10 @@ pub struct Analysis {
     /// `require.resolve`/`import.meta.resolve`. Resolving a path does not make it a
     /// module, so the analyzer keeps its bytes and parses nothing.
     pub data_files: BTreeSet<PathBuf>,
-    /// Directories a computed module load can choose from when its path is
-    /// rooted at a literal `__dirname` directory (`ESLint`'s shipped formatter
-    /// fallback). Packing expands them like `--include` roots so the artifact
-    /// carries every candidate without a manual flag.
-    pub module_dirs: BTreeSet<PathBuf>,
+    /// Directories enumerated through `fs.readdir`/`readdirSync` with a path built
+    /// from `__dirname`. The CLI expands a bounded one like an `--include` root, so
+    /// the files the application can name are packed and their imports are analyzed.
+    pub static_dirs: BTreeSet<PathBuf>,
     /// TypeScript files replaced by the JavaScript packing stripped them to. The
     /// payload stores this text under the original path, so neither the loader nor
     /// the packed app ever evaluates TypeScript.
@@ -73,7 +72,7 @@ impl Analysis {
         }
         self.formats.extend(other.formats);
         self.data_files.extend(other.data_files);
-        self.module_dirs.extend(other.module_dirs);
+        self.static_dirs.extend(other.static_dirs);
         self.stripped.extend(other.stripped);
         self.warnings.extend(other.warnings);
         self.warnings.sort();
@@ -221,10 +220,7 @@ pub fn analyze_roots_with(
     let mut required = BTreeSet::new();
     let mut builtins: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
     let mut formats = BTreeMap::new();
-    let mut data_files = BTreeSet::new();
-    let mut module_dirs = BTreeSet::new();
-    let mut stripped = BTreeMap::new();
-    let mut warnings = Vec::new();
+    let mut output = WalkOutput::default();
 
     while let Some((path, optional_subtree)) = pending.pop_front() {
         if !files.insert(path.clone()) {
@@ -241,38 +237,43 @@ pub fn analyze_roots_with(
         }
 
         let optional_dependencies = thinpack_resolve::optional_dependencies(&path, &fs);
-        let (specifiers, detected) = load_module(
-            &path,
-            &fs,
-            &mut stripped,
-            &mut warnings,
-            &mut data_files,
-            &mut module_dirs,
-        )?;
+        let (specifiers, detected) = load_module(&path, &fs, &mut output)?;
         if let Some(format) = detected {
             formats.insert(path.clone(), format);
         }
         for ((specifier, is_import), usage) in specifiers {
             // A dependency listed in `optionalDependencies` is optional even when the
             // request is unguarded, so a hoisted install the payload cannot reach is
-            // omitted with a warning instead of failing the pack.
-            let optional = usage.optional
+            // omitted with a warning instead of failing the pack. The inherited edge is
+            // deliberately excluded here: `record_builtin` decides whether to link an
+            // optional builtin from the reference itself.
+            let direct_optional = usage.optional
                 || thinpack_resolve::is_optional_dependency(&specifier, &optional_dependencies);
-            if record_builtin(&specifier, optional, &path, &mut builtins, &mut warnings)? {
+            if record_builtin(
+                &specifier,
+                direct_optional,
+                &path,
+                &mut builtins,
+                &mut output.warnings,
+            )? {
                 continue;
             }
+            // Every file under an optional edge is optional, however the file itself
+            // reaches its dependencies. Required targets are visited first, so a file
+            // also reachable by a required edge still fails the pack.
+            let optional_edge = optional_subtree || direct_optional;
             let conditions = Conditions {
                 import: is_import,
                 custom: custom_conditions.to_vec(),
             };
             let Some(resolved) = resolve_dependency(
                 &specifier,
-                optional,
+                optional_edge,
                 &path,
                 &fs,
                 &conditions,
                 allow_missing,
-                &mut warnings,
+                &mut output.warnings,
             )?
             else {
                 continue;
@@ -280,10 +281,8 @@ pub fn analyze_roots_with(
             // A resolve-only reference only locates the target, so its bytes join
             // the payload without being parsed.
             if usage.resolve_only {
-                data_files.insert(resolved);
-            } else if optional_subtree || optional {
-                // Every file under an optional edge is optional, however the file
-                // itself reaches its dependencies.
+                output.data_files.insert(resolved);
+            } else if optional_edge {
                 pending.push_back((resolved, true));
             } else {
                 pending.push_front((resolved, false));
@@ -291,8 +290,8 @@ pub fn analyze_roots_with(
         }
     }
 
-    warnings.sort();
-    warnings.dedup();
+    output.warnings.sort();
+    output.warnings.dedup();
     // An explicit include is required even if the graph only reaches it through an
     // optional edge, or does not reach it at all.
     files.extend(data_roots.iter().cloned());
@@ -303,10 +302,10 @@ pub fn analyze_roots_with(
         manifests: fs.into_manifests(),
         builtins,
         formats,
-        data_files,
-        module_dirs,
-        stripped,
-        warnings,
+        data_files: output.data_files,
+        static_dirs: output.static_dirs,
+        stripped: output.stripped,
+        warnings: output.warnings,
     })
 }
 
@@ -540,13 +539,19 @@ fn format_mismatch(
         .then_some(message)
 }
 
+/// What the walk collects besides the module edges themselves.
+#[derive(Default)]
+struct WalkOutput {
+    warnings: Vec<Warning>,
+    data_files: BTreeSet<PathBuf>,
+    static_dirs: BTreeSet<PathBuf>,
+    stripped: BTreeMap<PathBuf, String>,
+}
+
 fn load_module(
     path: &Path,
     fs: &impl FileSystem,
-    stripped: &mut BTreeMap<PathBuf, String>,
-    warnings: &mut Vec<Warning>,
-    data_files: &mut BTreeSet<PathBuf>,
-    module_dirs: &mut BTreeSet<PathBuf>,
+    output: &mut WalkOutput,
 ) -> Result<(Vec<SpecifierEntry>, Option<Format>), Error> {
     let bytes = fs.read(path).map_err(|error| Error::Read {
         path: path.to_path_buf(),
@@ -556,17 +561,15 @@ fn load_module(
         path: path.to_path_buf(),
         message: "module is not valid UTF-8".to_owned(),
     })?;
-    let source = typescript::strip(path, source, stripped)?;
-    parse_specifiers(&source, path, fs, warnings, data_files, module_dirs)
+    let source = typescript::strip(path, source, &mut output.stripped)?;
+    parse_specifiers(&source, path, fs, output)
 }
 
 fn parse_specifiers(
     source: &str,
     path: &Path,
     fs: &impl FileSystem,
-    warnings: &mut Vec<Warning>,
-    data_files: &mut BTreeSet<PathBuf>,
-    module_dirs: &mut BTreeSet<PathBuf>,
+    output: &mut WalkOutput,
 ) -> Result<(Vec<SpecifierEntry>, Option<Format>), Error> {
     let allocator = Allocator::default();
     let (source_type, format) = parser_dialect(path, fs)?;
@@ -585,7 +588,7 @@ fn parse_specifiers(
             let esm_type = source_type.with_module(true);
             let esm = Parser::new(&allocator, source, esm_type).parse();
             if esm.diagnostics.is_empty() {
-                warnings.push(Warning {
+                output.warnings.push(Warning {
                     message: format!(
                         "{}: contains ES module syntax in a package without \"type\"; packed as an ES module. Add \"type\": \"module\" to the nearest package.json to make the format explicit",
                         path.display()
@@ -623,9 +626,9 @@ fn parse_specifiers(
         try_depth: 0,
         semantic: &semantic,
         require_bindings: require::bindings(&semantic),
-        warnings,
-        data_files,
-        module_dirs,
+        warnings: &mut output.warnings,
+        data_files: &mut output.data_files,
+        static_dirs: &mut output.static_dirs,
         fs,
     };
     collector.visit_program(&parsed.program);
@@ -660,7 +663,7 @@ struct SpecifierCollector<'a, 's> {
     require_bindings: BTreeSet<SymbolId>,
     warnings: &'s mut Vec<Warning>,
     data_files: &'s mut BTreeSet<PathBuf>,
-    module_dirs: &'s mut BTreeSet<PathBuf>,
+    static_dirs: &'s mut BTreeSet<PathBuf>,
     fs: &'s dyn FileSystem,
 }
 
@@ -749,8 +752,7 @@ impl SpecifierCollector<'_, '_> {
         let Some(argument) = call.arguments.first() else {
             return;
         };
-        let expression = argument.as_expression();
-        let complete = expression.is_some_and(|argument| {
+        let complete = argument.as_expression().is_some_and(|argument| {
             require::specifiers(argument, self.semantic, |specifier| {
                 self.add(
                     js_string(specifier),
@@ -760,7 +762,7 @@ impl SpecifierCollector<'_, '_> {
                 );
             })
         });
-        if !complete && !expression.is_some_and(|argument| self.add_module_dirs(argument)) {
+        if !complete {
             self.warnings.push(Warning {
                 message: format!(
                     "{}: `{target}{member}(...)` with a non-literal argument cannot be analyzed. Add required built-ins with `--with <module>`, and computed local files with `--include <path>` (relative to the project root).",
@@ -798,21 +800,6 @@ impl SpecifierCollector<'_, '_> {
             strict: false,
         });
     }
-    /// Record the directories a computed module path selects from. The path has
-    /// to name a literal `__dirname`-rooted directory, so a user-supplied
-    /// absolute or working-directory path still needs `--include`.
-    fn add_module_dirs(&mut self, expression: &Expression<'_>) -> bool {
-        let base = self.path.parent().unwrap_or_else(|| Path::new("/"));
-        let directories: Vec<PathBuf> =
-            static_path::computed_directories(expression, base, self.semantic)
-                .into_iter()
-                .filter(|directory| self.fs.is_dir(directory))
-                .collect();
-        let found = !directories.is_empty();
-        self.module_dirs.extend(directories);
-        found
-    }
-
     /// Record a package-relative asset read through `fs.readFileSync`, `readFile` or
     /// `createReadStream` when the path is built from `__dirname`. This is the
     /// `errorhandler` case: a runtime asset that no import reaches.
@@ -829,13 +816,7 @@ impl SpecifierCollector<'_, '_> {
         if !matches!(property, "readFile" | "readFileSync" | "createReadStream") {
             return;
         }
-        let Some(expression) = call.arguments.first().and_then(Argument::as_expression) else {
-            return;
-        };
-        let Some(path) = static_path::evaluate(
-            expression,
-            self.path.parent().unwrap_or_else(|| Path::new("/")),
-        ) else {
+        let Some(path) = self.static_path_argument(call) else {
             return;
         };
         if self.fs.is_file(&path) {
@@ -850,6 +831,66 @@ impl SpecifierCollector<'_, '_> {
                 strict: false,
             });
         }
+    }
+
+    /// Record a package-relative directory enumerated through `fs.readdir` or
+    /// `fs.readdirSync`. The names it returns are not known statically, but the
+    /// directory is, so it can be packed like `--include <directory>`. Only a call
+    /// on the `fs` module counts: another object's `readdirSync` does not enumerate
+    /// files the payload carries.
+    fn static_directory(&mut self, call: &CallExpression<'_>) {
+        let Some(member) = call.callee.as_member_expression() else {
+            return;
+        };
+        let Expression::Identifier(receiver) = member.object() else {
+            return;
+        };
+        if !self.is_fs_binding(receiver)
+            || !matches!(
+                member
+                    .static_property_name()
+                    .and_then(oxc_str::JSStr::as_str),
+                Some("readdir" | "readdirSync")
+            )
+        {
+            return;
+        }
+        let Some(path) = self.static_path_argument(call) else {
+            return;
+        };
+        if self.fs.is_dir(&path) {
+            self.static_dirs.insert(path);
+        }
+    }
+
+    /// Whether `identifier` names the `fs` module, bound once to `require('fs')`
+    /// or `require('node:fs')`.
+    fn is_fs_binding(&self, identifier: &IdentifierReference<'_>) -> bool {
+        let Some(symbol) = require::referenced_symbol(identifier, self.semantic.scoping()) else {
+            return false;
+        };
+        let Some(Expression::CallExpression(call)) = require::initializer(symbol, self.semantic)
+        else {
+            return false;
+        };
+        let Some(callee) = call.callee.without_parentheses().get_identifier_reference() else {
+            return false;
+        };
+        self.is_require_binding(callee)
+            && matches!(
+                call.arguments.first().and_then(Argument::as_expression),
+                Some(Expression::StringLiteral(literal))
+                    if matches!(literal.value.as_str(), Some("fs" | "node:fs"))
+            )
+    }
+
+    fn static_path_argument(&self, call: &CallExpression<'_>) -> Option<PathBuf> {
+        let expression = call.arguments.first().and_then(Argument::as_expression)?;
+        static_path::evaluate(
+            expression,
+            self.path.parent().unwrap_or_else(|| Path::new("/")),
+            self.semantic,
+        )
     }
 }
 
@@ -874,14 +915,13 @@ impl<'a> VisitJs<'a> for SpecifierCollector<'a, '_> {
             Expression::StringLiteral(literal) => {
                 self.add_specifier(js_string(literal.value), true);
             }
-            _ if !self.add_module_dirs(&expression.source) => self.warnings.push(Warning {
+            _ => self.warnings.push(Warning {
                 message: format!(
                     "{}: `import(...)` with a non-literal argument cannot be analyzed; add computed local files with `--include <path>` (relative to the project root)",
                     self.path.display()
                 ),
                 strict: true,
             }),
-            _ => {}
         }
         walk_js::walk_import_expression(self, expression);
     }
@@ -889,6 +929,7 @@ impl<'a> VisitJs<'a> for SpecifierCollector<'a, '_> {
     fn visit_call_expression(&mut self, call: &CallExpression<'a>) {
         self.dynamic_function(&call.callee, &call.arguments);
         self.static_asset(call);
+        self.static_directory(call);
         self.require_call(call);
         walk_js::walk_call_expression(self, call);
     }
@@ -1284,6 +1325,72 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_dependency_under_a_guarded_import_only_warns() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.mjs",
+                "try { await import('./feature.mjs'); } catch (error) { if (error.code !== 'ERR_MODULE_NOT_FOUND') throw error; }\n",
+            ),
+            ("/app/feature.mjs", "import './nested.mjs';\n"),
+            (
+                "/app/nested.mjs",
+                "import 'optional-package-not-installed';\n",
+            ),
+        ]);
+        let analysis = analyze(Path::new("/app/main.mjs"), &fs).unwrap();
+        for path in ["/app/feature.mjs", "/app/nested.mjs"] {
+            assert!(analysis.files.contains(&PathBuf::from(path)), "{path}");
+            assert!(!analysis.required.contains(&PathBuf::from(path)), "{path}");
+        }
+        assert!(
+            analysis.warnings.iter().any(|warning| warning
+                .message
+                .contains("optional dependency `optional-package-not-installed` is missing")),
+            "{:?}",
+            analysis.warnings
+        );
+    }
+
+    #[test]
+    fn a_missing_dependency_under_an_unhandled_import_fails() {
+        let fs = MemoryFs::new(&[
+            ("/app/main.mjs", "await import('./feature.mjs');\n"),
+            (
+                "/app/feature.mjs",
+                "import 'optional-package-not-installed';\n",
+            ),
+        ]);
+        match analyze(Path::new("/app/main.mjs"), &fs) {
+            Err(Error::Resolve { specifier, .. }) => {
+                assert_eq!(specifier, "optional-package-not-installed");
+            }
+            other => panic!("expected a resolve error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_required_edge_keeps_a_shared_file_required() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.js",
+                "try { require('./optional-path'); } catch {}\nrequire('./required-path');\n",
+            ),
+            ("/app/optional-path.js", "require('./feature');\n"),
+            ("/app/required-path.js", "require('./feature');\n"),
+            (
+                "/app/feature.js",
+                "require('optional-package-not-installed');\n",
+            ),
+        ]);
+        match analyze(Path::new("/app/main.js"), &fs) {
+            Err(Error::Resolve { specifier, .. }) => {
+                assert_eq!(specifier, "optional-package-not-installed");
+            }
+            other => panic!("expected a resolve error, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn files_reached_only_through_optional_edges_are_optional() {
         let fs = MemoryFs::new(&[
             (
@@ -1561,51 +1668,6 @@ mod tests {
     }
 
     #[test]
-    fn a_computed_module_path_records_its_literal_directory() {
-        let fs = MemoryFs::new(&[
-            (
-                "/app/lib/main.js",
-                "const path = require('node:path');\n\
-                 const { pathToFileURL } = require('node:url');\n\
-                 async function load(name) {\n\
-                   let formatterPath = path.resolve(process.cwd(), name);\n\
-                   formatterPath = path.resolve(__dirname, '../', 'formatters', `${name}.js`);\n\
-                   return import(pathToFileURL(formatterPath));\n\
-                 }\n\
-                 console.log(load);\n",
-            ),
-            ("/app/formatters/stylish.js", "module.exports = () => '';\n"),
-            ("/app/formatters/json.js", "module.exports = () => '[]';\n"),
-            ("/app/formatters/meta.json", "[]\n"),
-        ]);
-        let analysis = analyze(Path::new("/app/lib/main.js"), &fs).unwrap();
-        assert_eq!(
-            analysis.module_dirs,
-            BTreeSet::from([PathBuf::from("/app/formatters")])
-        );
-        assert!(analysis.warnings.is_empty(), "{:?}", analysis.warnings);
-    }
-
-    #[test]
-    fn a_computed_module_path_without_a_literal_directory_is_left_alone() {
-        let fs = MemoryFs::new(&[
-            (
-                "/app/lib/main.js",
-                "const path = require('node:path');\n\
-                 const name = process.argv[2];\n\
-                 require(path.resolve(__dirname, name));\n\
-                 require(path.resolve(process.cwd(), name));\n\
-                 require(path.join('relative', name));\n",
-            ),
-            ("/app/lib/relative/plugin.js", "module.exports = 1;\n"),
-        ]);
-        let analysis = analyze(Path::new("/app/lib/main.js"), &fs).unwrap();
-        assert!(analysis.module_dirs.is_empty());
-        assert_eq!(analysis.warnings.len(), 1);
-        assert!(analysis.warnings[0].message.contains("non-literal"));
-    }
-
-    #[test]
     fn records_a_static_asset_read_through_dirname() {
         let fs = MemoryFs::new(&[
             (
@@ -1743,6 +1805,58 @@ mod tests {
         let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
         assert!(analysis.data_files.is_empty());
         assert!(analysis.warnings.is_empty(), "{:?}", analysis.warnings);
+    }
+
+    #[test]
+    fn records_a_static_directory_scanned_through_dirname() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.cjs",
+                "const fs = require('node:fs');\nconst dir = __dirname + '/plugins';\nfs.readdirSync(dir);\n",
+            ),
+            ("/app/plugins/plugin.cjs", "module.exports = 42;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+        assert_eq!(
+            analysis.static_dirs,
+            BTreeSet::from([PathBuf::from("/app/plugins")])
+        );
+    }
+
+    #[test]
+    fn a_dynamic_directory_scan_is_left_alone() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.cjs",
+                "const fs = require('node:fs');\nfs.readdirSync(__dirname + '/' + process.argv[2]);\n",
+            ),
+            ("/app/plugins/plugin.cjs", "module.exports = 42;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+        assert!(
+            analysis.static_dirs.is_empty(),
+            "{:?}",
+            analysis.static_dirs
+        );
+    }
+
+    #[test]
+    fn an_unrelated_readdir_is_left_alone() {
+        // Only `fs` enumerates files the payload carries; another object's
+        // `readdirSync` returns whatever it likes.
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.cjs",
+                "const scanner = { readdirSync: () => ['plugin.cjs'] };\nscanner.readdirSync(__dirname + '/plugins');\n",
+            ),
+            ("/app/plugins/plugin.cjs", "module.exports = 42;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+        assert!(
+            analysis.static_dirs.is_empty(),
+            "{:?}",
+            analysis.static_dirs
+        );
     }
 
     #[test]
