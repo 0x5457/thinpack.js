@@ -206,7 +206,10 @@ pub(super) fn specifiers<'a>(
     complete
 }
 
-fn initializer<'a>(symbol: SymbolId, semantic: &Semantic<'a>) -> Option<&'a Expression<'a>> {
+pub(super) fn initializer<'a>(
+    symbol: SymbolId,
+    semantic: &Semantic<'a>,
+) -> Option<&'a Expression<'a>> {
     let AstKind::VariableDeclarator(declaration) = semantic.symbol_declaration(symbol).kind()
     else {
         return None;

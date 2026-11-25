@@ -1,18 +1,27 @@
 //! Evaluation of `__dirname`-rooted path expressions.
 
+use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 
 use oxc_ast::ast::{BinaryOperator, CallExpression, Expression};
+use oxc_semantic::{Semantic, SymbolId};
 use thinpack_resolve::normalize;
 
+use crate::require;
+
 /// Evaluate a path expression rooted at `__dirname` (`path.join`, `path.resolve`,
-/// `join`, `resolve`, or `__dirname + "..."`). Only literal segments are accepted,
-/// so arbitrary dynamic paths are left alone.
+/// `join`, `resolve`, or `__dirname + "..."`). Only literal segments and bindings
+/// assigned once to one of them are accepted, so arbitrary dynamic paths are left
+/// alone.
 ///
 /// A relative result is anchored at `base`, the directory of the module that reads
 /// the asset.
-pub(super) fn evaluate(expression: &Expression<'_>, base: &Path) -> Option<PathBuf> {
-    let path = path_value(expression, base)?;
+pub(super) fn evaluate<'a>(
+    expression: &'a Expression<'a>,
+    base: &Path,
+    semantic: &Semantic<'a>,
+) -> Option<PathBuf> {
+    let path = path_value(expression, base, semantic, &mut BTreeSet::new())?;
     Some(normalize(&if path.is_absolute() {
         path
     } else {
@@ -21,24 +30,46 @@ pub(super) fn evaluate(expression: &Expression<'_>, base: &Path) -> Option<PathB
 }
 
 /// The path an expression evaluates to, before a relative result is anchored.
-fn path_value(expression: &Expression<'_>, base: &Path) -> Option<PathBuf> {
+fn path_value<'a>(
+    expression: &'a Expression<'a>,
+    base: &Path,
+    semantic: &Semantic<'a>,
+    resolving: &mut BTreeSet<SymbolId>,
+) -> Option<PathBuf> {
     match expression.without_parentheses() {
         Expression::Identifier(identifier) if identifier.name == "__dirname" => {
             Some(base.to_path_buf())
         }
+        // `const dir = __dirname + '/plugins'` is as predictable as the inline
+        // expression, so follow a binding that is never reassigned.
+        Expression::Identifier(identifier) => {
+            let symbol = require::referenced_symbol(identifier, semantic.scoping())?;
+            if !resolving.insert(symbol) {
+                return None;
+            }
+            let path = require::initializer(symbol, semantic)
+                .and_then(|init| path_value(init, base, semantic, resolving));
+            resolving.remove(&symbol);
+            path
+        }
         Expression::StringLiteral(literal) => literal.value.as_str().map(PathBuf::from),
         Expression::BinaryExpression(binary) if binary.operator == BinaryOperator::Addition => {
             // String concatenation, so an absolute right operand never resets.
-            let mut value = path_value(&binary.left, base)?.into_os_string();
-            value.push(path_value(&binary.right, base)?);
+            let mut value = path_value(&binary.left, base, semantic, resolving)?.into_os_string();
+            value.push(path_value(&binary.right, base, semantic, resolving)?);
             Some(PathBuf::from(value))
         }
-        Expression::CallExpression(call) => call_value(call, base),
+        Expression::CallExpression(call) => call_value(call, base, semantic, resolving),
         _ => None,
     }
 }
 
-fn call_value(call: &CallExpression<'_>, base: &Path) -> Option<PathBuf> {
+fn call_value<'a>(
+    call: &'a CallExpression<'a>,
+    base: &Path,
+    semantic: &Semantic<'a>,
+    resolving: &mut BTreeSet<SymbolId>,
+) -> Option<PathBuf> {
     let callee = match call.callee.without_parentheses() {
         Expression::Identifier(identifier) => identifier.name.as_str(),
         Expression::StaticMemberExpression(member) => member.property.name.as_str(),
@@ -50,7 +81,7 @@ fn call_value(call: &CallExpression<'_>, base: &Path) -> Option<PathBuf> {
     let arguments = call
         .arguments
         .iter()
-        .map(|argument| path_value(argument.as_expression()?, base))
+        .map(|argument| path_value(argument.as_expression()?, base, semantic, resolving))
         .collect::<Option<Vec<_>>>()?;
     Some(if callee == "join" {
         join(&arguments)
