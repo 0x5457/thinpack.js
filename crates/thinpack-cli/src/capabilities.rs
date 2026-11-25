@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
@@ -30,13 +30,7 @@ pub(crate) fn analyze_entry(options: &Options, pack: bool) -> Result<Analyzed, B
     conditions.sort_unstable();
     conditions.dedup();
     let included = expand_includes(&root, &options.include)?;
-    let mut analysis = thinpack_analyze::analyze_roots_with(
-        &entry,
-        &included,
-        &thinpack_resolve::HostFs,
-        &allow_missing,
-        &conditions,
-    )?;
+    let mut analysis = analyze_graph(&entry, &root, &included, &allow_missing, &conditions)?;
     if pack {
         // A module outside the root cannot be reached from the payload. Pack leaves
         // optional ones out; the warning belongs with the other optional warnings so
@@ -73,6 +67,90 @@ pub(crate) fn analyze_entry(options: &Options, pack: bool) -> Result<Analyzed, B
     })
 }
 
+/// Analyze the entry and explicit include roots, expanding every
+/// package-relative directory the graph enumerates with `fs.readdir` or
+/// `fs.readdirSync` as if it had been passed to `--include`. A directory can
+/// contain a module that scans another directory, so repeat until no new
+/// directory appears.
+fn analyze_graph(
+    entry: &Path,
+    root: &Path,
+    includes: &[PathBuf],
+    allow_missing: &BTreeSet<String>,
+    conditions: &[String],
+) -> Result<Analysis, Box<dyn Error>> {
+    let mut includes = includes.to_vec();
+    let mut expanded = BTreeSet::new();
+    let mut skipped = BTreeMap::new();
+    loop {
+        let mut analysis = thinpack_analyze::analyze_roots_with(
+            entry,
+            &includes,
+            &thinpack_resolve::HostFs,
+            allow_missing,
+            conditions,
+        )?;
+        let mut discovered = Vec::new();
+        for directory in &analysis.static_dirs {
+            let directory = normalize(directory);
+            if !expanded.insert(directory.clone()) {
+                continue;
+            }
+            // The payload is rooted at the project, so a directory above it cannot
+            // be reached from `/app`. Leave it to the host.
+            if !directory.starts_with(root) {
+                skipped.insert(directory, "is outside the project root");
+                continue;
+            }
+            if !expandable_scan(root, &directory) {
+                skipped.insert(
+                    directory,
+                    "is the project root, a package root, node_modules, or a symlink",
+                );
+                continue;
+            }
+            collect_files(&directory, false, &mut discovered)?;
+        }
+        if discovered.is_empty() {
+            for (directory, reason) in skipped {
+                analysis.warnings.push(thinpack_analyze::Warning {
+                    message: format!(
+                        "static directory {} {reason}; add it with --include",
+                        directory.display()
+                    ),
+                    strict: false,
+                });
+            }
+            analysis.warnings.sort();
+            return Ok(analysis);
+        }
+        includes.extend(discovered);
+        includes.sort();
+        includes.dedup();
+    }
+}
+
+/// Whether the graph's scan of `directory` can stand in for `--include`. The
+/// directory is already known to be inside `root`; it also has to stay a bounded
+/// part of the project instead of sweeping the project root, a package root,
+/// `node_modules`, or a symlinked copy of one of those.
+fn expandable_scan(root: &Path, directory: &Path) -> bool {
+    let Ok(relative) = directory.strip_prefix(root) else {
+        return false;
+    };
+    if relative.as_os_str().is_empty() || relative.ends_with("node_modules") {
+        return false;
+    }
+    let mut path = root.to_path_buf();
+    for part in relative {
+        path.push(part);
+        if !std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_dir()) {
+            return false;
+        }
+    }
+    !directory.join("package.json").is_file()
+}
+
 fn expand_includes(root: &Path, includes: &[PathBuf]) -> Result<Vec<PathBuf>, Box<dyn Error>> {
     let root = normalize(root);
     let mut files = Vec::new();
@@ -103,7 +181,7 @@ fn expand_includes(root: &Path, includes: &[PathBuf]) -> Result<Vec<PathBuf>, Bo
             )
         })?;
         if metadata.is_dir() {
-            collect_files(&path, &mut files)?;
+            collect_files(&path, true, &mut files)?;
         } else {
             files.push(path);
         }
@@ -113,16 +191,28 @@ fn expand_includes(root: &Path, includes: &[PathBuf]) -> Result<Vec<PathBuf>, Bo
     Ok(files)
 }
 
-fn collect_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), Box<dyn Error>> {
+/// Collect every regular file under `directory`. An `--include` follows links; an
+/// implicitly scanned directory does not, so a link cannot carry host files into
+/// the payload.
+fn collect_files(
+    directory: &Path,
+    follow_links: bool,
+    files: &mut Vec<PathBuf>,
+) -> Result<(), Box<dyn Error>> {
     for entry in std::fs::read_dir(directory)? {
         let entry = entry?;
         let path = entry.path();
-        let metadata = entry.metadata()?;
-        if metadata.is_dir() {
-            if entry.file_name() != ".git" {
-                collect_files(&path, files)?;
+        let file_type = if follow_links {
+            entry.metadata()?.file_type()
+        } else {
+            entry.file_type()?
+        };
+        if file_type.is_dir() {
+            if entry.file_name() != ".git" && (follow_links || entry.file_name() != "node_modules")
+            {
+                collect_files(&path, follow_links, files)?;
             }
-        } else if metadata.is_file() {
+        } else if file_type.is_file() {
             files.push(path);
         }
     }
