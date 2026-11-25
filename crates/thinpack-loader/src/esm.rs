@@ -27,6 +27,10 @@ struct HookLoad {
 pub struct EsmLoader {
     fs: ModuleFs,
     builtins: BuiltinSources,
+    /// Export names read from the live `module.exports` of a builtin when its import was
+    /// resolved. A static scan cannot see the alias assignments builtins use; Node reads
+    /// `ObjectKeys(module.exports)` and builds the facade once per module.
+    builtin_exports: RefCell<HashMap<String, BTreeSet<String>>>,
     hook_loads: RefCell<HashMap<String, HookLoad>>,
     in_hook: Cell<bool>,
 }
@@ -37,6 +41,7 @@ impl EsmLoader {
         Self {
             fs,
             builtins,
+            builtin_exports: RefCell::new(HashMap::new()),
             hook_loads: RefCell::new(HashMap::new()),
             in_hook: Cell::new(false),
         }
@@ -73,24 +78,39 @@ impl ModuleLoader for EsmLoader {
             reply
         }?;
 
-        if hook_reply.is_empty() {
-            return self.resolve(specifier, referrer, kind);
-        }
+        let specifier = if hook_reply.is_empty() {
+            self.resolve(specifier, referrer, kind)?
+        } else {
+            let mut parts = hook_reply.splitn(3, '\0');
+            let url = parts.next().unwrap_or_default();
+            let format = parts.next();
+            let source = parts.next();
+            let specifier = ModuleSpecifier::parse(url)
+                .map_err(|error| JsErrorBox::generic(error.to_string()))?;
+            if let (Some(format), Some(source)) = (format, source) {
+                self.hook_loads.borrow_mut().insert(
+                    specifier.as_str().to_owned(),
+                    HookLoad {
+                        format: format.to_owned(),
+                        source: source.to_owned(),
+                    },
+                );
+            }
+            specifier
+        };
 
-        let mut parts = hook_reply.splitn(3, '\0');
-        let url = parts.next().unwrap_or_default();
-        let format = parts.next();
-        let source = parts.next();
-        let specifier =
-            ModuleSpecifier::parse(url).map_err(|error| JsErrorBox::generic(error.to_string()))?;
-        if let (Some(format), Some(source)) = (format, source) {
-            self.hook_loads.borrow_mut().insert(
-                specifier.as_str().to_owned(),
-                HookLoad {
-                    format: format.to_owned(),
-                    source: source.to_owned(),
-                },
-            );
+        // A template that omits a builtin must fail the import with the loader's own
+        // `ERR_UNKNOWN_BUILTIN_MODULE`, so only a builtin this runtime carries is asked for
+        // its exports.
+        let builtin = specifier.as_str();
+        if specifier.scheme() == "node"
+            && self.builtins.get(builtin).is_some()
+            && !self.builtin_exports.borrow().contains_key(builtin)
+        {
+            let names = call_builtin_exports(scope, builtin)?;
+            self.builtin_exports
+                .borrow_mut()
+                .insert(builtin.to_owned(), names);
         }
         Ok(specifier)
     }
@@ -101,6 +121,11 @@ impl ModuleLoader for EsmLoader {
         maybe_referrer: Option<&ModuleLoadReferrer>,
         _options: ModuleLoadOptions,
     ) -> ModuleLoadResponse {
+        let names = self
+            .builtin_exports
+            .borrow()
+            .get(module_specifier.as_str())
+            .cloned();
         if let Some(hook_load) = self.hook_loads.borrow().get(module_specifier.as_str()) {
             let hook_load = HookLoad {
                 format: hook_load.format.clone(),
@@ -111,12 +136,20 @@ impl ModuleLoader for EsmLoader {
                 &self.builtins,
                 module_specifier,
                 hook_load,
+                names.as_ref(),
             ));
         }
         let referrer = maybe_referrer.map(|referrer| &referrer.specifier);
         let result = default_source(&self.fs, &self.builtins, module_specifier, referrer).and_then(
             |(format, source)| {
-                module_from_format(&self.fs, &self.builtins, module_specifier, format, source)
+                module_from_format(
+                    &self.fs,
+                    &self.builtins,
+                    module_specifier,
+                    format,
+                    source,
+                    names.as_ref(),
+                )
             },
         );
         ModuleLoadResponse::Sync(result)
@@ -142,32 +175,62 @@ fn call_esm_bridge(
     referrer: &str,
     attributes: &str,
 ) -> Result<String, JsErrorBox> {
+    call_global(
+        scope,
+        "__thinpack_esm_resolve__",
+        "the ESM loader hook bridge is not installed",
+        "the ESM loader hook failed",
+        &[specifier, referrer, attributes],
+    )
+}
+
+fn call_builtin_exports(
+    scope: &mut deno_core::v8::PinScope<'_, '_>,
+    specifier: &str,
+) -> Result<BTreeSet<String>, JsErrorBox> {
+    let names = call_global(
+        scope,
+        "__thinpack_builtin_exports__",
+        "the builtin export bridge is not installed",
+        "the builtin export bridge failed",
+        &[specifier],
+    )?;
+    Ok(names
+        .split('\0')
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
+fn call_global(
+    scope: &mut deno_core::v8::PinScope<'_, '_>,
+    name: &str,
+    missing: &'static str,
+    failed: &'static str,
+    arguments: &[&str],
+) -> Result<String, JsErrorBox> {
     deno_core::v8::tc_scope!(let scope, scope);
     let global = scope.get_current_context().global(scope);
-    let name = deno_core::v8::String::new(scope, "__thinpack_esm_resolve__").unwrap();
+    let name = deno_core::v8::String::new(scope, name).unwrap();
     let bridge = global
         .get(scope, name.into())
         .unwrap_or_else(|| deno_core::v8::undefined(scope).into());
     let Ok(bridge) = deno_core::v8::Local::<deno_core::v8::Function>::try_from(bridge) else {
-        return Err(JsErrorBox::generic(
-            "the ESM loader hook bridge is not installed",
-        ));
+        return Err(JsErrorBox::generic(missing));
     };
-    let args = [
-        deno_core::v8::String::new(scope, specifier).unwrap().into(),
-        deno_core::v8::String::new(scope, referrer).unwrap().into(),
-        deno_core::v8::String::new(scope, attributes)
-            .unwrap()
-            .into(),
-    ];
+    let mut argv: [deno_core::v8::Local<'_, deno_core::v8::Value>; 3] =
+        [deno_core::v8::undefined(scope).into(); 3];
+    for (slot, argument) in argv.iter_mut().zip(arguments) {
+        *slot = deno_core::v8::String::new(scope, argument).unwrap().into();
+    }
     let receiver = deno_core::v8::undefined(scope);
-    let result = bridge.call(scope, receiver.into(), &args);
+    let result = bridge.call(scope, receiver.into(), &argv[..arguments.len()]);
     if scope.has_caught() {
         let exception = scope.exception().unwrap();
         return Err(JsErrorBox::from_err(HookError::read(scope, exception)));
     }
     let Some(result) = result else {
-        return Err(JsErrorBox::generic("ESM loader hook failed"));
+        return Err(JsErrorBox::generic(failed));
     };
     Ok(result.to_rust_string_lossy(scope))
 }
@@ -327,15 +390,15 @@ fn module_not_found(
 fn collect_reexports(
     fs: &ModuleFs,
     path: &Path,
-    source: &str,
+    reexports: &[String],
     names: &mut BTreeSet<String>,
     visited: &mut BTreeSet<PathBuf>,
 ) {
     visited.insert(path.to_path_buf());
 
-    for specifier in thinpack_cjs_lexer::analyze(source).reexports {
+    for specifier in reexports {
         let Ok(resolved) =
-            thinpack_resolve::resolve_with_conditions(&specifier, path, fs, &fs.conditions(false))
+            thinpack_resolve::resolve_with_conditions(specifier, path, fs, &fs.conditions(false))
         else {
             continue;
         };
@@ -351,8 +414,9 @@ fn collect_reexports(
         let Ok(text) = String::from_utf8(contents) else {
             continue;
         };
-        names.extend(thinpack_cjs_lexer::analyze(&text).exports);
-        collect_reexports(fs, &resolved.path, &text, names, visited);
+        let analysis = thinpack_cjs_lexer::analyze(&text);
+        names.extend(analysis.exports);
+        collect_reexports(fs, &resolved.path, &analysis.reexports, names, visited);
     }
 }
 
@@ -361,8 +425,9 @@ fn builtin_export_names(
     source: &str,
     visited: &mut BTreeSet<String>,
 ) -> BTreeSet<String> {
-    let mut names = thinpack_cjs_lexer::analyze(source).exports;
-    for specifier in thinpack_cjs_lexer::analyze(source).reexports {
+    let analysis = thinpack_cjs_lexer::analyze(source);
+    let mut names = analysis.exports;
+    for specifier in analysis.reexports {
         if !visited.insert(specifier.clone()) {
             continue;
         }
@@ -430,8 +495,16 @@ fn load_from_hook(
     builtins: &BuiltinSources,
     specifier: &ModuleSpecifier,
     hook_load: HookLoad,
+    builtin_names: Option<&BTreeSet<String>>,
 ) -> Result<ModuleSource, JsErrorBox> {
-    module_from_format(fs, builtins, specifier, &hook_load.format, hook_load.source)
+    module_from_format(
+        fs,
+        builtins,
+        specifier,
+        &hook_load.format,
+        hook_load.source,
+        builtin_names,
+    )
 }
 
 fn module_from_format(
@@ -440,15 +513,23 @@ fn module_from_format(
     specifier: &ModuleSpecifier,
     format: &str,
     source: String,
+    builtin_names: Option<&BTreeSet<String>>,
 ) -> Result<ModuleSource, JsErrorBox> {
     match format {
         "module" => Ok(module_source(specifier, ModuleType::JavaScript, source)),
         "json" => Ok(module_source(specifier, ModuleType::Json, source)),
         "commonjs" => {
             let path = path_from_url(specifier);
-            let mut names = thinpack_cjs_lexer::analyze(&source).exports;
+            let analysis = thinpack_cjs_lexer::analyze(&source);
+            let mut names = analysis.exports;
             if let Some(path) = path.as_deref() {
-                collect_reexports(fs, path, &source, &mut names, &mut BTreeSet::new());
+                collect_reexports(
+                    fs,
+                    path,
+                    &analysis.reexports,
+                    &mut names,
+                    &mut BTreeSet::new(),
+                );
             }
             let id = path
                 .as_deref()
@@ -463,7 +544,10 @@ fn module_from_format(
             Ok(module_source(specifier, ModuleType::JavaScript, facade))
         }
         "builtin" => {
-            let names = builtin_export_names(builtins, &source, &mut BTreeSet::new());
+            let mut names = builtin_export_names(builtins, &source, &mut BTreeSet::new());
+            if let Some(runtime) = builtin_names {
+                names.extend(runtime.iter().cloned());
+            }
             Ok(module_source(
                 specifier,
                 ModuleType::JavaScript,
@@ -500,12 +584,47 @@ fn facade(target: &str, names: &std::collections::BTreeSet<String>) -> String {
 
 fn append_named_exports(source: &mut String, names: &std::collections::BTreeSet<String>) {
     for name in names {
-        if name == "__exports__" {
+        if !is_export_name(name) {
             continue;
         }
         let _ = writeln!(source, "export const {name} = __exports__.{name};");
     }
     source.push_str("export default __exports__;\n");
+}
+
+/// Whether `name` can be declared by the facade source.
+///
+/// The lexer and `Object.keys` return every detected key, including `default`, keys that
+/// are not identifiers, and reserved words. `default` is the facade's own default export,
+/// `__exports__` is its binding, and the rest cannot be declared with `export const`.
+fn is_export_name(name: &str) -> bool {
+    if matches!(name, "default" | "__exports__") || is_reserved(name) {
+        return false;
+    }
+    let mut bytes = name.bytes();
+    match bytes.next() {
+        Some(first) if is_identifier_start(first) => {}
+        _ => return false,
+    }
+    bytes.all(is_identifier_part)
+}
+
+const fn is_identifier_start(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'_' || byte == b'$'
+}
+
+const fn is_identifier_part(byte: u8) -> bool {
+    is_identifier_start(byte) || byte.is_ascii_digit()
+}
+
+/// Words that cannot appear as a binding name in a module (strict mode).
+const RESERVED: &str = "arguments await break case catch class const continue debugger delete do \
+else enum eval export extends false finally for function if implements import in instanceof \
+interface let new null package private protected public return static super switch this throw \
+true try typeof var void while with yield";
+
+fn is_reserved(name: &str) -> bool {
+    RESERVED.split_whitespace().any(|reserved| reserved == name)
 }
 
 #[must_use]

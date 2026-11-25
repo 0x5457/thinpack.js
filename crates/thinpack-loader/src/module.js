@@ -229,6 +229,19 @@
   Object.defineProperty(globalThis, "__thinpack_require__", {
     value: (specifier) => load(specifier, "", []),
   });
+  // The ESM facade needs the builtin's real named exports, the way Node reads
+  // `Object.keys(module.exports)`; a static scan cannot follow the alias assignments
+  // builtins use (`module.exports = Module; Module.createRequire = ...`). Getters are
+  // left out because reading one can initialize an optional capability the app did not
+  // select (`events` without `async_hooks`).
+  Object.defineProperty(globalThis, "__thinpack_builtin_exports__", {
+    value: (specifier) => {
+      const exports = load(specifier, "", []);
+      return Object.keys(exports)
+        .filter((name) => Object.getOwnPropertyDescriptor(exports, name)?.get === undefined)
+        .join("\0");
+    },
+  });
   const finishHooks = [];
   Object.defineProperty(globalThis, "__thinpack_on_finish", {
     value: (hook) => finishHooks.push(hook),

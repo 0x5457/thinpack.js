@@ -51,10 +51,17 @@ pub struct Analysis {
 #[must_use]
 pub fn analyze(source: &str) -> Analysis {
     let mut error = MerveErrorLoc { line: 0, column: 0 };
+    // A few token checks in the vendored lexer read one byte past `end`. A NUL
+    // sentinel keeps that read inside this allocation; without it, the same source
+    // can parse or fail depending on the bytes after the Rust buffer (the pinned
+    // `pi` app's `partial-json` copy failed when it landed next to non-NUL data).
+    let mut terminated = Vec::with_capacity(source.len() + 1);
+    terminated.extend_from_slice(source.as_bytes());
+    terminated.push(0);
     // SAFETY: the pointer/length pair describes `source` for the duration of the call,
     // and the returned handle is freed before this function returns.
     let handle =
-        unsafe { merve_parse_commonjs(source.as_ptr().cast(), source.len(), &raw mut error) };
+        unsafe { merve_parse_commonjs(terminated.as_ptr().cast(), source.len(), &raw mut error) };
     // SAFETY: `handle` is either null or a live result owned by this function.
     if handle.is_null() || !unsafe { merve_is_valid(handle) } {
         // SAFETY: freeing a null handle is a no-op; a live invalid result is owned here.
