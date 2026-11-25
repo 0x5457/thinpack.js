@@ -356,3 +356,9 @@ jobs:
 
       - name: Workspace tests
         run: cargo test --workspace --no-fail-fast
+
+      # TEMPORARY, this pull request only: the release profile links the runtime with LTO and
+      # `codegen-units = 1` through `cargo xtask dist`, which packs and runs `examples/hello.js`
+      # from the staged directory. Prove the new linker handles the path that ships.
+      - name: Release build through the release target (temporary)
+        run: cargo xtask dist --target x86_64-pc-windows-msvc --out dist

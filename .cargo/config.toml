@@ -9,4 +9,11 @@ xtask = "run --quiet --package xtask --"
 # reports the duplicated default library on every V8 build. Both sets of CRT objects describe the
 # same ABI and only one of them is kept; `cargo xtask dist` leaves `RUSTFLAGS` unset for MSVC
 # targets so that this applies to release builds too.
-rustflags = ["-C", "link-arg=/IGNORE:4098"]
+#
+# The linker is `rust-lld`, the LLD that ships inside the toolchain, because linking is what the
+# Windows CI job waits on: on a warm cache `cargo build -p thinpack-rt` compiles 113 units and then
+# spends most of its remaining time in `link.exe` on five binaries, one of them the 64 MB runtime
+# template. rustc recognises the `rust-lld` stem, drives it as an MSVC linker (`Msvc(Lld::Yes)`,
+# which passes `-flavor link`), and puts the toolchain's own `lib/rustlib/<target>/bin` on the
+# linker's PATH, so the bare name resolves.
+rustflags = ["-C", "link-arg=/IGNORE:4098", "-C", "linker=rust-lld"]
