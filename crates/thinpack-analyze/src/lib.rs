@@ -18,7 +18,7 @@ use oxc_ast::ast::{
 use oxc_ast_visit::{VisitJs, walk_js};
 use oxc_parser::Parser;
 use oxc_semantic::{IsGlobalReference, Semantic, SemanticBuilder, SymbolId};
-use oxc_span::SourceType;
+use oxc_span::{SourceType, Span};
 use thinpack_resolve::{Conditions, FileSystem, Format};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -671,12 +671,19 @@ fn parse_specifiers(
         .with_build_nodes(true)
         .build(&parsed.program)
         .semantic;
+    let late_import_bindings = require::late_import_bindings(&semantic);
+    let late_import_factories = late_import_bindings
+        .values()
+        .map(|late_import| late_import.span)
+        .collect();
     let mut collector = SpecifierCollector {
         path,
         specifiers: BTreeMap::new(),
         try_depth: 0,
         semantic: &semantic,
         require_bindings: require::bindings(&semantic),
+        late_import_bindings,
+        late_import_factories,
         warnings: &mut output.warnings,
         data_files: &mut output.data_files,
         static_dirs: &mut output.static_dirs,
@@ -732,6 +739,9 @@ struct SpecifierCollector<'a, 's> {
     try_depth: usize,
     semantic: &'s Semantic<'a>,
     require_bindings: BTreeSet<SymbolId>,
+    late_import_bindings: BTreeMap<SymbolId, require::LateImport>,
+    /// The constructor expressions that belong to a stable late-import binding.
+    late_import_factories: BTreeSet<Span>,
     warnings: &'s mut Vec<Warning>,
     data_files: &'s mut BTreeSet<PathBuf>,
     static_dirs: &'s mut BTreeMap<PathBuf, StaticDir>,
@@ -784,6 +794,42 @@ impl SpecifierCollector<'_, '_> {
         (identifier.name == "require" && identifier.is_global_reference(self.semantic.scoping()))
             || require::referenced_symbol(identifier, self.semantic.scoping())
                 .is_some_and(|symbol| self.require_bindings.contains(&symbol))
+    }
+
+    /// A call through a stable `Function`-built import factory names its target the
+    /// same way `import(...)` does.
+    fn late_import_call(&mut self, call: &CallExpression<'_>) {
+        let Expression::Identifier(identifier) = call.callee.without_parentheses() else {
+            return;
+        };
+        let Some(symbol) = require::referenced_symbol(identifier, self.semantic.scoping()) else {
+            return;
+        };
+        let Some(argument_index) = self
+            .late_import_bindings
+            .get(&symbol)
+            .map(|late_import| late_import.argument)
+        else {
+            return;
+        };
+        let complete = call
+            .arguments
+            .get(argument_index)
+            .and_then(Argument::as_expression)
+            .is_some_and(|argument| {
+                require::specifiers(argument, self.semantic, |specifier| {
+                    self.add(js_string(specifier), true, self.try_depth > 0, false);
+                })
+            });
+        if !complete {
+            self.warnings.push(Warning {
+                message: format!(
+                    "{}: a `Function`-built import with a non-literal argument cannot be analyzed; add computed local files with `--include <path>` (relative to the project root)",
+                    self.path.display()
+                ),
+                strict: true,
+            });
+        }
     }
 
     fn require_call(&mut self, call: &CallExpression<'_>) {
@@ -847,8 +893,27 @@ impl SpecifierCollector<'_, '_> {
 
     /// `new Function(...)`/`Function(...)` hides imports from the analyzer. Warn only
     /// when a literal body actually mentions `require`/`import`, so ordinary dynamic
-    /// expressions stay quiet.
-    fn dynamic_function(&mut self, callee: &Expression<'_>, arguments: &[Argument<'_>]) {
+    /// expressions stay quiet. A body that is only `return import(<parameter>)` is a
+    /// late-import factory instead; its stable binding and direct calls are analyzed
+    /// separately, and any other form keeps a strict warning.
+    fn dynamic_function(
+        &mut self,
+        span: Span,
+        callee: &Expression<'_>,
+        arguments: &[Argument<'_>],
+    ) {
+        if require::late_import(callee, arguments, self.semantic).is_some() {
+            if !self.late_import_factories.contains(&span) {
+                self.warnings.push(Warning {
+                    message: format!(
+                        "{}: a `Function`-built import is not confined to direct calls in this module; add the files it loads with `--include <path>` (relative to the project root)",
+                        self.path.display()
+                    ),
+                    strict: true,
+                });
+            }
+            return;
+        }
         if global_name(callee).is_none_or(|name| name != "Function") {
             return;
         }
@@ -1043,9 +1108,10 @@ impl<'a> VisitJs<'a> for SpecifierCollector<'a, '_> {
     }
 
     fn visit_call_expression(&mut self, call: &CallExpression<'a>) {
-        self.dynamic_function(&call.callee, &call.arguments);
+        self.dynamic_function(call.span, &call.callee, &call.arguments);
         self.static_asset(call);
         self.static_directory(call);
+        self.late_import_call(call);
         self.require_call(call);
         walk_js::walk_call_expression(self, call);
     }
@@ -1095,7 +1161,7 @@ impl<'a> VisitJs<'a> for SpecifierCollector<'a, '_> {
     }
 
     fn visit_new_expression(&mut self, expression: &NewExpression<'a>) {
-        self.dynamic_function(&expression.callee, &expression.arguments);
+        self.dynamic_function(expression.span, &expression.callee, &expression.arguments);
         walk_js::walk_new_expression(self, expression);
     }
 }
@@ -1773,10 +1839,136 @@ mod tests {
     }
 
     #[test]
+    fn follows_a_function_built_import_target() {
+        let factory = "const load = new Function('specifier', 'return import(specifier)');\n";
+        for source in [
+            format!("{factory}load('./late.mjs');\n"),
+            format!(
+                "export function run() {{\n  {factory}  return load('./late.mjs');\n}}\nrun();\n"
+            ),
+        ] {
+            let fs = MemoryFs::new(&[
+                ("/app/main.mjs", &source),
+                ("/app/late.mjs", "export const answer = 42;\n"),
+            ]);
+            let analysis = analyze(Path::new("/app/main.mjs"), &fs).unwrap();
+            assert!(
+                analysis.files.contains(&PathBuf::from("/app/late.mjs")),
+                "{source}: {:?}",
+                analysis.files
+            );
+            assert!(
+                analysis.warnings.is_empty(),
+                "{source}: {:?}",
+                analysis.warnings
+            );
+        }
+    }
+
+    #[test]
+    fn a_function_built_import_with_a_computed_target_warns() {
+        for argument in ["process.argv[2]", "...['./late.mjs']"] {
+            let source = format!(
+                "const load = new Function('specifier', 'return import(specifier)');\nload({argument});\n"
+            );
+            let fs = MemoryFs::new(&[("/app/main.mjs", &source)]);
+            let analysis = analyze(Path::new("/app/main.mjs"), &fs).unwrap();
+            let [warning] = analysis.warnings.as_slice() else {
+                panic!(
+                    "{source}: expected one warning, got {:?}",
+                    analysis.warnings
+                );
+            };
+            assert!(warning.strict, "{source}");
+            assert!(
+                warning.message.contains("`Function`-built import"),
+                "{source}"
+            );
+            assert!(warning.message.contains("--include"), "{source}");
+        }
+    }
+
+    #[test]
+    fn a_function_built_import_that_escapes_warns() {
+        let factory = "const load = new Function('specifier', 'return import(specifier)');\n";
+        let cases = [
+            ("alias", format!("{factory}const alias = load;\nalias('./late.mjs');\n")),
+            ("object", format!("{factory}({{ load }}).load('./late.mjs');\n")),
+            (
+                "return",
+                format!(
+                    "function get() {{\n  {factory}  return load;\n}}\nget()('./late.mjs');\n"
+                ),
+            ),
+            ("reference", format!("{factory}pass(load);\n")),
+            (
+                "inline",
+                "(new Function('specifier', 'return import(specifier)'))('./late.mjs');\n"
+                    .to_owned(),
+            ),
+            (
+                "exported declaration",
+                "export const load = new Function('specifier', 'return import(specifier)');\nload('./late.mjs');\n".to_owned(),
+            ),
+            (
+                "exported reference",
+                format!("{factory}export {{ load }};\nload('./late.mjs');\n"),
+            ),
+        ];
+        for (case, source) in cases {
+            let fs = MemoryFs::new(&[
+                ("/app/main.mjs", &source),
+                ("/app/late.mjs", "export const answer = 42;\n"),
+            ]);
+            let analysis = analyze(Path::new("/app/main.mjs"), &fs).unwrap();
+            assert!(
+                !analysis.files.contains(&PathBuf::from("/app/late.mjs")),
+                "{case}: {:?}",
+                analysis.files
+            );
+            assert!(
+                analysis
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.strict && warning.message.contains("--include")),
+                "{case}: {:?}",
+                analysis.warnings
+            );
+        }
+    }
+
+    #[test]
+    fn a_guarded_function_built_import_keeps_its_optionality() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.mjs",
+                "const load = new Function('specifier', 'return import(specifier)');\ntry { await load('./feature.mjs'); } catch {}\n",
+            ),
+            ("/app/feature.mjs", "import './nested.mjs';\n"),
+            (
+                "/app/nested.mjs",
+                "import 'optional-package-not-installed';\n",
+            ),
+        ]);
+        let analysis = analyze(Path::new("/app/main.mjs"), &fs).unwrap();
+        for path in ["/app/feature.mjs", "/app/nested.mjs"] {
+            assert!(analysis.files.contains(&PathBuf::from(path)), "{path}");
+            assert!(!analysis.required.contains(&PathBuf::from(path)), "{path}");
+        }
+        assert!(
+            analysis.warnings.iter().any(|warning| warning
+                .message
+                .contains("optional dependency `optional-package-not-installed` is missing")),
+            "{:?}",
+            analysis.warnings
+        );
+    }
+
+    #[test]
     fn warns_about_function_constructed_imports() {
         let fs = MemoryFs::new(&[(
             "/app/main.js",
-            "new Function('module', 'return import(module)');\n",
+            "new Function('module', \"return import(module + '.js')\");\n",
         )]);
         let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
         assert_eq!(analysis.warnings.len(), 1);
