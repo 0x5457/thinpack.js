@@ -961,40 +961,41 @@ impl SpecifierCollector<'_, '_> {
             return;
         };
         let expression = argument.as_expression();
+        let optional = optional || self.try_depth > 0;
         let mut resolved = Vec::new();
         let complete = expression.is_some_and(|argument| {
-            if resolve_only && let Some(specifier) = require::static_string(argument, self.semantic)
+            if resolve_only
+                && let Some(specifier) = require::static_string(argument, self.semantic)
+                && specifier.ends_with("/package.json")
             {
                 resolved.push(specifier.clone());
-                self.add(specifier, is_import, optional || self.try_depth > 0, true);
+                self.add(specifier, is_import, optional, true);
                 return true;
             }
             require::specifiers(argument, self.semantic, |specifier| {
-                resolved.push(specifier.clone());
-                self.add(
-                    specifier,
-                    is_import,
-                    optional || self.try_depth > 0,
-                    resolve_only,
-                );
-            })
+                if resolve_only {
+                    resolved.push(specifier.clone());
+                }
+                self.add(specifier, is_import, optional, resolve_only);
+            }) || self.add_constant_module_path(argument, is_import, optional, resolve_only)
         });
         if complete && resolve_only {
             self.record_manifest_binding(call, &resolved);
         }
-        if !complete {
-            if let Some(argument) = expression {
+        let static_module_dir = !optional
+            && !resolve_only
+            && expression.is_some_and(|argument| self.add_static_module_dir(argument));
+        if !complete && !static_module_dir {
+            if let Some(argument) = expression.filter(|_| !resolve_only) {
                 self.record_bin_selection(argument);
             }
-            if !expression.is_some_and(|argument| self.add_static_module_dir(argument)) {
-                self.warnings.push(Warning {
-                    message: format!(
-                        "{}: `{target}{member}(...)` with a non-literal argument cannot be analyzed. Add required built-ins with `--with <module>`, and computed local files with `--include <path>` (relative to the project root).",
-                        self.path.display()
-                    ),
-                    strict: true,
-                });
-            }
+            self.warnings.push(Warning {
+                message: format!(
+                    "{}: `{target}{member}(...)` with a non-literal argument cannot be analyzed. Add required built-ins with `--with <module>`, and computed local files with `--include <path>` (relative to the project root).",
+                    self.path.display()
+                ),
+                strict: true,
+            });
         }
     }
 
@@ -1104,6 +1105,34 @@ impl SpecifierCollector<'_, '_> {
                 strict: false,
             });
         }
+    }
+
+    /// Record a require of one constant path expression rooted away from `cwd`,
+    /// such as npm's `require(path.resolve(__dirname, 'cli/entry.js'))`. A path
+    /// that depends on `cwd` is left to the dynamic warning.
+    fn add_constant_module_path(
+        &mut self,
+        expression: &Expression<'_>,
+        is_import: bool,
+        optional: bool,
+        resolve_only: bool,
+    ) -> bool {
+        let base = self.path.parent().unwrap_or_else(|| Path::new("/"));
+        let Some(path) =
+            static_path::evaluate_rooted(module_target(expression), base, self.semantic)
+        else {
+            return false;
+        };
+        // A drive-less virtual root (`/app`) renders with backslashes on Windows;
+        // keep the leading `/` the resolver's absolute-specifier check expects.
+        let specifier = if path.has_root() && !path.is_absolute() {
+            path.to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, "/")
+        } else {
+            path.to_string_lossy().into_owned()
+        };
+        self.add(specifier, is_import, optional, resolve_only);
+        true
     }
 
     /// Record the directory named by a computed module load when the loaded
@@ -2380,6 +2409,150 @@ mod tests {
         assert!(filter.accepts(Path::new("/app/formatters/stylish.js")));
         assert!(!filter.accepts(Path::new("/app/formatters/meta.json")));
         assert!(analysis.warnings.is_empty(), "{:?}", analysis.warnings);
+    }
+
+    #[test]
+    fn follows_a_require_of_a_resolved_constant_path() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/lib/cli.js",
+                "const path = require('node:path');\nconst cliEntry = path.resolve(__dirname, 'cli/entry.js');\nmodule.exports = () => require(cliEntry);\n",
+            ),
+            ("/app/lib/cli/entry.js", "module.exports = 1;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/lib/cli.js"), &fs).unwrap();
+        assert!(
+            analysis
+                .files
+                .contains(&PathBuf::from("/app/lib/cli/entry.js")),
+            "{:?}",
+            analysis.files
+        );
+        assert!(analysis.warnings.is_empty(), "{:?}", analysis.warnings);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn follows_a_require_of_a_resolved_constant_path_on_a_windows_host() {
+        let fs = MemoryFs::new(&[
+            (
+                "C:\\app\\lib\\cli.js",
+                "const path = require('node:path');\nconst cliEntry = path.resolve(__dirname, 'cli/entry.js');\nmodule.exports = () => require(cliEntry);\n",
+            ),
+            ("C:\\app\\lib\\cli\\entry.js", "module.exports = 1;\n"),
+        ]);
+        let analysis = analyze(Path::new("C:\\app\\lib\\cli.js"), &fs).unwrap();
+        assert!(
+            analysis
+                .files
+                .contains(&PathBuf::from("C:\\app\\lib\\cli\\entry.js")),
+            "{:?}",
+            analysis.files
+        );
+        assert!(analysis.warnings.is_empty(), "{:?}", analysis.warnings);
+    }
+
+    #[test]
+    fn a_require_path_resolved_from_the_working_directory_is_left_alone() {
+        // Control for the rooted case: `path.resolve('cli/entry.js')` is relative to
+        // the process working directory, which packing does not know.
+        let fs = MemoryFs::new(&[
+            (
+                "/app/lib/cli.js",
+                "const path = require('node:path');\nrequire(path.resolve('cli/entry.js'));\n",
+            ),
+            ("/app/lib/cli/entry.js", "module.exports = 1;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/lib/cli.js"), &fs).unwrap();
+        assert!(
+            !analysis
+                .files
+                .contains(&PathBuf::from("/app/lib/cli/entry.js")),
+            "{:?}",
+            analysis.files
+        );
+        assert_eq!(analysis.warnings.len(), 1);
+        assert!(analysis.warnings[0].message.contains("non-literal"));
+    }
+
+    #[test]
+    fn a_direct_template_module_load_records_its_candidate_directory() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/lib/npm.js",
+                "const command = process.argv[2];\nmodule.exports = () => require(`./commands/${command}.js`);\n",
+            ),
+            ("/app/lib/commands/pkg.js", "module.exports = 1;\n"),
+            ("/app/lib/commands/README.md", "not a command\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/lib/npm.js"), &fs).unwrap();
+        let filter = &analysis.static_dirs[Path::new("/app/lib/commands")];
+        assert!(filter.accepts(Path::new("/app/lib/commands/pkg.js")));
+        assert!(!filter.accepts(Path::new("/app/lib/commands/README.md")));
+        assert!(analysis.warnings.is_empty(), "{:?}", analysis.warnings);
+    }
+
+    #[test]
+    fn a_direct_template_without_a_literal_extension_keeps_its_warning() {
+        // Control for the bounded directory: only a literal extension bounds the
+        // candidates the template can name.
+        let fs = MemoryFs::new(&[
+            (
+                "/app/lib/npm.js",
+                "const command = process.argv[2];\nrequire(`./commands/${command}`);\n",
+            ),
+            ("/app/lib/commands/pkg.js", "module.exports = 1;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/lib/npm.js"), &fs).unwrap();
+        assert!(
+            analysis.static_dirs.is_empty(),
+            "{:?}",
+            analysis.static_dirs
+        );
+        assert_eq!(analysis.warnings.len(), 1);
+        assert!(analysis.warnings[0].message.contains("non-literal"));
+    }
+
+    #[test]
+    fn a_resolve_only_direct_template_keeps_its_warning() {
+        // `require.resolve` only locates its target, so the candidate directory is
+        // not a module subtree to pack.
+        let fs = MemoryFs::new(&[
+            (
+                "/app/lib/npm.js",
+                "const command = process.argv[2];\nmodule.exports = require.resolve(`./commands/${command}.js`);\n",
+            ),
+            ("/app/lib/commands/pkg.js", "module.exports = 1;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/lib/npm.js"), &fs).unwrap();
+        assert!(
+            analysis.static_dirs.is_empty(),
+            "{:?}",
+            analysis.static_dirs
+        );
+        assert_eq!(analysis.warnings.len(), 1);
+        assert!(analysis.warnings[0].message.contains("non-literal"));
+    }
+
+    #[test]
+    fn a_guarded_direct_template_keeps_its_warning() {
+        // A guarded load may be absent at run time; packing the directory as a
+        // required include root would promote it to a required subtree.
+        let fs = MemoryFs::new(&[
+            (
+                "/app/lib/npm.js",
+                "const command = process.argv[2];\ntry { require(`./commands/${command}.js`); } catch {}\n",
+            ),
+            ("/app/lib/commands/pkg.js", "module.exports = 1;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/lib/npm.js"), &fs).unwrap();
+        assert!(
+            analysis.static_dirs.is_empty(),
+            "{:?}",
+            analysis.static_dirs
+        );
+        assert_eq!(analysis.warnings.len(), 1);
+        assert!(analysis.warnings[0].message.contains("non-literal"));
     }
 
     #[test]
