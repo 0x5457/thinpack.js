@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
 use oxc_ast::AstKind;
-use oxc_ast::ast::{BinaryOperator, Expression, IdentifierReference, Statement};
+use oxc_ast::ast::{Argument, BinaryOperator, Expression, IdentifierReference, Statement};
 use oxc_semantic::{IsGlobalReference, Scoping, Semantic, SymbolId};
 use oxc_str::JSStr;
 
@@ -26,6 +26,80 @@ pub(super) fn referenced_symbol(
     scoping
         .get_reference(identifier.reference_id.get()?)
         .symbol_id()
+}
+
+/// The argument index a `Function`-built import factory reads its specifier from.
+///
+/// `new Function("module", "return import(module)")` creates a function that imports
+/// its argument in the module that created it, so a literal call names a module the
+/// analyzer can follow. Only the literal body `return import(<parameter>)` is
+/// recognized; nothing in it is evaluated.
+pub(super) fn late_import(
+    callee: &Expression<'_>,
+    arguments: &[Argument<'_>],
+    semantic: &Semantic<'_>,
+) -> Option<usize> {
+    if !is_function_constructor(callee, semantic) {
+        return None;
+    }
+    let (body, parameters) = arguments.split_last()?;
+    let body = string_literal(body.as_expression()?)?;
+    let parameters = parameters
+        .iter()
+        .map(|argument| string_literal(argument.as_expression()?))
+        .collect::<Option<Vec<_>>>()?
+        .join(",");
+    let body = body.trim();
+    parameters.split(',').map(str::trim).position(|parameter| {
+        let expected = format!("return import({parameter})");
+        body == expected || body.strip_suffix(';').is_some_and(|body| body == expected)
+    })
+}
+
+/// The stable bindings (`const load = new Function(...)`) that late-import their
+/// argument, with the argument index the body reads.
+pub(super) fn late_import_bindings(semantic: &Semantic<'_>) -> BTreeMap<SymbolId, usize> {
+    semantic
+        .scoping()
+        .symbol_ids()
+        .filter_map(|symbol| {
+            let index = match initializer(symbol, semantic)? {
+                Expression::NewExpression(expression) => {
+                    late_import(&expression.callee, &expression.arguments, semantic)
+                }
+                Expression::CallExpression(call) => {
+                    late_import(&call.callee, &call.arguments, semantic)
+                }
+                _ => None,
+            }?;
+            Some((symbol, index))
+        })
+        .collect()
+}
+
+fn is_function_constructor(expression: &Expression<'_>, semantic: &Semantic<'_>) -> bool {
+    match expression.without_parentheses() {
+        Expression::Identifier(identifier) => {
+            identifier.name == "Function" && identifier.is_global_reference(semantic.scoping())
+        }
+        Expression::StaticMemberExpression(member) => {
+            member.property.name == "Function"
+                && matches!(
+                    &member.object,
+                    Expression::Identifier(object)
+                        if object.name == "globalThis"
+                            && object.is_global_reference(semantic.scoping())
+                )
+        }
+        _ => false,
+    }
+}
+
+fn string_literal<'a>(expression: &'a Expression<'a>) -> Option<&'a str> {
+    match expression.without_parentheses() {
+        Expression::StringLiteral(literal) => literal.value.as_str(),
+        _ => None,
+    }
 }
 
 enum PendingSpecifier<'a, 'e> {

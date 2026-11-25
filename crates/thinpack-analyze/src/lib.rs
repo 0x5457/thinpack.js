@@ -607,6 +607,7 @@ fn parse_specifiers(
         try_depth: 0,
         semantic: &semantic,
         require_bindings: require::bindings(&semantic),
+        late_import_bindings: require::late_import_bindings(&semantic),
         warnings,
         data_files,
         fs,
@@ -641,6 +642,7 @@ struct SpecifierCollector<'a, 's> {
     try_depth: usize,
     semantic: &'s Semantic<'a>,
     require_bindings: BTreeSet<SymbolId>,
+    late_import_bindings: BTreeMap<SymbolId, usize>,
     warnings: &'s mut Vec<Warning>,
     data_files: &'s mut BTreeSet<PathBuf>,
     fs: &'s dyn FileSystem,
@@ -692,6 +694,35 @@ impl SpecifierCollector<'_, '_> {
         (identifier.name == "require" && identifier.is_global_reference(self.semantic.scoping()))
             || require::referenced_symbol(identifier, self.semantic.scoping())
                 .is_some_and(|symbol| self.require_bindings.contains(&symbol))
+    }
+
+    /// A call through a stable `Function`-built import factory names its target the
+    /// same way `import(...)` does.
+    fn late_import_call(&mut self, call: &CallExpression<'_>) {
+        let Expression::Identifier(identifier) = call.callee.without_parentheses() else {
+            return;
+        };
+        let Some(index) = require::referenced_symbol(identifier, self.semantic.scoping())
+            .and_then(|symbol| self.late_import_bindings.get(&symbol))
+            .copied()
+        else {
+            return;
+        };
+        let Some(argument) = call.arguments.get(index).and_then(Argument::as_expression) else {
+            return;
+        };
+        let complete = require::specifiers(argument, self.semantic, |specifier| {
+            self.add(js_string(specifier), true, self.try_depth > 0, false);
+        });
+        if !complete {
+            self.warnings.push(Warning {
+                message: format!(
+                    "{}: a `Function`-built import with a non-literal argument cannot be analyzed; add computed local files with `--include <path>` (relative to the project root)",
+                    self.path.display()
+                ),
+                strict: true,
+            });
+        }
     }
 
     fn require_call(&mut self, call: &CallExpression<'_>) {
@@ -754,8 +785,12 @@ impl SpecifierCollector<'_, '_> {
 
     /// `new Function(...)`/`Function(...)` hides imports from the analyzer. Warn only
     /// when a literal body actually mentions `require`/`import`, so ordinary dynamic
-    /// expressions stay quiet.
+    /// expressions stay quiet. A body that is only `return import(<parameter>)` is a
+    /// late-import factory instead; its literal calls are analyzed separately.
     fn dynamic_function(&mut self, callee: &Expression<'_>, arguments: &[Argument<'_>]) {
+        if require::late_import(callee, arguments, self.semantic).is_some() {
+            return;
+        }
         if global_name(callee).is_none_or(|name| name != "Function") {
             return;
         }
@@ -854,6 +889,7 @@ impl<'a> VisitJs<'a> for SpecifierCollector<'a, '_> {
     fn visit_call_expression(&mut self, call: &CallExpression<'a>) {
         self.dynamic_function(&call.callee, &call.arguments);
         self.static_asset(call);
+        self.late_import_call(call);
         self.require_call(call);
         walk_js::walk_call_expression(self, call);
     }
@@ -1515,10 +1551,43 @@ mod tests {
     }
 
     #[test]
+    fn follows_a_function_built_import_target() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.mjs",
+                "const load = new Function('module', 'return import(module)');\nload('./late.mjs');\n",
+            ),
+            ("/app/late.mjs", "export const answer = 42;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.mjs"), &fs).unwrap();
+        assert!(
+            analysis.files.contains(&PathBuf::from("/app/late.mjs")),
+            "{:?}",
+            analysis.files
+        );
+        assert!(analysis.warnings.is_empty(), "{:?}", analysis.warnings);
+    }
+
+    #[test]
+    fn a_function_built_import_with_a_computed_target_warns() {
+        let fs = MemoryFs::new(&[(
+            "/app/main.mjs",
+            "const load = new Function('module', 'return import(module)');\nload(process.argv[2]);\n",
+        )]);
+        let analysis = analyze(Path::new("/app/main.mjs"), &fs).unwrap();
+        let [warning] = analysis.warnings.as_slice() else {
+            panic!("expected one warning, got {:?}", analysis.warnings);
+        };
+        assert!(warning.strict);
+        assert!(warning.message.contains("`Function`-built import"));
+        assert!(warning.message.contains("--include"));
+    }
+
+    #[test]
     fn warns_about_function_constructed_imports() {
         let fs = MemoryFs::new(&[(
             "/app/main.js",
-            "new Function('module', 'return import(module)');\n",
+            "new Function('module', \"return import(module + '.js')\");\n",
         )]);
         let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
         assert_eq!(analysis.warnings.len(), 1);
