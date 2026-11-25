@@ -259,8 +259,11 @@ for adding a module.
   X25519. DSA, DH, Ed448 and X448 keys are rejected; encrypted PKCS#1/SEC1 PEM is not
   supported (PKCS#8 encryption is).
 - WebAssembly is always available and cannot be trimmed (WAMR on QuickJS, about 217 KB).
-- ESM loader hooks run inside synchronous checkpoints, so hooks that wait on I/O fail. A hook
-  that assigns a module format is invisible to packing, which follows the `package.json` rule.
+- ESM loader hooks run inside synchronous checkpoints, so hooks that wait on I/O fail. Packing
+  does not run hooks: it analyzes the files on disk using the extension, the nearest
+  `package.json` and Node's typeless-`.js` detection, so a format, source or resolution a hook
+  supplies applies only to the running artifact. Add the hook module with `--include`; a module
+  only the hook can resolve or supply has no pack-time equivalent.
 - `/app/**` comes from the payload: `fs` reads it, writes return `EROFS`, and modules under
   it are the bundled ones; anything outside `/app` goes to the host file system, including a
   module the app computes at run time (a project ESLint config, say), as it does under Node.

@@ -98,6 +98,61 @@ mod unix {
         );
         assert!(error.contains("rename it to .mjs"), "{error}");
         assert!(error.contains("add \"type\": \"module\""), "{error}");
+        assert!(
+            error.contains("Packing does not run loader hooks"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_format_assigned_by_a_loader_hook_is_reported_at_packing() {
+        let directory = TempDir::new("hook-assigned-format");
+        fs::write(
+            directory.path().join("package.json"),
+            r#"{ "name": "hook-format", "type": "commonjs" }"#,
+        )
+        .expect("write an explicit CommonJS package manifest");
+        let entry = directory.path().join("main.mjs");
+        fs::write(
+            &entry,
+            "import Module from 'node:module';\n\
+             Module.register('./hook.mjs', import.meta.url);\n\
+             const { answer } = await import('./data.js');\n\
+             console.log(answer);\n",
+        )
+        .expect("write the entry registering a hook");
+        fs::write(
+            directory.path().join("hook.mjs"),
+            "export async function load(url, context, nextLoad) {\n\
+             \x20 if (url.endsWith('/data.js')) return nextLoad(url, { ...context, format: 'module' });\n\
+             \x20 return nextLoad(url, context);\n\
+             }\n",
+        )
+        .expect("write the loader hook");
+        fs::write(
+            directory.path().join("data.js"),
+            "import { sep } from 'node:path';\nexport const answer = sep;\n",
+        )
+        .expect("write the ES module the hook assigns a format to");
+
+        // Node runs this: the hook assigns `module` before the default loader reads
+        // data.js. Packing reads the on-disk format, so it fails and says so.
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            directory.path(),
+            &entry,
+            &["--list-capabilities"],
+        );
+        assert!(!result.status.success(), "packed a hook-assigned format");
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            error.contains("data.js: uses ES module syntax but is loaded as CommonJS"),
+            "{error}"
+        );
+        assert!(
+            error.contains("Packing does not run loader hooks"),
+            "{error}"
+        );
     }
 
     #[test]
