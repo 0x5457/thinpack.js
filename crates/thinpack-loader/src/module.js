@@ -181,11 +181,31 @@
   };
   let mainModule = null;
 
+  let moduleGlobalPaths;
+  const moduleGlobalPathsNow = () =>
+    moduleGlobalPaths ??= ops.op_module_global_paths().split("\0").filter(Boolean);
+  const lookupPaths = (request, parent) => {
+    if (typeof request !== "string") {
+      const { codes } = globalThis.__thinpack_require__(
+        "node:thinpack/internal/errors",
+      );
+      throw new codes.ERR_INVALID_ARG_TYPE("request", "string", request);
+    }
+    const reply = ops.op_module_lookup_paths(
+      request,
+      parent,
+      moduleGlobalPathsNow().join("\0"),
+    );
+    return reply === "n" ? null : reply.slice(2).split("\0");
+  };
+
   const makeRequire = (filename, stack) => {
     const require = function require(specifier) {
       return load(specifier, filename, stack);
     };
-    require.resolve = (specifier) => ops.op_require_resolve(specifier, filename);
+    const resolve = (specifier) => ops.op_require_resolve(specifier, filename);
+    resolve.paths = (request) => lookupPaths(request, filename);
+    require.resolve = resolve;
     require.extensions = extensions;
     require.cache = cache;
     require.main = mainModule ?? undefined;
@@ -225,6 +245,18 @@
   });
   Object.defineProperty(globalThis, "__thinpack_create_require__", {
     value: (filename) => makeRequire(String(filename), []),
+  });
+  Object.defineProperty(globalThis, "__thinpack_module_lookup_paths__", {
+    value: lookupPaths,
+  });
+  Object.defineProperty(globalThis, "__thinpack_module_global_paths__", {
+    value: moduleGlobalPathsNow,
+  });
+  Object.defineProperty(globalThis, "__thinpack_module_init_paths__", {
+    value: () => {
+      moduleGlobalPaths = undefined;
+      return moduleGlobalPathsNow();
+    },
   });
   Object.defineProperty(globalThis, "__thinpack_require__", {
     value: (specifier) => load(specifier, "", []),

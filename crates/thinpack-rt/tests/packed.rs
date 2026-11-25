@@ -158,9 +158,80 @@ assert.deepEqual(
     absolute: '/app/main.js',
   },
 );
+
+// Node answers null only for a built-in, including built-ins that this template
+// does not contain. `test` is a package name; Node exposes that built-in as
+// `node:test`.
+assert.equal(require.resolve.paths('fs'), null);
+assert.equal(require.resolve.paths('node:fs'), null);
+assert.equal(require.resolve.paths('node:test'), null);
+assert.notEqual(require.resolve.paths('test'), null);
+assert.notEqual(require.resolve.paths('node:missing'), null);
+
+// Relative requests look in their own directory; bare and absolute requests
+// walk node_modules to the root and then the global paths.
+assert.deepEqual(require.resolve.paths('./main.js'), ['/app']);
+assert.deepEqual(require.resolve.paths('../app/main.js'), ['/app']);
+const lookup = require.resolve.paths('lodash');
+assert.deepEqual(lookup.slice(0, 2), ['/app/node_modules', '/node_modules']);
+assert.ok(lookup.length > 2);
+
+assert.throws(() => require.resolve.paths(), { code: 'ERR_INVALID_ARG_TYPE' });
+assert.throws(() => require.resolve.paths(null), { code: 'ERR_INVALID_ARG_TYPE' });
 ",
         )],
         capabilities: &["assert"],
+        error: None,
+    },
+    PackedTest {
+        name: "packed::module-global-paths",
+        directory: "module-global-paths",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r"
+const assert = require('node:assert/strict');
+const Module = require('node:module');
+const path = require('node:path');
+
+assert.ok(Array.isArray(Module.globalPaths));
+assert.ok(Module.globalPaths.length > 0);
+assert.ok(Module.globalPaths.every((entry) => typeof entry === 'string'));
+const prefix = process.platform === 'win32'
+  ? path.resolve(process.execPath, '..')
+  : path.resolve(process.execPath, '..', '..');
+assert.equal(Module.globalPaths.at(-1), path.resolve(prefix, 'lib', 'node'));
+
+// Module.globalPaths is a mutable introspection copy; resolving reads the
+// internal paths, as Node does.
+const lookup = require.resolve.paths('lodash');
+assert.deepEqual(lookup.slice(-Module.globalPaths.length), Module.globalPaths);
+const original = Module.globalPaths;
+Module.globalPaths = ['/custom'];
+assert.deepEqual(
+  require.resolve.paths('lodash').slice(-original.length),
+  original,
+);
+Module._initPaths();
+assert.deepEqual(Module.globalPaths, original);
+
+// createRequire scopes the lookup to the file it names.
+const custom = Module.createRequire('/app/sub/main.js');
+assert.deepEqual(custom.resolve.paths('./x'), ['/app/sub']);
+assert.deepEqual(custom.resolve.paths('../x'), ['/app/sub']);
+assert.deepEqual(
+  custom.resolve.paths('lodash').slice(0, 3),
+  ['/app/sub/node_modules', '/app/node_modules', '/node_modules'],
+);
+assert.deepEqual(
+  custom.resolve.paths('lodash').slice(-original.length),
+  original,
+);
+assert.equal(custom.resolve.paths('fs'), null);
+console.log('module global paths ok');
+",
+        )],
+        capabilities: &["assert", "module"],
         error: None,
     },
     PackedTest {
