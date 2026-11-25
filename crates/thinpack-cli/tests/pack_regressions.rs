@@ -404,6 +404,56 @@ mod unix {
     }
 
     #[test]
+    fn a_dirname_relative_asset_is_packed() {
+        let directory = TempDir::new("static-asset");
+        let entry = directory.path().join("main.js");
+        fs::write(
+            &entry,
+            "const fs = require('node:fs');\nconst path = require('node:path');\nfs.readFileSync(path.join(__dirname, 'data.css'), 'utf8');\n",
+        )
+        .expect("write entry reading a sibling asset");
+        fs::write(directory.path().join("data.css"), "body {}\n").expect("write the asset");
+
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let output = directory.path().join("packed-app");
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            directory.path(),
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+            ],
+        );
+        assert!(
+            result.status.success(),
+            "pack failed:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+
+        let pack = thinpack_pack::read_from_executable(&output)
+            .expect("read packed executable")
+            .expect("packed payload");
+        assert!(
+            pack.manifest
+                .files
+                .iter()
+                .any(|file| file.path == "/app/data.css"),
+            "asset was not packed: {:?}",
+            pack.manifest
+                .files
+                .iter()
+                .map(|file| &file.path)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn a_symlinked_package_manifest_is_packed() {
         let directory = TempDir::new("symlinked-package-manifest");
         let project = directory.path().join("project");
