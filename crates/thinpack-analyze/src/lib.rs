@@ -14,7 +14,7 @@ use oxc_ast::ast::{
 
 use oxc_ast_visit::{VisitJs, walk_js};
 use oxc_parser::Parser;
-use oxc_semantic::{Semantic, SemanticBuilder, SymbolId};
+use oxc_semantic::{IsGlobalReference, Semantic, SemanticBuilder, SymbolId};
 use oxc_span::SourceType;
 use thinpack_resolve::{FileSystem, Format};
 
@@ -493,7 +493,9 @@ impl SpecifierCollector<'_, '_> {
     }
 
     fn is_require_binding(&self, identifier: &IdentifierReference<'_>) -> bool {
-        identifier.name == "require"
+        // A parameter or local `require` shadows the runtime one; only the ambient
+        // binding (or a createRequire result) is a dependency edge.
+        (identifier.name == "require" && identifier.is_global_reference(self.semantic.scoping()))
             || require::referenced_symbol(identifier, self.semantic.scoping())
                 .is_some_and(|symbol| self.require_bindings.contains(&symbol))
     }
@@ -981,6 +983,16 @@ mod tests {
             "{:?}",
             analysis.warnings
         );
+    }
+
+    #[test]
+    fn a_shadowed_require_is_not_a_dependency() {
+        let fs = MemoryFs::new(&[(
+            "/app/main.js",
+            "(function (require) { return require('./bundle-only.cjs'); })(() => 42);\n",
+        )]);
+        let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
+        assert_eq!(analysis.files, vec![PathBuf::from("/app/main.js")]);
     }
 
     #[test]
