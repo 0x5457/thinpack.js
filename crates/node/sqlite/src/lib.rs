@@ -36,6 +36,8 @@ mod modules;
 
 mod ops;
 
+mod resources;
+
 mod session;
 
 use std::borrow::Cow;
@@ -43,7 +45,7 @@ use std::borrow::Cow;
 use deno_core::{Extension, ExtensionFileSource};
 
 use crate::callbacks::Pending;
-use crate::ops::Handles;
+use crate::resources::Resources;
 
 #[must_use]
 pub fn init() -> Extension {
@@ -58,7 +60,7 @@ pub fn init() -> Extension {
         ops: Cow::Borrowed(ops::OPS),
         lazy_loaded_js_files: Cow::Borrowed(BUILTINS),
         op_state_fn: Some(Box::new(|state| {
-            state.put(Handles::default());
+            state.put(Resources::default());
             state.put(Pending::default());
         })),
         ..Default::default()

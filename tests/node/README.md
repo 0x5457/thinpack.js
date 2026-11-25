@@ -159,6 +159,7 @@ Not ported yet: `assert`, `async_hooks`, `child_process`, `constants`,
 `test-thinpack-async-resource.js` cases cover async-local propagation through
 promises and timers and `AsyncResource` scoping. They are not upstream ports,
 and the upstream files remain unported.
+SQLite has one local resource-lifecycle regression; its upstream suite is not ported.
 
 ## Cluster notes
 

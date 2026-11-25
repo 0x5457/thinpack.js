@@ -1377,6 +1377,9 @@ module = "util"
 [tests."parallel/test-thinpack-event-target.js"]
 module = "events"
 
+[tests."parallel/test-thinpack-sqlite-resource-lifecycle.mjs"]
+module = "sqlite"
+
 [tests."parallel/test-thinpack-cjs-reexport-alias-cycle.mjs"]
 module = "module"
 timeout_ms = 5000
