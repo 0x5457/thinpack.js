@@ -1451,6 +1451,12 @@ module = "dgram"
 [tests."parallel/test-thinpack-dgram-close-rebind.js"]
 module = "dgram"
 
+[tests."parallel/test-thinpack-dgram-connect-callback-once.js"]
+module = "dgram"
+
+[tests."parallel/test-thinpack-dgram-reconnect-payload.js"]
+module = "dgram"
+
 [tests."parallel/test-dgram-connect-send-callback-buffer.js"]
 module = "dgram"
 

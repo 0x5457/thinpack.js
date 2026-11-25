@@ -302,26 +302,65 @@ fn op_dgram_disconnect(state: &OpState, id: u32) -> Result<(), JsErrorBox> {
     disconnect(&socket_of(state, id)?.socket).map_err(io_error)
 }
 
+/// libuv's `uv__udp_disconnect` treats `EAFNOSUPPORT` and `EINVAL` as success on BSD
+/// and QNX: some kernels drop the peer before reporting that the `AF_UNSPEC`
+/// address is unsupported.
+#[cfg(unix)]
+const DISCONNECT_ERRORS_DROP_PEER: bool = cfg!(any(
+    target_vendor = "apple",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly",
+    target_os = "nto",
+));
+
 #[cfg(unix)]
 fn disconnect(socket: &UdpSocket) -> io::Result<()> {
     use std::os::fd::AsRawFd;
 
     // `connect` to AF_UNSPEC is how libuv's uv__udp_disconnect drops a UDP peer.
-    // SAFETY: `socket` owns an open descriptor; an all-zero `sockaddr_storage` with
-    // only `ss_family = AF_UNSPEC` is the documented disconnect form.
-    let address: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
-    // SAFETY: `address` is a valid `sockaddr_storage` and the length describes it.
-    let result = unsafe {
-        libc::connect(
-            socket.as_raw_fd(),
-            (&raw const address).cast(),
-            socklen_of::<libc::sockaddr_storage>(),
-        )
+    // The address is a bare `sockaddr`, not `sockaddr_storage`: the BSDs compare
+    // the caller's length against the connected address and libuv passes 16 bytes.
+    // SAFETY: an all-zero `sockaddr` is a valid value; the family is set below.
+    let mut address: libc::sockaddr = unsafe { std::mem::zeroed() };
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "AF_UNSPEC is zero, which fits every `sa_family_t`"
+    )]
+    let family = libc::AF_UNSPEC as libc::sa_family_t;
+    address.sa_family = family;
+
+    let result = loop {
+        // SAFETY: `socket` owns an open descriptor, and `address` is a correctly
+        // sized `sockaddr` whose family is AF_UNSPEC.
+        let result = unsafe {
+            libc::connect(
+                socket.as_raw_fd(),
+                &raw const address,
+                socklen_of::<libc::sockaddr>(),
+            )
+        };
+        if result == 0 {
+            break Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::EINTR) {
+            break Err(error);
+        }
     };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
+
+    match result {
+        Err(error)
+            if DISCONNECT_ERRORS_DROP_PEER
+                && matches!(
+                    error.raw_os_error(),
+                    Some(libc::EAFNOSUPPORT | libc::EINVAL)
+                ) =>
+        {
+            Ok(())
+        }
+        result => result,
     }
 }
 
