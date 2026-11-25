@@ -28,8 +28,8 @@ pub struct Warning {
 pub struct Analysis {
     pub files: Vec<PathBuf>,
     /// Every file the entry reaches without crossing an optional edge: a guarded
-    /// `require`, or an `import()` (a rejected `import()` never fails the pack; the
-    /// app must handle it). Always a subset of `files`; `merge` preserves that.
+    /// `require`/`import()` (inside `try`) or an `optionalDependencies` entry. Always a
+    /// subset of `files`; `merge` preserves that.
     pub required: BTreeSet<PathBuf>,
     /// The `package.json` files the resolver and [`thinpack_resolve::format_of`] read
     /// while analyzing. The loader reads the same ones at run time, so the payload
@@ -479,10 +479,6 @@ impl SpecifierCollector<'_, '_> {
         self.add(specifier, is_import, self.try_depth > 0);
     }
 
-    fn add_optional_specifier(&mut self, specifier: String, is_import: bool) {
-        self.add(specifier, is_import, true);
-    }
-
     fn add(&mut self, specifier: String, is_import: bool, optional: bool) {
         self.specifiers
             .entry((specifier, is_import))
@@ -578,7 +574,7 @@ impl<'a> VisitJs<'a> for SpecifierCollector<'a, '_> {
     fn visit_import_expression(&mut self, expression: &ImportExpression<'a>) {
         match &expression.source {
             Expression::StringLiteral(literal) => {
-                self.add_optional_specifier(js_string(literal.value), true);
+                self.add_specifier(js_string(literal.value), true);
             }
             _ => self.warnings.push(Warning {
                 message: format!(
@@ -965,6 +961,26 @@ mod tests {
         assert_eq!(analysis.warnings.len(), 1);
         assert!(analysis.warnings[0].message.contains("non-literal"));
         assert!(analysis.warnings[0].strict);
+    }
+
+    #[test]
+    fn dynamic_import_is_required_unless_guarded() {
+        let fs = MemoryFs::new(&[("/app/main.js", "import('./missing.js');\n")]);
+        assert!(matches!(
+            analyze(Path::new("/app/main.js"), &fs),
+            Err(Error::Resolve { .. })
+        ));
+
+        let fs = MemoryFs::new(&[("/app/main.js", "try { import('./missing.js'); } catch {}\n")]);
+        let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
+        assert!(
+            analysis
+                .warnings
+                .iter()
+                .any(|warning| warning.message.contains("optional dependency")),
+            "{:?}",
+            analysis.warnings
+        );
     }
 
     #[test]
