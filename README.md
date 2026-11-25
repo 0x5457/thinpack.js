@@ -4,28 +4,24 @@
 
 <h1 align="center">thinpack.js</h1>
 
-<p align="center">Ship a Node.js CLI as one executable. Users can run it without installing Node.js, Bun, or npm.</p>
+<p align="center">Pack a Node.js program into a single executable. No separate Node.js, Bun, or npm install is needed to run it.</p>
 
-<p align="center">
-  <a href="https://github.com/0x5457/thinpack.js/actions/workflows/ci.yml"><img src="https://github.com/0x5457/thinpack.js/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
-</p>
+<p align="center"><b>English</b> | <a href="README.zh-CN.md">简体中文</a></p>
 
-In the [Linux x86-64 benchmark](#compared-with-other-single-file-approaches), TypeScript's `tsc` packed to **9.0 MiB** with Thinpack versus **109.6 MiB** with Bun `--compile`. Thinpack used a QuickJS runtime rebuilt for the app. The ready-made runtime is larger; QuickJS trades startup speed for a smaller executable.
+[![CI](https://github.com/thinpack-js/thinpack.js/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/thinpack-js/thinpack.js/actions/workflows/ci.yml)
 
 ## Quick start
 
 On macOS or Linux, run this in a new directory:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/0x5457/thinpack.js/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/thinpack-js/thinpack.js/main/scripts/install.sh | sh
 printf '%s\n' 'console.log("Hello from Thinpack!")' > hello.js
 "$HOME/.local/bin/thinpack" pack hello.js -o hello
 ./hello
 ```
 
-You should see `Hello from Thinpack!`. Replace `hello.js` with your CLI's entry point and pack on the target OS and architecture. Only the output executable goes to your users. Keep `thinpack` and `thinpack-rt` together on the machine doing the packing.
-
-On Windows x86-64, extract the matching release archive and run these commands in the extracted directory:
+On Windows x64, extract the [matching release archive](https://github.com/thinpack-js/thinpack.js/releases/latest), then run this in the extracted directory:
 
 ```powershell
 'console.log("Hello from Thinpack!")' | Set-Content -Encoding Ascii hello.js
@@ -33,265 +29,15 @@ On Windows x86-64, extract the matching release archive and run these commands i
 .\hello.exe
 ```
 
-## Downloads and runtime choices
+Both print `Hello from Thinpack!`. Replace `hello.js` with your app's entry point. Pack for the target OS and architecture. Keep `thinpack` and its runtime template together on the build machine; ship just the output executable.
 
-The installer fetches the [latest published release](https://github.com/0x5457/thinpack.js/releases/latest), not a build of `main`. Check the release assets for your OS, architecture, and backend. Archives can be checked against `SHA256SUMS`. Set `THINPACK_INSTALL_DIR` to change the install directory or `THINPACK_VERSION` to pin a published release.
+## Size and compatibility
 
-`thinpack-release.toml` lists every archive with its backend, target and, for the glibc builds, the oldest glibc it needs. `cargo xtask dist` measures that floor from the binaries, and the installer reads the file to choose an archive this host can run.
+In a [Linux x64 benchmark](docs/benchmarks.md), `tsc` packed to **9.0 MiB** with Thinpack and **109.6 MiB** with Bun `--compile`. Thinpack used QuickJS with `--rebuild` to link only the needed built-ins. The prebuilt template is larger, and QuickJS can trade startup speed for size.
 
-QuickJS is the default. For releases that contain matching archives:
+Thinpack supports many Node.js APIs, but it is not a drop-in replacement for Node.js. It does not load native Node addons. Use `--include <path>` to package extra files or computed local imports; paths are relative to the project root. Verify important commands on every platform you ship.
 
-- **Static Linux (QuickJS):** `THINPACK_STATIC=1` selects the musl archive for older Linux distributions. Its resolver reads `/etc/hosts` and `/etc/resolv.conf`; no NSS or mDNS.
-- **V8:** `THINPACK_BACKEND=v8` selects a `-v8-` archive. There is no static V8 build, so V8 on Linux needs a glibc host.
-- **JavaScriptCore:** `THINPACK_BACKEND=jsc` selects a `-jsc-` archive on macOS. It uses the system framework and has [module compatibility limits](#known-limits).
-
-The prebuilt runtime carries all built-ins. To reproduce the smaller `--rebuild` artifacts in the benchmark, use a matching source checkout and a build toolchain:
-
-```sh
-thinpack pack hello.js -o hello --rebuild --source /path/to/thinpack.js
-```
-
-Thinpack uses `oxc` to trace imports and links only the required built-ins into the rebuilt runtime, then appends the app's sources and assets.
-
-## Build from source
-
-Requires Rust 1.99.1 (pinned by `rust-toolchain.toml`), a C toolchain and CMake.
-
-```sh
-cargo build --release -p thinpack-rt -p thinpack-cli
-./target/release/thinpack pack examples/hello.js -o hello
-./hello
-```
-
-`cargo xtask dist` builds the release archive for the host and verifies it by packing and running
-`examples/hello.js` from the staged pair. It writes the archive's `thinpack-release.toml` fragment
-next to it; the release workflow concatenates the fragments into the manifest the installer reads.
-
-## Commands
-
-| Command / option | Effect |
-| --- | --- |
-| `pack <entry> [-o <out>]` | analyze the module graph, trim capabilities, write a single-file artifact |
-| `run <entry> [-- <args>...]` | run with a matching template without packing |
-| `templates` | list the template cache |
-| `capabilities` | list the module names accepted by this CLI |
-| `--template <path>` | use the given runtime template |
-| `--backend <quickjs\|v8\|jsc>` | pick the template backend, `quickjs` by default; `jsc` is macOS-only |
-| `--rebuild` `--source <checkout>` | build a template for this app's own capability set and cache it |
-| `--asset <key>=<path>` | embed an asset, readable through `node:sea` |
-| `--include <path>` | pack extra files (`.d.ts`, templates, computed imports); paths are relative to the project root, and JavaScript and TypeScript are analyzed too |
-| `--with <module>` `--without <module>` | override the derived capability set. Both accept comma-separated lists or repeated flags. |
-| `--allow-missing <package>` | pack despite a missing package (it becomes a warning); use only for dependencies an inactive feature branch loads |
-| `--conditions <name>` | add custom `exports`/`imports` conditions, like Node's `--conditions`; the payload records them for runtime resolution |
-| `--strict` | a `require`/`import` that cannot be statically evaluated is an error; missing optional dependencies only warn |
-| `--list-capabilities` | print the derived capability set and exit |
-
-The CLI checks the template API before packing, and the runtime verifies the payload's version,
-backend and capability-set hash at startup. Templates live under `$THINPACK_CACHE` (then `$XDG_CACHE_HOME/thinpack`, then
-`~/.cache/thinpack`) as `templates/<version>/<backend>/<caps-hash>`, and resolve `--template` →
-`--rebuild` → exact hit → smallest superset → the `thinpack-rt` next to the CLI. `--rebuild`
-comes before the cache so an app always packs against its own closure and uses QuickJS by default.
-For ordinary packing, `--backend` takes precedence over the backend of an installed template.
-When no matching installed template is available and the cache has both backends, pass `--backend`.
-
-The analyzer follows conditional `require` calls when both branches name modules. For module names
-supplied at runtime, use `--with` to include the required built-ins explicitly. `--strict` makes
-unresolved dynamic requests an error during packing.
-
-Compiled module bytecode is cached under `<cache-root>/bytecode`, which makes a warm start
-about 29% faster (pi: 983 ms → 702 ms); `V82JSC_NO_BC_CACHE=1` disables it, and
-`--warm-cache` pre-compiles the payload's modules at deploy time without running app code.
-
-### Module format
-
-Entry and dependency formats follow Node.js: `.mjs` is an ES module, `.cjs` is CommonJS, and a
-`.js` file is CommonJS unless the nearest `package.json` declares `"type": "module"`. A `.js`
-file in a package without a `type` that contains ESM syntax is detected as an ES module at pack
-time, with a warning that names the file and suggests `"type": "module"`; the detected format is
-recorded in the payload so the loader agrees. If the package explicitly declares
-`"type": "commonjs"`, the file still fails at pack time: the error names the file and both
-remedies — rename it to `.mjs` or add `"type": "module"` — and the mirror case points at `.cjs`
-and at removing the declaration. `.cjs` and `.mjs` fix their format by extension and keep the
-parser's own diagnostic. The runtime keeps the same check for modules that reach it another way.
-
-TypeScript follows the same format rules: `.mts` and `.cts` fix the format, and `.ts` reads the
-package scope like `.js`. Packing strips the types with Node's strip-only pass (the SWC engine
-behind `amaro`), so the executable carries JavaScript and links no TypeScript parser. Only
-erasable syntax is accepted: `enum`, `namespace`, parameter properties, `import x = require()`,
-`export =` and `.tsx` fail at pack time, as they do in Node without
-`--experimental-transform-types`. TypeScript under `node_modules` is not stripped either: Node
-refuses it with `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`, so packing rejects it instead of
-building an artifact that behaves differently. TypeScript outside the payload is not stripped at
-run time.
-
-## Size
-
-Small profile, stripped, on Linux x86_64. `gzip -9` is the same file after maximum
-compression: the transfer size, not a format the runtime executes.
-
-| Backend | Core (no built-in modules) | All modules |
-| --- | ---: | ---: |
-| QuickJS | 5,451,616 B (5.20 MiB), gzip 2,323,704 B (2.22 MiB) | 12,169,792 B (11.61 MiB), gzip 5,776,622 B (5.51 MiB) |
-| V8 | 48,049,288 B (45.82 MiB), gzip 17,653,560 B (16.84 MiB) | 54,787,208 B (52.25 MiB), gzip 21,132,769 B (20.15 MiB) |
-
-An artifact is this profile plus its payload (`pack --rebuild` builds with the same flags), so
-it follows the capability closure the app resolves. The Node.js sources are embedded
-brotli-compressed (`thinpack_js::js!`): 2.0 MB of JavaScript costs 0.43 MB of template and a
-few milliseconds per start. Measured with `cargo xtask size` (build, strip, measure, write
-`measurements/`).
-
-The app numbers below are the recording from `71dc765`. `cargo xtask apps` measures the
-same apps from the pinned fixtures in `tests/apps/`, packs each with its own capability
-closure, and holds the artifact and its gzip size to `tests/apps/baseline.toml` — the current
-sizes. The Size workflow runs it on main, weekly, and on a pull request labelled `size`;
-growth beyond 1% fails the run, and an intentional change re-records the baseline with
-`cargo xtask apps --write-baseline`.
-
-## Compared with other single-file approaches
-
-Same app (`@earendil-works/pi-coding-agent@1.5.0`, 2,377 modules, 16.5 MB of sources),
-Linux x86_64, peak RSS in MB:
-
-| Approach | Artifact | gzip | Peak RSS | Runs |
-| --- | ---: | ---: | ---: | --- |
-| thinpack (QuickJS, 34 capabilities) | 12.42 MiB | 7.16 MiB | 104 | yes |
-| bun 1.4.4 `build --compile` | 115.24 MiB | 51.30 MiB | 84–91 | yes |
-| Node 26.8.1 SEA (esbuild CJS blob) | 157.75 MiB | 46.94 MiB | — | no |
-
-Both alternatives are runtime-dominated — 102 MiB and 143.5 MiB of engine — so their artifact
-barely follows the app, while thinpack's payload is 2.6 MiB of compressed sources. Startup is
-about 4× slower (pi `--help`: 777 ms against bun's 192 ms) because QuickJS parses slower; the
-SEA artifact dies in `fileURLToPath(import.meta.url)` before `main`.
-
-### Other CLIs
-
-Each app gets a template for its own closure (`pack --rebuild`) from the entry the package
-ships as its `bin`; for `pi` that is the statically linked `dist/cli.js`, because its `bin`
-launcher hands off to an ES module bundle. bun gets the `bin` entry, SEA an esbuild
-`--bundle --format=cjs` blob injected with postject. Sizes in MiB (gzip), startup for
-`--version` as cold/warm median of seven runs:
-
-| Program | thinpack | bun | Node SEA | thinpack startup | SEA startup |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `typescript@5.9.3` (`tsc`) | 9.00 (5.65) | 109.63 (50.19) | 149.82 (45.35) | 578 / 347 ms | 77 ms |
-| `prettier@3.10.1` | 7.41 (4.14) | 110.04 (50.85) | 143.57 (44.32) | 235 / 155 ms | — |
-| `eslint@10.15.0` | 6.93 (3.60) | 107.15 (49.78) | 147.25 (44.96) | 288 / 186 ms | 64 ms |
-| `terser@5.51.2` | 6.06 (2.91) | 105.38 (49.48) | 144.94 (44.57) | 226 / 145 ms | 35 ms |
-| `js-yaml@5.5.0` | 5.80 (2.69) | 104.29 (49.28) | 143.75 (44.37) | 150 / 100 ms | — |
-| `pi-coding-agent@1.5.0` | 12.42 (7.16) | 115.24 (51.30) | 157.75 (46.94) | 983 / 702 ms | — |
-
-The SEA binaries start 4–8× faster at ~13–25× the size. thinpack runs all six as shipped
-(`tsc` and `prettier` need `--include` for their `lib`/`internal` files). bun needs a copy of
-`bin/tsc` and `bin/terser` named `*.js`, `--external jiti` for `eslint` and a wrapper for
-`prettier`, but `bun <entry>` runs all six unchanged — the limit is `--compile`'s static
-analysis. The SEA blob has no `import.meta` and resolves `import()` against built-ins only, so
-only `terser` works; `tsc` and `eslint` print `--version` but cannot do their job, and
-`prettier`, `js-yaml` and `pi` fail while loading.
-
-## Built-in modules
-
-Ambient (every template): `console`, `process`, `timers`, `buffer`, `url`, plus `util` because
-`console` formats through it.
-
-On demand: `assert`, `async_hooks`, `child_process`, `constants`, `crypto`,
-`diagnostics_channel`, `dns`, `events`, `fetch`, `ffi`, `fs`, `http`, `http2`, `https`,
-`inspector`, `module`, `net`, `os`, `path`, `perf_hooks`, `querystring`, `readline`, `sea`,
-`sqlite`, `stream`, `string_decoder`, `test`, `tls`, `tty`, `util`, `v8`, `vm`, `worker_threads`,
-`zlib`.
-Subpaths (`fs/promises`, `stream/web`, `path/posix`, `util/types`, …) ship with their module.
-
-`http2` and `sqlite` are optional: a package probing for them does not fail the pack. A module
-that was not compiled in throws `ERR_UNKNOWN_BUILTIN_MODULE` on `require`, matching Node.
-
-## Architecture
-
-```text
-crates/
-  thinpack-core/     engine lifecycle, event loop, backend selection
-  thinpack-caps/     capability table (generated from capabilities.toml, engine-free)
-  thinpack-resolve/  Node resolution algorithm (over FileSystem, shared by compile and run time)
-  thinpack-loader/   CJS and ESM module system
-  thinpack-analyze/  oxc static analysis: module graph and capability closure
-  thinpack-pack/     payload format: manifest, compression, trailer
-  thinpack-vfs/      virtual file system of an artifact (virtual root /app)
-  thinpack-io/       shared stdio ops
-  thinpack-child/    spawned-process table and stdio pipes shared by child_process and cluster
-  thinpack-js/       proc macro: brotli-compress the embedded JavaScript at build time
-  thinpack-node-internals/  vendored Node internals: primordials, errors, inspect, encoding bindings
-  thinpack-cli/      the thinpack CLI, links no JS engine
-  thinpack-rt/       the thinpack-rt runtime binary
-  node/<name>/       one crate per Node built-in module
-vendor/              patched copies of upstream crates (deno_core, deno_ffi, deno_v8, v8x)
-```
-
-The engine appears only in `thinpack-core`; module crates declare their own
-`deno_core::Extension` and never depend on a backend; `capabilities.toml` is the single source
-of module metadata, and `cargo xtask gen` generates the module table and the feature blocks.
-A capability that needs per-isolate state receives `thinpack_core::IsolateInputs` in its
-initializer; the packed FS mount and the FFI engine use that path.
-
-## Development
-
-```sh
-cargo test
-cargo test -p thinpack-rt --test node   # Node.js compatibility suite
-cargo xtask gen --check                 # are generated files stale?
-cargo xtask lint                        # fmt + clippy, the commit gate
-cargo xtask size                        # build, strip, measure, record
-cargo xtask apps                        # pack tests/apps, check the size baseline
-cargo xtask dist                        # build, verify and archive a release
-```
-
-The compatibility suite ports Node.js' own tests unchanged and records known skips in
-`tests/node/config.toml`; `tests/node/README.md` covers the layout, filters and the procedure
-for adding a module.
-
-## Known limits
-
-- No full Intl data, no Temporal, no inspector protocol, no native backtraces;
-  `Intl.Segmenter` on QuickJS is a lazy fallback implementation.
-- The `jsc` template is macOS-only. It has no bundled engine: it runs on the system
-  `JavaScriptCore.framework`. Its ES module support is a source rewriter aimed at flattened
-  bundles; packed apps keep their file boundaries, so live bindings, cycles and namespace edge
-  cases may differ from the QuickJS and V8 templates, and import attributes are unsupported.
-- `fetch`, `WebSocket` and their types are Node's own undici, vendored from
-  `deps/undici/undici.js`, so they behave as Node does; `EventSource`, `MessageEvent`,
-  `CloseEvent` and `ErrorEvent` are absent. `Blob`, `File` and `reportError` are present.
-  The bundle belongs to the `fetch` capability: an HTTP-only pack carries only the llhttp
-  wasm payload extracted into `node:http`, not the bundle, while a
-  `fetch` or `WebSocket` reference pulls the same sixteen-module closure and decodes the
-  bundle at startup. Omitting the capability omits both globals. `docs/gaps.md` records what
-  remains different.
-- No N-API or native addon loading; code that needs native code goes through `node:ffi`.
-- `crypto` key material covers RSA/RSA-PSS, EC (P-256/P-384/P-521/secp256k1), Ed25519 and
-  X25519. DSA, DH, Ed448 and X448 keys are rejected; encrypted PKCS#1/SEC1 PEM is not
-  supported (PKCS#8 encryption is).
-- WebAssembly is always available and cannot be trimmed (WAMR on QuickJS, about 217 KB).
-- The analyzer does not run ESM loader hooks. It determines formats from the file extension,
-  package scope and syntax on disk. A hook cannot make a module analyzable or add it to the
-  payload. To include a hook file inside the project, use `pack --include`. At runtime,
-  `module.register` hooks run in their own loader isolate, as Node's loader thread does, so
-  they may await I/O; the isolate has the app's capabilities and payload but its own globals.
-  `module.registerHooks` stays synchronous on the app's isolate, and `require()` (including
-  `require(esm)`) does not use the asynchronous hooks.
-- `/app/**` comes from the payload: `fs` reads it, writes return `EROFS`, and modules under
-  it are the bundled ones; anything outside `/app` goes to the host file system, including a
-  module the app computes at run time (a project ESLint config, say), as it does under Node.
-- The payload is rooted at the entry's nearest `package.json`. A required dependency resolved
-  above that root (a hoisted monorepo install) fails the pack; an optional one is left out with
-  a warning, and the app must handle its absence.
-- Resolution is lexical, i.e. Node's `--preserve-symlinks` semantics: the payload records the
-  path a symlink names, so `__dirname`, `require.resolve` and a linked package's own dependency
-  lookup see the link location rather than the real path. Run Node with `--preserve-symlinks`
-  when comparing a pnpm/workspace layout.
-- The artifact's `process.argv` is `[execPath, invoked path, ...args]` (same shape as Node
-  SEA); the only runtime switch is `--warm-cache`, every other argument goes to the app.
-- `require.extensions` handlers are invoked for required files (a custom handler replaces the
-  default compile/parse path); `require.main` and `require.cache` are available. See
-  `docs/gaps.md` for the recorded gaps.
-
-## License
-
-MIT. The vendored Node.js sources are MIT too; `vendor/` holds patched copies of upstream MIT
-code, with the reasons recorded in `vendor/deno_core/PATCHES.md`, `vendor/deno_v8/PATCHES.md`
-and `vendor/v8x/THINPACK.md`.
+- [Downloads, backend options, and CLI flags](docs/reference.md)
+- [Node.js compatibility limits](docs/reference.md#known-limits)
+- [Benchmarks and methodology](docs/benchmarks.md)
+- [MIT license](LICENSE)
