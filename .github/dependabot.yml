@@ -2,7 +2,7 @@
 #
 # Version updates are deliberately scoped out of:
 #   - tests/apps/*/package.json: pinned size fixtures, measured as they are.
-#   - vendor/: patched upstream snapshots, updated only with their patches.
+#   - the thinpack-js forks pinned in Cargo.toml: updated only with their patches.
 #
 # Security updates come from the dependency graph rather than this file, so the
 # fixtures still receive them; merge those by hand instead of pinning a

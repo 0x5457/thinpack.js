@@ -9,7 +9,7 @@ the divergence, why it exists, and where it lives.
 
 - The `jsc` template runs on macOS's `JavaScriptCore.framework` instead of bundling an engine.
   Its ES module support is a source rewriter aimed at flattened bundles
-  (`vendor/v8x/src/jsc/module.rs`);
+  (`crates/thinpack-jsc-rewrite` in the `thinpack-js/v8x` fork);
   packed apps keep their file boundaries, so live bindings, cycles and namespace edge cases can
   differ from the QuickJS and V8 templates. A missing named export evaluates as `undefined`
   instead of failing instantiation, and Apple's framework does not parse import attributes
@@ -90,7 +90,7 @@ the divergence, why it exists, and where it lives.
 - The JSC backend exposes no promise hooks and does not preserve the async
   context across promise continuations, so `AsyncLocalStorage` does not follow
   promises there; the local async-local case is skipped on JSC
-  (`vendor/v8x/src/jsc/isolate.rs`).
+  (`thinpack-js/v8x`, `src/jsc/isolate.rs`).
 
 ## TLS
 
