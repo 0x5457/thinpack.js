@@ -1337,6 +1337,12 @@ module = "tty"
 
 # --- thinpack runtime regressions ---
 
+[tests."parallel/test-thinpack-async-local-storage.js"]
+module = "async_hooks"
+
+[tests."parallel/test-thinpack-async-resource.js"]
+module = "async_hooks"
+
 [tests."parallel/test-thinpack-messageport-peer-close.js"]
 module = "worker_threads"
 timeout_ms = 5000
