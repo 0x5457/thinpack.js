@@ -1,6 +1,8 @@
-<img src="docs/assets/thinpack-logo.png" alt="Thinpack.js logo" width="112">
+<p align="center">
+  <img src="docs/assets/thinpack-logo.png" alt="Thinpack.js logo" width="112">
+</p>
 
-# thinpack.js
+<h1 align="center">thinpack.js</h1>
 
 [![CI](https://github.com/0x5457/thinpack.js/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/0x5457/thinpack.js/actions/workflows/ci.yml)
 
