@@ -230,19 +230,15 @@
     value: (specifier) => load(specifier, "", []),
   });
   // The ESM facade needs the builtin's real named exports, the way Node reads
-  // `ObjectKeys(module.exports)`; a static scan cannot follow the alias
-  // assignments Node's own builtins use (`module.exports = Module; Module.x = ...`).
-  // Accessors are left out: a lazy getter may reach an optional capability, and
-  // importing the module must not force that dependency (`events` without
-  // `async_hooks`); the static scan still covers the accessors it can see.
+  // `Object.keys(module.exports)`; a static scan cannot follow the alias assignments
+  // builtins use (`module.exports = Module; Module.createRequire = ...`). Getters are
+  // left out because reading one can initialize an optional capability the app did not
+  // select (`events` without `async_hooks`).
   Object.defineProperty(globalThis, "__thinpack_builtin_exports__", {
     value: (specifier) => {
       const exports = load(specifier, "", []);
       return Object.keys(exports)
-        .filter((name) => {
-          const descriptor = Object.getOwnPropertyDescriptor(exports, name);
-          return descriptor === undefined || descriptor.get === undefined;
-        })
+        .filter((name) => Object.getOwnPropertyDescriptor(exports, name)?.get === undefined)
         .join("\0");
     },
   });

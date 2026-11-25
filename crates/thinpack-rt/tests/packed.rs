@@ -1074,22 +1074,36 @@ console.log('module.parent ok');
         name: "packed::builtin-named-exports",
         directory: "builtin-named-exports",
         entry: "/app/main.mjs",
-        files: &[(
-            "/app/main.mjs",
-            r"import { createRequire } from 'node:module';
+        files: &[
+            (
+                "/app/main.mjs",
+                r"import { createRequire, register } from 'node:module';
 import { join, sep } from 'node:path';
 import { Readable } from 'node:stream';
-if (typeof createRequire !== 'function' || typeof Readable !== 'function') {
+if (typeof createRequire !== 'function' || typeof register !== 'function') {
   throw new Error('builtin named exports are missing');
 }
+if (typeof Readable !== 'function') throw new Error('stream.Readable is missing');
 if (join('a', 'b') !== `a${sep}b`) throw new Error('path.join mismatch');
 if (typeof createRequire(import.meta.url).resolve('node:path') !== 'string') {
   throw new Error('createRequire mismatch');
 }
+// `events` names EventEmitter only through an alias assignment; a pass-through load hook
+// must keep the names the runtime discovered when the import was resolved.
+register(new URL('./hooks.mjs', import.meta.url));
+const { EventEmitter } = await import('node:events');
+if (typeof EventEmitter !== 'function') {
+  throw new Error('load hook dropped builtin named exports');
+}
 console.log('builtin named exports ok');
 ",
-        )],
-        capabilities: &[],
+            ),
+            (
+                "/app/hooks.mjs",
+                "export function load(url, context, nextLoad) {\n  return nextLoad(url, context);\n}\n",
+            ),
+        ],
+        capabilities: &["events"],
         error: None,
     },
     PackedTest {
@@ -1099,12 +1113,12 @@ console.log('builtin named exports ok');
         files: &[
             (
                 "/app/main.mjs",
-                "import { a, b, c } from './lib.cjs';\nif (a !== 1 || b !== 2 || c !== 3) throw new Error('named exports');\nconsole.log('cjs named exports ok');\n",
+                "import value, { a, b, c } from './lib.cjs';\nif (a !== 1 || b !== 2 || c !== 3 || value.default !== 4 || value['a-b'] !== 5 || value.class !== 6) throw new Error('named exports');\nconsole.log('cjs named exports ok');\n",
             ),
             ("/app/lib.cjs", "module.exports = require('./inner.cjs');\n"),
             (
                 "/app/inner.cjs",
-                "exports.a = 1;\nexports.b = 2;\nexports.c = 3;\n",
+                "exports.a = 1;\nexports.b = 2;\nexports.c = 3;\nexports.default = 4;\nexports['a-b'] = 5;\nexports.class = 6;\n",
             ),
         ],
         capabilities: &[],
