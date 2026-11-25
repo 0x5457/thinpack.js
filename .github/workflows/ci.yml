@@ -313,6 +313,58 @@ jobs:
           cat cluster.out
           grep -q "primary: worker online" cluster.out
 
+  linker-ab:
+    name: Linker A/B (temporary)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          rustflags: ""
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build everything once
+        run: |
+          cargo build -p thinpack-rt -p thinpack-cli
+          cargo test -p thinpack-rt -p thinpack-analyze --no-run
+
+      # Same objects, same machine, alternating linker: the only difference is the
+      # final `-C linker` flag, taken from `.cargo/config.toml` or appended after `--`.
+      - name: Time each linker
+        shell: bash
+        run: |
+          set -e
+          measure() {
+            label=$1; shift
+            for _ in 1 2 3 4 5; do
+              touch crates/thinpack-rt/src/main.rs
+              start=$(date +%s%N)
+              "$@" >/dev/null 2>&1
+              end=$(date +%s%N)
+              echo "bin-link $label $(( (end - start) / 1000000 ))ms"
+            done
+          }
+          measure lld  cargo build -p thinpack-rt
+          measure msvc cargo rustc -p thinpack-rt -- -C linker=link.exe
+          measure lld  cargo build -p thinpack-rt
+          measure msvc cargo rustc -p thinpack-rt -- -C linker=link.exe
+
+          harness() {
+            label=$1; shift
+            for _ in 1 2 3; do
+              rm -rf target/debug/deps/pack_regressions-*.exe
+              start=$(date +%s%N)
+              "$@" >/dev/null 2>&1
+              end=$(date +%s%N)
+              echo "harness-link $label $(( (end - start) / 1000000 ))ms"
+            done
+          }
+          harness lld  cargo test -p thinpack-cli --test pack_regressions --no-run
+          harness msvc cargo test -p thinpack-cli --test pack_regressions --no-run -- -C linker=link.exe
+
   windows-tests:
     name: Runtime tests (windows-latest)
     # Two jobs rather than one: the capability-sliced template of `windows-smoke`
