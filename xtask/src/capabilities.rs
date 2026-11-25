@@ -136,13 +136,16 @@ fn generate(check: bool) -> Result<(), String> {
             stale.push((*name).to_owned());
         }
     }
+    if let Some(name) = crate::llhttp::sync(check)? {
+        stale.push(name);
+    }
 
     if stale.is_empty() {
         return Ok(());
     }
 
     let details = format!(
-        "generated files disagree with {MANIFEST}: {}\nrun `cargo xtask gen` to regenerate.",
+        "generated files disagree with their source: {}\nrun `cargo xtask gen` to regenerate.",
         stale.join(", ")
     );
     if check {

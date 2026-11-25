@@ -1358,6 +1358,10 @@ timeout_ms = 5000
 module = "http"
 timeout_ms = 5000
 
+[tests."parallel/test-thinpack-http-roundtrip.js"]
+module = "http"
+timeout_ms = 5000
+
 [tests."parallel/test-thinpack-net-unix-stdio-pipe-destroy.js"]
 module = "net"
 timeout_ms = 5000

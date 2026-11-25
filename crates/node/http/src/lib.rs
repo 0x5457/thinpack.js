@@ -4,10 +4,17 @@ use deno_core::{Extension, ExtensionFileSource};
 
 #[must_use]
 pub fn init() -> Extension {
-    const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new_compressed(
-        "node:http",
-        thinpack_js::js!("http.js"),
-    )];
+    const BUILTINS: &[ExtensionFileSource] = &[
+        ExtensionFileSource::new_compressed("node:http", thinpack_js::js!("http.js")),
+        ExtensionFileSource::new_compressed(
+            "node:thinpack/internal/llhttp",
+            thinpack_js::js!("llhttp.js"),
+        ),
+        ExtensionFileSource::new_compressed(
+            "node:thinpack/internal/llhttp-wasm",
+            thinpack_js::js!("vendor/llhttp-wasm.js"),
+        ),
+    ];
 
     Extension {
         name: "thinpack_node_http",

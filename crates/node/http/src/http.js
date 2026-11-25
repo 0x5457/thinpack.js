@@ -2,6 +2,7 @@
   const net = require("node:net");
   const { Readable, Writable } = require("node:stream");
   const { codes } = require("node:thinpack/internal/errors");
+  const { Parser, ParseError, REQUEST, RESPONSE } = require("node:thinpack/internal/llhttp");
 
   const notImplemented = (api) => new codes.ERR_NOT_IMPLEMENTED(api);
 
@@ -40,6 +41,49 @@
     "PURGE", "PUT", "REBIND", "REPORT", "SEARCH", "SOURCE", "SUBSCRIBE",
     "TRACE", "UNBIND", "UNLINK", "UNLOCK", "UNSUBSCRIBE",
   ];
+
+  // llhttp hands a head back as pieces: a header name or value may arrive in several
+  // callbacks. Client and server read the head through this.
+  class Head {
+    url = "";
+    status = "";
+    headers = {};
+    rawHeaders = [];
+    #name = "";
+    #value = null;
+
+    onUrl(piece) {
+      this.url += piece.toString("latin1");
+    }
+
+    onStatus(piece) {
+      this.status += piece.toString("latin1");
+    }
+
+    onField(piece) {
+      if (this.#value !== null) this.#commit();
+      this.#name += piece.toString("latin1");
+    }
+
+    onValue(piece) {
+      this.#value = (this.#value ?? "") + piece.toString("latin1");
+    }
+
+    // Flushes the pair that is still open when the head ends.
+    end() {
+      if (this.#name !== "") this.#commit();
+    }
+
+    #commit() {
+      const name = this.#name.toLowerCase();
+      const value = this.#value ?? "";
+      this.rawHeaders.push(name, value);
+      this.headers[name] =
+        this.headers[name] === undefined ? value : `${this.headers[name]}, ${value}`;
+      this.#name = "";
+      this.#value = null;
+    }
+  }
 
   class IncomingMessage extends Readable {
     constructor(socket, method, url, httpVersion, headers) {
@@ -205,125 +249,81 @@
     }
 
     #connection(socket) {
-      let buffer = Buffer.alloc(0);
-      let state = null;
+      const server = this;
+      let head = new Head();
+      let request = null;
+      let upgrade = false;
       let upgraded = false;
 
-      const parseHead = () => {
-        const end = buffer.indexOf("\r\n\r\n");
-        if (end === -1) return false;
-        const head = buffer.subarray(0, end).toString("latin1");
-        buffer = buffer.subarray(end + 4);
-        const [requestLine, ...headerLines] = head.split("\r\n");
-        const [method, url, protocol] = requestLine.split(" ");
-        const httpVersion = (protocol ?? "").replace(/^HTTP\//, "");
-        const headers = {};
-        const raw = [];
-        for (const line of headerLines) {
-          const index = line.indexOf(":");
-          if (index <= 0) continue;
-          const name = line.slice(0, index).trim().toLowerCase();
-          const value = line.slice(index + 1).trim();
-          raw.push(name, value);
-          headers[name] = headers[name] ? `${headers[name]}, ${value}` : value;
-        }
-        const req = new IncomingMessage(socket, method, url, httpVersion, headers);
-        req.rawHeaders = raw;
-        if (String(headers.upgrade ?? "").toLowerCase() === "websocket") {
-          const head = buffer;
-          buffer = Buffer.alloc(0);
-          upgraded = true;
-          state = null;
-          if (this.listenerCount("upgrade") === 0) {
-            socket.destroy();
-          } else {
-            this.emit("upgrade", req, socket, head);
+      const parser = new Parser(REQUEST, {
+        onMessageBegin() {
+          head = new Head();
+          request = null;
+        },
+        onUrl: (piece) => head.onUrl(piece),
+        onHeaderField: (piece) => head.onField(piece),
+        onHeaderValue: (piece) => head.onValue(piece),
+        onHeadersComplete() {
+          head.end();
+          request = new IncomingMessage(
+            socket,
+            parser.method,
+            head.url,
+            parser.version,
+            head.headers,
+          );
+          request.rawHeaders = head.rawHeaders;
+          if (/^100-continue$/i.test(head.headers.expect ?? "")) {
+            socket.write("HTTP/1.1 100 Continue\r\n\r\n");
           }
-          return true;
-        }
+          if (/^websocket$/i.test(head.headers.upgrade ?? "")) {
+            upgrade = true;
+            return 2;
+          }
 
-        const res = new ServerResponse(socket, req);
-        const connection = (headers.connection ?? "").toLowerCase();
-        const keepAlive = httpVersion === "1.1"
-          ? connection !== "close"
-          : connection === "keep-alive";
-        res._keepAlive = keepAlive;
-        req.shouldKeepAlive = keepAlive;
-        req.res = res;
-        const transferEncoding = (headers["transfer-encoding"] ?? "").toLowerCase();
-        state = {
-          req,
-          res,
-          remaining: transferEncoding.includes("chunked")
-            ? -1
-            : Number(headers["content-length"] ?? 0),
-          chunked: transferEncoding.includes("chunked"),
-          chunkSize: null,
-        };
-        if (headers.expect === "100-continue") {
-          socket.write("HTTP/1.1 100 Continue\r\n\r\n");
-        }
-        this.emit("request", req, res);
-        if (state && !state.chunked && state.remaining === 0) {
-          state.req.complete = true;
-          const request = state.req;
-          queueMicrotask(() => request.push(null));
-          state = null;
-        }
-        return true;
-      };
+          const response = new ServerResponse(socket, request);
+          response._keepAlive = parser.keepAlive;
+          request.shouldKeepAlive = parser.keepAlive;
+          request.res = response;
+          server.emit("request", request, response);
+          return 0;
+        },
+        onBody: (piece) => request.push(piece),
+        onMessageComplete() {
+          request.complete = true;
+          if (!upgrade) request.push(null);
+        },
+      }, http.maxHeaderSize);
 
       socket.on("data", (chunk) => {
         if (upgraded) return;
-        buffer = Buffer.concat([buffer, chunk]);
-        for (;;) {
-          if (!state) {
-            if (!parseHead()) return;
-            if (upgraded) return;
-            if (!state) continue;
-          }
-          if (state.chunked) {
-            for (;;) {
-              if (state.chunkSize === null) {
-                const lineEnd = buffer.indexOf("\r\n");
-                if (lineEnd === -1) return;
-                state.chunkSize = Number.parseInt(
-                  buffer.subarray(0, lineEnd).toString("latin1").split(";")[0],
-                  16,
-                );
-                buffer = buffer.subarray(lineEnd + 2);
-                if (state.chunkSize === 0) {
-                  const trailerEnd = buffer.indexOf("\r\n\r\n");
-                  const skip = trailerEnd === -1 ? buffer.length : trailerEnd + 4;
-                  buffer = buffer.subarray(skip);
-                  state.req.complete = true;
-                  state.req.push(null);
-                  state = null;
-                  break;
-                }
-              }
-              if (buffer.length < state.chunkSize + 2) return;
-              state.req.push(buffer.subarray(0, state.chunkSize));
-              buffer = buffer.subarray(state.chunkSize + 2);
-              state.chunkSize = null;
-            }
-            continue;
-          }
-          if (state.remaining > 0) {
-            const take = Math.min(state.remaining, buffer.length);
-            if (take > 0) {
-              state.req.push(buffer.subarray(0, take));
-              buffer = buffer.subarray(take);
-              state.remaining -= take;
-            }
-            if (state.remaining > 0) return;
-          }
-          state.req.complete = true;
-          state.req.push(null);
-          state = null;
+        let rest;
+        try {
+          rest = parser.execute(chunk);
+        } catch (error) {
+          if (!(error instanceof ParseError)) throw error;
+          socket.destroy();
+          return;
+        }
+        if (rest === null) return;
+        upgraded = true;
+        parser.destroy();
+        if (server.listenerCount("upgrade") === 0) {
+          socket.destroy();
+        } else {
+          server.emit("upgrade", request, socket, rest);
         }
       });
 
+      socket.on("end", () => {
+        try {
+          parser.finish();
+        } catch (error) {
+          if (!(error instanceof ParseError)) throw error;
+          socket.destroy();
+        }
+      });
+      socket.on("close", () => parser.destroy());
       socket.on("error", () => socket.destroy());
     }
   }
@@ -495,156 +495,109 @@
   }
 
   const parseClientResponse = (socket, request, path, options = {}) => {
-    let buffer = Buffer.alloc(0);
+    let head = new Head();
     let response = null;
-    let chunked = false;
-    let remaining = 0;
-    let chunkSize = null;
-    let terminated = false;
-    let done = false;
     let keepAlive = Boolean(options.keepAlive);
+    let complete = false;
+    let finished = false;
+    let handedOver = false;
 
     const cleanup = () => {
       socket.removeListener("data", onData);
       socket.removeListener("end", onEnd);
       socket.removeListener("error", onError);
+      socket.removeListener("close", cleanup);
+      parser.destroy();
     };
 
     const finish = () => {
-      if (done) return;
-      done = true;
+      if (finished) return;
+      finished = true;
+      response.complete = true;
       response.push(null);
       cleanup();
-      if (keepAlive) {
-        options.release?.(socket);
-      }
+      if (keepAlive) options.release?.(socket);
     };
 
-    // After the `0\r\n` chunk-size line the trailer section runs to the first
-    // blank line: a bare CRLF when there are no trailers, `...\r\n\r\n` when
-    // there are. finish() must not release the socket to the agent pool before
-    // that line is consumed, or the leftover bytes poison the next pipelined
-    // request on the connection.
-    const consumeTerminator = () => {
-      const blank = buffer.indexOf("\r\n\r\n");
-      if (blank !== -1) {
-        buffer = buffer.subarray(blank + 4);
-      } else if (buffer.length >= 2 && buffer[0] === 13 && buffer[1] === 10) {
-        buffer = buffer.subarray(2);
-      } else {
-        return;
-      }
+    const parser = new Parser(RESPONSE, {
+      onMessageBegin() {
+        head = new Head();
+      },
+      onStatus: (piece) => head.onStatus(piece),
+      onHeaderField: (piece) => head.onField(piece),
+      onHeaderValue: (piece) => head.onValue(piece),
+      onBody: (piece) => response?.push(piece),
+      onHeadersComplete(statusCode, _, shouldKeepAlive) {
+        head.end();
+        const message = new IncomingMessage(socket, null, path, parser.version, head.headers);
+        message.statusCode = statusCode;
+        message.statusMessage = head.status;
+        message.rawHeaders = head.rawHeaders;
+        if (statusCode === 101) {
+          response = message;
+          return 2;
+        }
+        // A 1xx answer is informational; the response being waited for follows it.
+        if (statusCode < 200) return 0;
+        keepAlive = keepAlive && shouldKeepAlive;
+        response = message;
+        request.emit("response", message);
+        return request.method === "HEAD" ? 1 : 0;
+      },
+      onMessageComplete() {
+        if (response !== null) complete = true;
+      },
+    }, http.maxHeaderSize);
+
+    // The message is settled outside the callbacks: the parser still owns the chunk it is
+    // executing, and an upgrade hands the socket to the caller at that boundary.
+    const settle = () => {
+      if (!complete || handedOver) return;
+      handedOver = true;
       finish();
     };
 
-    const feed = (data) => {
-      if (chunked) {
-        buffer = Buffer.concat([buffer, data]);
-        if (terminated) {
-          consumeTerminator();
-          return;
-        }
-        for (;;) {
-          if (chunkSize === null) {
-            const end = buffer.indexOf("\r\n");
-            if (end < 0) return;
-            chunkSize = Number.parseInt(buffer.subarray(0, end).toString("latin1"), 16);
-            buffer = buffer.subarray(end + 2);
-            if (chunkSize === 0) {
-              terminated = true;
-              consumeTerminator();
-              return;
-            }
-          }
-          if (buffer.length < chunkSize + 2) return;
-          response.push(buffer.subarray(0, chunkSize));
-          buffer = buffer.subarray(chunkSize + 2);
-          chunkSize = null;
-        }
-      }
-      if (remaining === Infinity) {
-        response.push(data);
-        return;
-      }
-      const take = Math.min(remaining, data.length);
-      if (take > 0) {
-        response.push(data.subarray(0, take));
-        remaining -= take;
-      }
-      if (remaining === 0) finish();
-    };
-
     const onData = (chunk) => {
-      buffer = Buffer.concat([buffer, chunk]);
-      if (response !== null) {
-        const data = buffer;
-        buffer = Buffer.alloc(0);
-        feed(data);
-        return;
-      }
-      const end = buffer.indexOf("\r\n\r\n");
-      // Cap the response head at `http.maxHeaderSize` like Node's parser.
-      if ((end < 0 ? buffer.length : end) > http.maxHeaderSize) {
-        request.emit("error", new Error("Response header overflow"));
-        socket.destroy();
-        return;
-      }
-      if (end < 0) return;
-      const head = buffer.subarray(0, end).toString("latin1");
-      const rest = buffer.subarray(end + 4);
-      buffer = Buffer.alloc(0);
-      const [statusLine, ...lines] = head.split("\r\n");
-      const match = /^HTTP\/([\d.]+) (\d{3}) ?(.*)$/.exec(statusLine);
-      if (match === null) {
-        request.emit("error", new Error("Invalid HTTP response"));
-        socket.destroy();
-        return;
-      }
-      const headers = {};
-      const raw = [];
-      for (const line of lines) {
-        const index = line.indexOf(":");
-        if (index <= 0) continue;
-        const name = line.slice(0, index).trim().toLowerCase();
-        const value = line.slice(index + 1).trim();
-        raw.push(name, value);
-        headers[name] = headers[name] ? `${headers[name]}, ${value}` : value;
-      }
-      response = new IncomingMessage(socket, null, path, match[1], headers);
-      response.statusCode = Number(match[2]);
-      response.statusMessage = match[3];
-      response.rawHeaders = raw;
-      keepAlive = keepAlive &&
-        String(headers.connection ?? "").toLowerCase() !== "close";
-
-      if (response.statusCode === 101) {
+      let rest;
+      try {
+        rest = parser.execute(chunk);
+      } catch (error) {
+        if (!(error instanceof ParseError)) throw error;
         cleanup();
-        request.emit("upgrade", response, socket, rest);
+        if (response === null) request.emit("error", error);
+        else response.destroy(error);
+        socket.destroy();
         return;
       }
-      request.emit("response", response);
-      chunked = /chunked/i.test(headers["transfer-encoding"] ?? "");
-      remaining = headers["content-length"] !== undefined
-        ? Number(headers["content-length"])
-        : Infinity;
-      // A bodyless response never produces another data event; `feed` (and with
-      // it `finish`) only runs on body bytes or socket end, so settle it now.
-      if (!chunked && remaining === 0) finish();
-      else if (rest.length > 0) feed(rest);
+      settle();
+      if (rest === null) return;
+      handedOver = true;
+      cleanup();
+      request.emit("upgrade", response, socket, rest);
     };
 
-    function onEnd() {
-      if (response !== null && !done) finish();
-    }
+    const onEnd = () => {
+      if (response === null) return;
+      try {
+        parser.finish();
+      } catch (error) {
+        if (!(error instanceof ParseError)) throw error;
+        cleanup();
+        response.destroy(error);
+        return;
+      }
+      settle();
+    };
 
-    function onError(error) {
+    const onError = (error) => {
       cleanup();
-      if (response !== null && !done) response.destroy(error);
-    }
+      if (response !== null && !finished) response.destroy(error);
+    };
 
     socket.on("data", onData);
     socket.on("end", onEnd);
     socket.on("error", onError);
+    socket.on("close", cleanup);
   };
 
   const request = (options, callback, secure = false) =>
