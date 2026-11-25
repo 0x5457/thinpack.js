@@ -161,6 +161,9 @@ default-features = false
 version = "0.2.3"
 features = ["zoneinfo64"]
 
+[dependencies.thinpack-jsc-rewrite]
+path = "../../crates/thinpack-jsc-rewrite"
+
 [dev-dependencies.align-data]
 version = "0.1.0"
 

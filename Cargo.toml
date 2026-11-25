@@ -8,6 +8,7 @@ members = [
     "crates/thinpack-resolve",
     "crates/thinpack-loader",
     "crates/thinpack-cjs-lexer",
+    "crates/thinpack-jsc-rewrite",
     "crates/thinpack-io",
     "crates/thinpack-analyze",
     "crates/thinpack-pack",
