@@ -24,13 +24,23 @@ use crate::Error;
 ///
 /// Node's rules apply: only erasable syntax is accepted, so the transform-only
 /// constructs are rejected here rather than becoming broken JavaScript in the
-/// payload. `.tsx` is not supported at all.
+/// payload. `.tsx` is not supported at all, and TypeScript under `node_modules` is
+/// refused the way Node refuses it.
 pub(super) fn strip(
     path: &Path,
     source: String,
     stripped: &mut BTreeMap<PathBuf, String>,
 ) -> Result<String, Error> {
-    match path.extension().and_then(|extension| extension.to_str()) {
+    let extension = path.extension().and_then(|extension| extension.to_str());
+    if matches!(extension, Some("ts" | "mts" | "cts" | "tsx"))
+        && thinpack_resolve::is_under_node_modules(path)
+    {
+        return Err(Error::Unsupported {
+            path: path.to_path_buf(),
+            message: "TypeScript under node_modules is not type-stripped (ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING); ship the dependency as JavaScript".to_owned(),
+        });
+    }
+    match extension {
         Some("ts" | "mts" | "cts") => {}
         Some("tsx") => {
             return Err(Error::Unsupported {

@@ -90,9 +90,10 @@ pub enum Error {
         path: PathBuf,
         message: String,
     },
-    /// The file is TypeScript that packing cannot turn into JavaScript: `.tsx`, or
-    /// syntax Node's strip-only mode rejects (enums, namespaces, parameter
-    /// properties, and other constructs that need a transform).
+    /// The file is TypeScript that packing cannot turn into JavaScript: TypeScript
+    /// under `node_modules`, `.tsx`, or syntax Node's strip-only mode rejects
+    /// (enums, namespaces, parameter properties, and other constructs that need a
+    /// transform).
     Unsupported {
         path: PathBuf,
         message: String,
@@ -992,6 +993,34 @@ mod tests {
         let helper = &analysis.stripped[Path::new("/app/helper.ts")];
         assert!(!helper.contains(": number"), "{helper}");
         assert!(helper.contains("return value;"), "{helper}");
+    }
+
+    #[test]
+    fn typescript_in_node_modules_is_rejected() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.ts",
+                "import { value } from 'dep';\nconsole.log(value);\n",
+            ),
+            (
+                "/app/node_modules/dep/package.json",
+                r#"{"name": "dep", "type": "module", "exports": "./index.ts"}"#,
+            ),
+            (
+                "/app/node_modules/dep/index.ts",
+                "export const value: number = 1;\n",
+            ),
+        ]);
+        match analyze(Path::new("/app/main.ts"), &fs) {
+            Err(Error::Unsupported { path, message }) => {
+                assert_eq!(path, PathBuf::from("/app/node_modules/dep/index.ts"));
+                assert!(
+                    message.contains("ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING"),
+                    "{message}"
+                );
+            }
+            other => panic!("expected an unsupported TypeScript error, got {other:?}"),
+        }
     }
 
     #[test]

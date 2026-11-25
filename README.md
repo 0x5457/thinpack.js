@@ -119,7 +119,10 @@ package scope like `.js`. Packing strips the types with Node's strip-only pass (
 behind `amaro`), so the executable carries JavaScript and links no TypeScript parser. Only
 erasable syntax is accepted: `enum`, `namespace`, parameter properties, `import x = require()`,
 `export =` and `.tsx` fail at pack time, as they do in Node without
-`--experimental-transform-types`. TypeScript outside the payload is not stripped at run time.
+`--experimental-transform-types`. TypeScript under `node_modules` is not stripped either: Node
+refuses it with `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`, so packing rejects it instead of
+building an artifact that behaves differently. TypeScript outside the payload is not stripped at
+run time.
 
 ## Size
 
