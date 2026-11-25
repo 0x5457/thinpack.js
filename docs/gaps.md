@@ -27,9 +27,6 @@ the divergence, why it exists, and where it lives.
   TypeScript parser. The accepted syntax is Node's: `enum`, `namespace`, parameter properties,
   `import x = require()`, `export =` and `.tsx` fail at pack time, matching Node without
   `--experimental-transform-types`.
-- TypeScript under `node_modules` is stripped too. Node rejects it
-  (`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`) because its runtime pays the cost; packing is a
-  build step, so refusing there would only reject a module the artifact can carry as JavaScript.
 - Type-only imports are erased before dependency analysis, so a module named only by `import type`
   does not have to resolve. Node resolves static specifiers before stripping and can fail there.
 - The runtime does not strip TypeScript outside the payload: a packed app that requires a host
