@@ -1371,6 +1371,10 @@ stdin_pipe = true
 module = "child_process"
 timeout_ms = 10000
 
+[tests."parallel/test-thinpack-child-process-stdio.js"]
+module = "child_process"
+timeout_ms = 10000
+
 [tests."parallel/test-thinpack-cluster-fork-stdio.js"]
 module = "cluster"
 timeout_ms = 10000
@@ -1445,6 +1449,12 @@ module = "dgram"
 module = "dgram"
 
 [tests."parallel/test-thinpack-dgram-close-rebind.js"]
+module = "dgram"
+
+[tests."parallel/test-thinpack-dgram-connect-callback-once.js"]
+module = "dgram"
+
+[tests."parallel/test-thinpack-dgram-reconnect-payload.js"]
 module = "dgram"
 
 [tests."parallel/test-dgram-connect-send-callback-buffer.js"]

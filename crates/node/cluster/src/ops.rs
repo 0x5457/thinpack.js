@@ -104,7 +104,11 @@ mod unix {
         parent.set_nonblocking(true).map_err(io_error)?;
         let channel_fd = child_end.as_raw_fd();
 
-        let stdio = if silent { Stdio::Piped } else { Stdio::Inherit };
+        let stdio = if silent {
+            Stdio::PIPED
+        } else {
+            Stdio::INHERITED
+        };
         let inherited = InheritedFd {
             source: channel_fd,
             target: CHANNEL_FD,
@@ -446,7 +450,11 @@ mod windows {
             .map_err(spawn_error)?
             .with_env("NODE_UNIQUE_ID", worker_id)
             .with_env("NODE_CHANNEL_PORT", port);
-        let stdio = if silent { Stdio::Piped } else { Stdio::Inherit };
+        let stdio = if silent {
+            Stdio::PIPED
+        } else {
+            Stdio::INHERITED
+        };
         let spawned = thinpack_child::spawn(&request, stdio, None).map_err(spawn_error)?;
         listeners()
             .lock()

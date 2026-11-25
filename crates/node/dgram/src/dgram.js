@@ -450,22 +450,33 @@
         if (state.binding !== undefined) await state.binding;
         if (this[kState] !== state || !state.handle || !state.bound) return;
         if (callback) this.once("connect", callback);
+        let failure;
         try {
           const ip = await this.#resolve(address, false);
           if (this[kState] !== state || !state.handle) return;
           await Deno.core.ops.op_dgram_connect(state.id, ip, port);
-          if (this[kState] !== state || !state.handle) return;
-          state.connecting = false;
-          state.connected = true;
-          this.emit("connect");
         } catch (error) {
-          state.connecting = false;
-          state.connected = false;
-          if (callback) this.removeListener("connect", callback);
-          const failure = socketError(error, "connect", address, port);
-          if (callback) process.nextTick(callback, failure);
-          else process.nextTick(() => this.emit("error", failure));
+          failure = socketError(error, "connect", address, port);
         }
+        if (this[kState] !== state || !state.handle) return;
+        state.connecting = false;
+        if (failure !== undefined) {
+          state.connected = false;
+          process.nextTick(() => {
+            if (callback) {
+              this.removeListener("connect", callback);
+              callback(failure);
+            } else {
+              this.emit("error", failure);
+            }
+          });
+          return;
+        }
+        state.connected = true;
+        // Record the state first and queue the emit outside the catch: a listener
+        // that throws must escape as an uncaught exception (as in Node), not
+        // become a connect failure that resets the socket and calls back again.
+        process.nextTick(() => this.emit("connect"));
       };
       run();
     }

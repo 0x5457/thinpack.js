@@ -33,6 +33,26 @@
       .join("\0");
   };
 
+  // Node's `stdio` option, narrowed to the connections this runtime supports: each of the
+  // three standard streams is piped, inherited from the parent or ignored. An explicit
+  // descriptor is accepted in its own position, so `[0, 1, 2]` is the long form of
+  // `'inherit'`; streams and extra descriptors are not supported.
+  const stdioOf = (options) => {
+    const value = options.stdio || "pipe";
+    const entries = typeof value === "string" ? [value, value, value] : value;
+    if (!Array.isArray(entries) || entries.length > 3) {
+      throw new codes.ERR_INVALID_ARG_VALUE("stdio", value);
+    }
+    return [0, 1, 2].map((index) => {
+      const entry = entries[index] ?? "pipe";
+      const mode = typeof entry === "number" && entry === index ? "inherit" : entry;
+      if (mode !== "pipe" && mode !== "inherit" && mode !== "ignore") {
+        throw new codes.ERR_INVALID_ARG_VALUE("stdio", entry);
+      }
+      return mode;
+    });
+  };
+
   class ChildProcess extends Child {
     #options;
 
@@ -44,6 +64,7 @@
     }
 
     start() {
+      const stdio = stdioOf(this.#options);
       const argv = [this.spawnfile, ...this.spawnargs.slice(1)].join("\0");
       let spawned;
       try {
@@ -51,13 +72,18 @@
           argv,
           envString(this.#options.env),
           this.#options.cwd ? String(this.#options.cwd) : "",
+          stdio.join("\0"),
         );
       } catch (error) {
         queueMicrotask(() => this.emit("error", spawnError(error, this.spawnfile)));
         return;
       }
       const [id, pid] = spawned.split("\0").map(Number);
-      this._attach(id, pid, true);
+      this._attach(id, pid, {
+        stdin: stdio[0] === "pipe",
+        stdout: stdio[1] === "pipe",
+        stderr: stdio[2] === "pipe",
+      });
       queueMicrotask(() => this.emit("spawn"));
     }
   }
@@ -83,7 +109,9 @@
       callback = options;
       options = {};
     }
-    const child = spawn(file, Array.isArray(args) ? args : [], options);
+    // Node's `execFile` always pipes the child and does not forward `options.stdio`; its
+    // callback needs the streams regardless of what the caller passed.
+    const child = spawn(file, Array.isArray(args) ? args : [], { ...options, stdio: "pipe" });
     const encoding = options?.encoding ?? "utf8";
     let stdout = "";
     let stderr = "";
@@ -120,6 +148,7 @@
   };
 
   const runSync = (file, args, options = {}) => {
+    const stdio = stdioOf(options);
     const argv = [String(file), ...args.map(String)].join("\0");
     let payload;
     try {
@@ -127,6 +156,7 @@
         argv,
         envString(options.env),
         options.cwd ? String(options.cwd) : "",
+        stdio.join("\0"),
         options.input === undefined ? new Uint8Array() : toBytes(options.input),
       );
     } catch (error) {
@@ -140,14 +170,18 @@
     const pid = buffer.readUInt32LE(8);
     const stdoutLength = buffer.readUInt32LE(12);
     const stderrLength = buffer.readUInt32LE(16);
-    const stdout = Buffer.from(buffer.subarray(20, 20 + stdoutLength));
-    const stderr = Buffer.from(buffer.subarray(20 + stdoutLength, 20 + stdoutLength + stderrLength));
+    const stdout = stdio[1] === "pipe"
+      ? Buffer.from(buffer.subarray(20, 20 + stdoutLength))
+      : null;
+    const stderr = stdio[2] === "pipe"
+      ? Buffer.from(buffer.subarray(20 + stdoutLength, 20 + stdoutLength + stderrLength))
+      : null;
     const encoding = options.encoding;
     return {
       status: status >= 0 ? status : null,
       signal,
-      stdout: encoding ? stdout.toString(encoding) : stdout,
-      stderr: encoding ? stderr.toString(encoding) : stderr,
+      stdout: stdout && encoding ? stdout.toString(encoding) : stdout,
+      stderr: stderr && encoding ? stderr.toString(encoding) : stderr,
       output: [null, stdout, stderr],
       pid,
       error: undefined,

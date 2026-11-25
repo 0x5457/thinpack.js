@@ -1567,6 +1567,25 @@ console.log('fs named exports ok');
         ]),
     },
     PackedTest {
+        name: "packed::util-named-exports",
+        directory: "util-named-exports",
+        entry: "/app/main.mjs",
+        files: &[(
+            "/app/main.mjs",
+            r"import util, { MIMEType, parseArgs } from 'node:util';
+import { createRequire } from 'node:module';
+const cjs = createRequire(import.meta.url)('node:util');
+if (util !== cjs || parseArgs !== cjs.parseArgs || MIMEType !== cjs.MIMEType) {
+  throw new Error('util export identity mismatch');
+}
+const { values } = parseArgs({ args: ['--flag'], options: { flag: { type: 'boolean' } } });
+if (values.flag !== true) throw new Error('parseArgs mismatch');
+",
+        )],
+        capabilities: &["util", "module"],
+        error: None,
+    },
+    PackedTest {
         name: "packed::cjs-named-exports",
         directory: "cjs-named-exports",
         entry: "/app/main.mjs",

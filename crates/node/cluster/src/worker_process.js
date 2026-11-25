@@ -25,7 +25,7 @@
       this.connected = true;
       this.spawnfile = process.execPath;
       this.spawnargs = [process.execPath];
-      this._attach(id, pid, silent);
+      this._attach(id, pid, { stdin: silent, stdout: silent, stderr: silent });
 
       // The channel handshake runs after the worker connects; on unix it resolves at once.
       // Channel reads and writes wait on it, while `cluster.fork` keeps its synchronous

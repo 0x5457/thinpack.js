@@ -182,6 +182,26 @@ handlers are attached, and only then is it rejected; otherwise the same CJS
 error would also be dispatched as uncaught. Source modules keep the same
 contract through `eval_module_source`.
 
+## 12. Synchronous module promises report their settled state
+
+The system-framework build has no public C API for a promise's state, so
+`v8__Promise__State` reads the `__v8jsc_state` property that `track_promise`
+learns from a `.then` reaction. `mod_evaluate_sync` skips the microtask
+checkpoint while a top-level `evaluate()` is on the stack, so a module evaluated
+by a nested `require(esm)` still read `Pending` and deno aborted on a state it
+knew could not be pending.
+
+`settle_tracked_promise` records the state a promise is actually in for the two
+module-evaluation promises `Evaluate` creates itself. `make_resolved_promise`
+now builds an intrinsic deferred promise and fulfils it with `undefined` before
+recording `Fulfilled`: `Promise.resolve` would consult the replaceable global
+and could hand back a promise that is still pending. `make_rejected_promise`
+records `Rejected` with the real reason once the rejection call succeeded, so
+the importer sees the error instead of `Pending`. Nothing records a pending
+promise, so a promise still adopting a thenable keeps reading `Pending`, and
+`mod_evaluate_sync` rejects async graphs before evaluating, so a synchronous
+`require(esm)` never reaches this path with top-level await outstanding.
+
 ## Validation
 
 Changes 1 and 2 are covered by the differential runs below, comparing the stock
@@ -189,8 +209,9 @@ quickjs-ng 0.15.1 source against this tree; change 4 is covered by
 `packed::esm-invalid-specifier-raw-nul`, change 5 by the Node `buffer`, `util`
 and `assert` suites, change 7 by the Node dynamic-import cases, changes 8 and
 9 by `packed::esm-link-error`, `packed::esm-large-link-error` and
-`packed::esm-dynamic-link-error`, and change 10 by the rewrite crate's unit
-tests:
+`packed::esm-dynamic-link-error`, change 10 by the rewrite crate's unit
+tests, and change 12 by `packed::esm-register-require-stays-sync` on the macOS
+JSC backend:
 
 - quickjs-ng 0.15.1 and 0.18 test scripts: identical output and exit status.
 - 703 focused test262 files (`let`, `const`, `block-scope`,
