@@ -13,17 +13,23 @@
 #   deps           Hard dependencies: enabling this module enables them as well. Must be acyclic.
 #   optional_deps  Lazy dependencies: used by a single API only, excluded from the capability
 #                  closure; that API fails explicitly when the module is absent.
+#   globals        JavaScript globals whose unshadowed static references select this module;
+#                  unique repo-wide.
 #   layers         Shared layer crates (by package name) registered as one extension when any
 #                  module that lists them is enabled. A layer provides no builtin of its own;
 #                  it holds the runtime code several modules share, so linking one module does
 #                  not link a second copy of that code.
+#   per_isolate    The module's `init` takes `&thinpack_core::IsolateInputs` and returns every
+#                  extension it contributes. Without it, `init() -> deno_core::Extension`.
 #   ambient        Always-on module: present in every template, cannot be removed by --without.
 #   optional       Optional module: target packages probe for it; static analysis only warns
 #                  when it is absent instead of failing.
 #
 # Convention: a module crate exports `pub fn init() -> deno_core::Extension` and registers its
-# ops and embedded JS there (the shape of a Deno ext crate). Generated code in `thinpack-rt`
-# composes them in dependency order.
+# ops and embedded JS there (the shape of a Deno ext crate). A `per_isolate` module instead
+# exports `pub fn init(&IsolateInputs) -> Vec<Extension>`, so it can mount the packed payload or
+# contribute more than one extension. Generated code in `thinpack-rt` composes them in
+# dependency order.
 
 [modules.assert]
 builtins = ["assert", "assert/strict"]
@@ -133,6 +139,30 @@ builtins = ["http"]
 deps = ["stream", "net"]
 optional_deps = ["https", "crypto", "buffer"]
 
+# The internal bundle is the capability marker; a reference to any global below selects it.
+[modules.fetch]
+builtins = ["thinpack/internal/undici"]
+deps = [
+    "assert",
+    "async_hooks",
+    "buffer",
+    "crypto",
+    "diagnostics_channel",
+    "events",
+    "http",
+    "net",
+    "perf_hooks",
+    "querystring",
+    "stream",
+    "tls",
+    "url",
+    "util",
+    "worker_threads",
+    "zlib",
+]
+globals = ["fetch", "Headers", "Request", "Response", "FormData", "WebSocket"]
+optional_deps = ["http2", "sqlite"]
+
 [modules.https]
 builtins = ["https"]
 deps = ["http", "tls"]
@@ -158,6 +188,7 @@ deps = ["buffer"]
 [modules.fs]
 builtins = ["fs", "fs/promises"]
 deps = ["buffer", "path", "events", "readline", "string_decoder", "stream", "timers", "util"]
+per_isolate = true
 
 [modules.querystring]
 builtins = ["querystring"]
@@ -203,3 +234,4 @@ optional = true
 [modules.ffi]
 builtins = ["ffi"]
 deps = []
+per_isolate = true

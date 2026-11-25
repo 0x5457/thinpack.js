@@ -119,7 +119,10 @@ package scope like `.js`. Packing strips the types with Node's strip-only pass (
 behind `amaro`), so the executable carries JavaScript and links no TypeScript parser. Only
 erasable syntax is accepted: `enum`, `namespace`, parameter properties, `import x = require()`,
 `export =` and `.tsx` fail at pack time, as they do in Node without
-`--experimental-transform-types`. TypeScript outside the payload is not stripped at run time.
+`--experimental-transform-types`. TypeScript under `node_modules` is not stripped either: Node
+refuses it with `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`, so packing rejects it instead of
+building an artifact that behaves differently. TypeScript outside the payload is not stripped at
+run time.
 
 ## Size
 
@@ -191,9 +194,10 @@ Ambient (every template): `console`, `process`, `timers`, `buffer`, `url`, plus 
 `console` formats through it.
 
 On demand: `assert`, `async_hooks`, `child_process`, `constants`, `crypto`,
-`diagnostics_channel`, `dns`, `events`, `ffi`, `fs`, `http`, `http2`, `https`, `inspector`,
-`module`, `net`, `os`, `path`, `perf_hooks`, `querystring`, `readline`, `sea`, `sqlite`,
-`stream`, `string_decoder`, `test`, `tls`, `tty`, `util`, `v8`, `vm`, `worker_threads`, `zlib`.
+`diagnostics_channel`, `dns`, `events`, `fetch`, `ffi`, `fs`, `http`, `http2`, `https`,
+`inspector`, `module`, `net`, `os`, `path`, `perf_hooks`, `querystring`, `readline`, `sea`,
+`sqlite`, `stream`, `string_decoder`, `test`, `tls`, `tty`, `util`, `v8`, `vm`, `worker_threads`,
+`zlib`.
 Subpaths (`fs/promises`, `stream/web`, `path/posix`, `util/types`, …) ship with their module.
 
 `http2` and `sqlite` are optional: a package probing for them does not fail the pack. A module
@@ -223,6 +227,8 @@ vendor/              patched copies of upstream crates (deno_core, deno_ffi, den
 The engine appears only in `thinpack-core`; module crates declare their own
 `deno_core::Extension` and never depend on a backend; `capabilities.toml` is the single source
 of module metadata, and `cargo xtask gen` generates the module table and the feature blocks.
+A capability that needs per-isolate state receives `thinpack_core::IsolateInputs` in its
+initializer; the packed FS mount and the FFI engine use that path.
 
 ## Development
 
@@ -251,16 +257,20 @@ for adding a module.
 - `fetch`, `WebSocket` and their types are Node's own undici, vendored from
   `deps/undici/undici.js`, so they behave as Node does; `EventSource`, `MessageEvent`,
   `CloseEvent` and `ErrorEvent` are absent. `Blob`, `File` and `reportError` are present.
-  The bundle's evaluation is lazy, but its payload is not: it ships with `http` and is
-  decoded at startup, and a `WebSocket` app pulls the same sixteen-module closure as `fetch`.
-  `docs/gaps.md` records what remains different.
+  The bundle belongs to the `fetch` capability: an HTTP-only pack does not carry it, while a
+  `fetch` or `WebSocket` reference pulls the same sixteen-module closure and decodes the
+  bundle at startup. Omitting the capability omits both globals. `docs/gaps.md` records what
+  remains different.
 - No N-API or native addon loading; code that needs native code goes through `node:ffi`.
 - `crypto` key material covers RSA/RSA-PSS, EC (P-256/P-384/P-521/secp256k1), Ed25519 and
   X25519. DSA, DH, Ed448 and X448 keys are rejected; encrypted PKCS#1/SEC1 PEM is not
   supported (PKCS#8 encryption is).
 - WebAssembly is always available and cannot be trimmed (WAMR on QuickJS, about 217 KB).
-- ESM loader hooks run inside synchronous checkpoints, so hooks that wait on I/O fail. A hook
-  that assigns a module format is invisible to packing, which follows the `package.json` rule.
+- The analyzer does not run ESM loader hooks. It determines formats from the file extension,
+  package scope and syntax on disk. A hook cannot make a module analyzable or add it to the
+  payload. To include a hook file inside the project, use `pack --include`. At runtime, hooks
+  run within a synchronous checkpoint. A hook that needs the event loop, such as one awaiting
+  `fs.promises.readFile`, fails with `ERR_ESM_HOOK_ASYNC`.
 - `/app/**` comes from the payload: `fs` reads it, writes return `EROFS`, and modules under
   it are the bundled ones; anything outside `/app` goes to the host file system, including a
   module the app computes at run time (a project ESLint config, say), as it does under Node.

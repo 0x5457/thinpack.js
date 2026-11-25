@@ -60,8 +60,9 @@ fn op_vm_create_context<'s>(
     out
 }
 
-/// Evaluates `source` in the context `id` and returns `[value, error]` so the
-/// caller can rethrow the engine's own exception, including a compile error.
+/// Evaluates `source` in the context `id` and returns `[threw, value]`: whether
+/// the script threw, and its result or the engine's own exception. The flag
+/// keeps `throw null` and `throw undefined` apart from a normal return.
 #[op2(reentrant)]
 fn op_vm_run_in_context<'s>(
     scope: &mut v8::PinScope<'s, '_>,
@@ -79,9 +80,8 @@ fn op_vm_run_in_context<'s>(
         .ok_or_else(|| JsErrorBox::type_error("Unknown vm context"))?;
 
     let out = v8::Array::new(scope, 2);
-    let null = v8::null(scope);
-    out.set_index(scope, 0, null.into());
-    out.set_index(scope, 1, null.into());
+    out.set_index(scope, 0, v8::Boolean::new(scope, false).into());
+    out.set_index(scope, 1, v8::null(scope).into());
 
     let context = v8::Local::new(scope, &context);
     let context_scope = &mut v8::ContextScope::new(scope, context);
@@ -106,8 +106,9 @@ fn op_vm_run_in_context<'s>(
         .and_then(|script| script.run(tc_scope));
 
     if let Some(value) = result {
-        out.set_index(tc_scope, 0, value);
+        out.set_index(tc_scope, 1, value);
     } else if let Some(exception) = tc_scope.exception() {
+        out.set_index(tc_scope, 0, v8::Boolean::new(tc_scope, true).into());
         out.set_index(tc_scope, 1, exception);
     }
     Ok(out)

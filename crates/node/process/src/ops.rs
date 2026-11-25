@@ -1,8 +1,4 @@
-#[cfg(unix)]
-use std::collections::HashMap;
-#[cfg(unix)]
-use std::sync::{LazyLock, Mutex};
-
+use deno_core::uv_compat;
 use deno_core::{OpDecl, op2};
 use deno_error::JsErrorBox;
 
@@ -21,7 +17,6 @@ pub(crate) const OPS: &[OpDecl] = &[
     op_process_resource_usage(),
     op_process_tty_size(),
     op_process_set_raw_mode(),
-    op_process_is_raw(),
 ];
 
 #[op2]
@@ -86,7 +81,8 @@ pub(crate) fn op_process_info() -> String {
 
 #[op2(fast)]
 pub(crate) fn op_process_exit(code: i32) {
-    restore_saved_terminals();
+    // Node restores the terminal from its exit path; `uv_compat` owns the saved mode.
+    uv_compat::uv_tty_reset_mode();
     std::process::exit(code);
 }
 
@@ -355,152 +351,124 @@ pub(crate) fn op_process_resource_usage() -> Result<String, JsErrorBox> {
     resource_usage()
 }
 
-#[cfg(unix)]
-fn tty_size(fd: i32) -> String {
-    // SAFETY: `winsize` is a plain-data struct for which all-zero is a valid value.
-    let mut size: libc::winsize = unsafe { std::mem::zeroed() };
-    // SAFETY: `TIOCGWINSZ` writes a `winsize` through the pointer argument.
-    if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &raw mut size) } == 0 {
-        format!("{}\0{}", size.ws_col, size.ws_row)
-    } else {
-        format!("{}\0{}", 0, 0)
+/// The process's terminals, initialized on first use.
+///
+/// `uv_compat` owns the saved terminal state, so raw mode, the window size and
+/// `uv_tty_reset_mode` on the exit path all agree. The handles live for the
+/// process lifetime, like Node's stdio `TTYWrap`s; libuv's reset is the
+/// teardown, not a close. Their loop is private to the registry so it cannot be
+/// freed before the handles that point at it when a runtime is dropped.
+mod tty {
+    use std::collections::HashMap;
+    use std::ffi::c_int;
+    use std::sync::{LazyLock, Mutex};
+
+    use deno_core::uv_compat::{
+        self, uv_guess_handle, uv_handle_type, uv_loop_t, uv_tty_init, uv_tty_mode_t, uv_tty_t,
+    };
+
+    struct Terminals {
+        // Boxed so the address the handles store stays put.
+        loop_: Box<uv_loop_t>,
+        handles: HashMap<c_int, Box<uv_tty_t>>,
+    }
+
+    #[expect(
+        clippy::non_send_fields_in_send_ty,
+        reason = "the mutex serializes access; the raw pointers are never shared"
+    )]
+    // SAFETY: `TERMINALS` serializes every use of the loop and its handles, so
+    // they are never used from two threads at once. They are only `!Send`
+    // because libuv's types hold raw pointers and `Cell`s.
+    unsafe impl Send for Terminals {}
+
+    static TERMINALS: LazyLock<Mutex<Terminals>> = LazyLock::new(|| {
+        // SAFETY: zeroed memory is the uninitialized state `uv_loop_init` expects.
+        let mut loop_ = Box::new(unsafe { std::mem::zeroed::<uv_loop_t>() });
+        // SAFETY: `loop_` is valid, writable memory and outlives the handles.
+        assert_eq!(unsafe { uv_compat::uv_loop_init(&raw mut *loop_) }, 0);
+        Mutex::new(Terminals {
+            loop_,
+            handles: HashMap::new(),
+        })
+    });
+
+    fn with_handle<R>(fd: c_int, use_handle: impl FnOnce(&mut uv_tty_t) -> R) -> Option<R> {
+        if uv_guess_handle(fd) != uv_handle_type::UV_TTY {
+            return None;
+        }
+        let mut terminals = TERMINALS.lock().unwrap();
+        let terminals = &mut *terminals;
+        if !terminals.handles.contains_key(&fd) {
+            let mut handle = Box::new(uv_compat::new_tty());
+            let loop_ = std::ptr::from_mut(&mut *terminals.loop_);
+            // SAFETY: both pointers are valid and `fd` is a terminal, which is what
+            // `uv_tty_init` requires.
+            if unsafe { uv_tty_init(loop_, &raw mut *handle, fd, 0) } != 0 {
+                return None;
+            }
+            terminals.handles.insert(fd, handle);
+        }
+        Some(use_handle(terminals.handles.get_mut(&fd)?))
+    }
+
+    pub(super) fn size(fd: c_int) -> (c_int, c_int) {
+        let mut columns = 0;
+        let mut rows = 0;
+        with_handle(fd, |tty| {
+            // SAFETY: the registry lock guards the initialized handle, and both outputs are valid.
+            unsafe { uv_compat::uv_tty_get_winsize(tty, &raw mut columns, &raw mut rows) }
+        });
+        (columns, rows)
+    }
+
+    pub(super) fn set_mode(fd: c_int, mode: uv_tty_mode_t) -> c_int {
+        with_handle(fd, |tty| {
+            // SAFETY: the registry lock guards the initialized handle.
+            unsafe { uv_compat::uv_tty_set_mode(tty, mode) }
+        })
+        .unwrap_or(uv_compat::UV_EINVAL)
     }
 }
 
-#[cfg(windows)]
-fn tty_size(fd: i32) -> String {
-    win32::tty_size(fd)
+/// Map Node's `setRawMode` argument to the libuv mode it selects.
+fn tty_mode(mode: &str) -> uv_compat::uv_tty_mode_t {
+    match mode {
+        "io" => uv_compat::uv_tty_mode_t::UV_TTY_MODE_IO,
+        // Node's raw mode is libuv's `RAW_VT`: on Windows it asks the console for
+        // VT input, so key presses arrive as escape sequences; on Unix the two
+        // raw modes are the same.
+        "raw" => uv_compat::uv_tty_mode_t::UV_TTY_MODE_RAW_VT,
+        _ => uv_compat::uv_tty_mode_t::UV_TTY_MODE_NORMAL,
+    }
 }
 
 #[op2]
 #[string]
 pub(crate) fn op_process_tty_size(#[smi] fd: i32) -> String {
-    tty_size(fd)
-}
-
-#[cfg(unix)]
-static SAVED_TERMIOS: LazyLock<Mutex<HashMap<i32, libc::termios>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-#[cfg(unix)]
-const fn apply_raw(settings: &mut libc::termios) {
-    settings.c_iflag &= !(libc::IGNBRK
-        | libc::BRKINT
-        | libc::PARMRK
-        | libc::ISTRIP
-        | libc::INLCR
-        | libc::IGNCR
-        | libc::ICRNL
-        | libc::IXON);
-    settings.c_oflag &= !libc::OPOST;
-    settings.c_lflag &= !(libc::ECHO | libc::ECHONL | libc::ICANON | libc::ISIG | libc::IEXTEN);
-    settings.c_cflag &= !(libc::CSIZE | libc::PARENB);
-    settings.c_cflag |= libc::CS8;
-    settings.c_cc[libc::VMIN] = 1;
-    settings.c_cc[libc::VTIME] = 0;
-}
-
-#[cfg(unix)]
-fn get_termios(fd: i32) -> Result<libc::termios, i32> {
-    // SAFETY: `termios` is a plain-data struct for which all-zero is a valid value.
-    let mut settings: libc::termios = unsafe { std::mem::zeroed() };
-    // SAFETY: `tcgetattr` writes a `termios` through the pointer argument.
-    if unsafe { libc::tcgetattr(fd, &raw mut settings) } == 0 {
-        Ok(settings)
-    } else {
-        Err(errno())
-    }
-}
-
-#[cfg(unix)]
-fn set_termios(fd: i32, settings: &libc::termios) -> Result<(), i32> {
-    // SAFETY: `tcsetattr` only reads the `termios` supplied through the pointer argument.
-    if unsafe { libc::tcsetattr(fd, libc::TCSANOW, settings) } == 0 {
-        Ok(())
-    } else {
-        Err(errno())
-    }
-}
-
-#[cfg(unix)]
-fn errno() -> i32 {
-    std::io::Error::last_os_error()
-        .raw_os_error()
-        .unwrap_or(libc::EINVAL)
-}
-
-#[cfg(unix)]
-fn set_raw_mode(fd: i32, enable: bool) -> Result<(), JsErrorBox> {
-    let failure = |errno: i32| JsErrorBox::new("Error", (-errno).to_string());
-
-    if !enable {
-        let saved = SAVED_TERMIOS.lock().unwrap().remove(&fd);
-        return saved.map_or_else(
-            || Ok(()),
-            |settings| set_termios(fd, &settings).map_err(failure),
-        );
-    }
-
-    let current = get_termios(fd).map_err(failure)?;
-    let mut raw = current;
-    apply_raw(&mut raw);
-    set_termios(fd, &raw).map_err(failure)?;
-    SAVED_TERMIOS.lock().unwrap().entry(fd).or_insert(current);
-    Ok(())
-}
-
-#[cfg(windows)]
-fn set_raw_mode(fd: i32, enable: bool) -> Result<(), JsErrorBox> {
-    win32::set_raw_mode(fd, enable)
+    let (columns, rows) = tty::size(fd);
+    format!("{columns}\0{rows}")
 }
 
 #[op2(nofast)]
-pub(crate) fn op_process_set_raw_mode(#[smi] fd: i32, enable: bool) -> Result<(), JsErrorBox> {
-    set_raw_mode(fd, enable)
-}
-
-#[cfg(unix)]
-fn is_raw(fd: i32) -> bool {
-    SAVED_TERMIOS.lock().unwrap().contains_key(&fd)
-}
-
-#[cfg(windows)]
-fn is_raw(fd: i32) -> bool {
-    win32::is_raw(fd)
-}
-
-#[op2(fast)]
-pub(crate) fn op_process_is_raw(#[smi] fd: i32) -> bool {
-    is_raw(fd)
-}
-
-#[cfg(unix)]
-fn restore_saved_terminals() {
-    let saved = std::mem::take(&mut *SAVED_TERMIOS.lock().unwrap());
-    for (fd, settings) in saved {
-        let _ = set_termios(fd, &settings);
+pub(crate) fn op_process_set_raw_mode(
+    #[smi] fd: i32,
+    #[string] mode: &str,
+) -> Result<(), JsErrorBox> {
+    match tty::set_mode(fd, tty_mode(mode)) {
+        0 => Ok(()),
+        status => Err(JsErrorBox::new("Error", status.to_string())),
     }
 }
 
-#[cfg(windows)]
-fn restore_saved_terminals() {
-    win32::restore_terminals();
-}
-
-/// Deno's Windows process layer: console modes, process times and memory
-/// counters through the same `windows-sys` APIs `ext/node/ops/process.rs` uses.
+/// Deno's Windows process layer: process times and memory counters through the
+/// same `windows-sys` APIs `ext/node/ops/process.rs` uses.
 #[cfg(windows)]
 mod win32 {
-    use std::collections::HashMap;
     use std::mem::{MaybeUninit, size_of};
-    use std::sync::{LazyLock, Mutex};
 
     use deno_error::JsErrorBox;
-    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE};
-    use windows_sys::Win32::System::Console::{
-        CONSOLE_SCREEN_BUFFER_INFO, ENABLE_WINDOW_INPUT, GetConsoleMode,
-        GetConsoleScreenBufferInfo, SetConsoleMode,
-    };
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
     use windows_sys::Win32::System::ProcessStatus::{
         GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
     };
@@ -508,16 +476,6 @@ mod win32 {
         GetCurrentProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
         PROCESS_TERMINATE, TerminateProcess,
     };
-
-    static SAVED_MODES: LazyLock<Mutex<HashMap<i32, u32>>> =
-        LazyLock::new(|| Mutex::new(HashMap::new()));
-
-    fn console_handle(fd: i32) -> Option<HANDLE> {
-        // SAFETY: `_get_osfhandle` maps a CRT descriptor to its OS handle and reports an
-        // invalid descriptor with -1.
-        let raw = unsafe { libc::get_osfhandle(fd) };
-        (raw != -1).then_some(raw as HANDLE)
-    }
 
     fn io_error() -> JsErrorBox {
         let error = std::io::Error::last_os_error();
@@ -616,69 +574,5 @@ mod win32 {
         values[7] = u64::from(major_faults);
         let text: Vec<String> = values.iter().map(u64::to_string).collect();
         Ok(text.join("\0"))
-    }
-
-    pub(super) fn tty_size(fd: i32) -> String {
-        let Some(console) = console_handle(fd) else {
-            return format!("{}\0{}", 0, 0);
-        };
-        let mut info = MaybeUninit::<CONSOLE_SCREEN_BUFFER_INFO>::zeroed();
-        // SAFETY: valid console handle and out-pointer.
-        if unsafe { GetConsoleScreenBufferInfo(console, info.as_mut_ptr()) } == 0 {
-            return format!("{}\0{}", 0, 0);
-        }
-        // SAFETY: the call succeeded, so `info` is initialized.
-        let info = unsafe { info.assume_init() };
-        let columns = info.srWindow.Right - info.srWindow.Left + 1;
-        let rows = info.srWindow.Bottom - info.srWindow.Top + 1;
-        format!("{columns}\0{rows}")
-    }
-
-    fn set_console_mode(console: HANDLE, mode: u32) -> Result<(), JsErrorBox> {
-        // SAFETY: `console` is a console handle returned by `_get_osfhandle`.
-        if unsafe { SetConsoleMode(console, mode) } == 0 {
-            Err(io_error())
-        } else {
-            Ok(())
-        }
-    }
-
-    pub(super) fn set_raw_mode(fd: i32, enable: bool) -> Result<(), JsErrorBox> {
-        let Some(console) = console_handle(fd) else {
-            return Err(io_error());
-        };
-        let mut saved = 0u32;
-        // SAFETY: valid console handle and out-pointer.
-        if unsafe { GetConsoleMode(console, &raw mut saved) } == 0 {
-            return Err(io_error());
-        }
-        if !enable {
-            let previous = SAVED_MODES.lock().unwrap().remove(&fd);
-            return previous.map_or(Ok(()), |mode| set_console_mode(console, mode));
-        }
-        // libuv's Windows raw mode is ENABLE_WINDOW_INPUT; VT input is used when
-        // the console supports it. This mirrors deno_core's uv_compat tty.
-        const ENABLE_VIRTUAL_TERMINAL_INPUT: u32 = 0x0200;
-        if unsafe { SetConsoleMode(console, ENABLE_WINDOW_INPUT | ENABLE_VIRTUAL_TERMINAL_INPUT) }
-            == 0
-            && unsafe { SetConsoleMode(console, ENABLE_WINDOW_INPUT) } == 0
-        {
-            return Err(io_error());
-        }
-        SAVED_MODES.lock().unwrap().entry(fd).or_insert(saved);
-        Ok(())
-    }
-
-    pub(super) fn is_raw(fd: i32) -> bool {
-        SAVED_MODES.lock().unwrap().contains_key(&fd)
-    }
-
-    pub(super) fn restore_terminals() {
-        let saved = std::mem::take(&mut *SAVED_MODES.lock().unwrap());
-        for (fd, mode) in saved {
-            if let Some(console) = console_handle(fd) {
-                let _ = set_console_mode(console, mode);
-            }
-        }
     }
 }

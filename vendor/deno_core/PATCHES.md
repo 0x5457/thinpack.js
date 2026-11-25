@@ -46,6 +46,10 @@ module evaluation entry point for CJS `require(esm)` (the Node 22.12+ behavior).
 11. `modules/map.rs`: the JSC rewriter passes import escape text through, so the NUL-escape
     check that was QuickJS-only also runs for the `jsc` backend. Without it a
     `\u0000` specifier resolves as a literal path instead of failing loudly.
+12. `error.rs`: `build_js_error_class_exception` applies a `stack` additional property even
+    though the rebuilt error already has one. An error carried over from another execution
+    context (a failure thrown by an ESM loader hook, rebuilt by the hook bridge) keeps the
+    frames it was thrown with instead of the rebuild site's.
 
 Every other file matches upstream. Upgrade procedure: unpack the target version from
 crates.io, apply the changes above, update the path dependency in `Cargo.toml`, then run

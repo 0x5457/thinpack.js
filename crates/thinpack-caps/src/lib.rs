@@ -21,6 +21,13 @@ pub fn module_for_builtin(builtin: &str) -> Option<&'static Module> {
         .find(|module| module.builtins.contains(&name))
 }
 
+#[must_use]
+pub fn module_for_global(global: &str) -> Option<&'static Module> {
+    MODULES
+        .iter()
+        .find(|module| module.globals.contains(&global))
+}
+
 /// # Errors
 ///
 /// Returns the name of a module that has no entry in the capability table.

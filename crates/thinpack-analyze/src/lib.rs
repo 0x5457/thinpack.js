@@ -9,9 +9,9 @@ use std::path::{Path, PathBuf};
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    Argument, BinaryOperator, CallExpression, ExportAllDeclaration, ExportFromDeclaration,
-    Expression, IdentifierReference, ImportDeclaration, ImportExpression, NewExpression,
-    TryStatement,
+    Argument, BinaryOperator, BindingPattern, CallExpression, ExportAllDeclaration,
+    ExportFromDeclaration, Expression, IdentifierReference, ImportDeclaration, ImportExpression,
+    NewExpression, PropertyKey, StaticMemberExpression, TryStatement, VariableDeclarator,
 };
 
 use oxc_ast_visit::{VisitJs, walk_js};
@@ -90,9 +90,10 @@ pub enum Error {
         path: PathBuf,
         message: String,
     },
-    /// The file is TypeScript that packing cannot turn into JavaScript: `.tsx`, or
-    /// syntax Node's strip-only mode rejects (enums, namespaces, parameter
-    /// properties, and other constructs that need a transform).
+    /// The file is TypeScript that packing cannot turn into JavaScript: TypeScript
+    /// under `node_modules`, `.tsx`, or syntax Node's strip-only mode rejects
+    /// (enums, namespaces, parameter properties, and other constructs that need a
+    /// transform).
     Unsupported {
         path: PathBuf,
         message: String,
@@ -146,7 +147,7 @@ impl std::error::Error for Error {}
 /// non-optional specifiers and [`Error::UnknownBuiltin`] for `node:` builtins that
 /// thinpack does not ship.
 pub fn analyze(entry: &Path, fs: &impl FileSystem) -> Result<Analysis, Error> {
-    analyze_with(entry, fs, &BTreeSet::new(), &[])
+    analyze_roots(entry, &[], fs)
 }
 
 /// [`analyze`], with package names whose missing dependencies the caller has
@@ -161,11 +162,53 @@ pub fn analyze_with(
     allow_missing: &BTreeSet<String>,
     custom_conditions: &[String],
 ) -> Result<Analysis, Error> {
+    analyze_roots_with(entry, &[], fs, allow_missing, custom_conditions)
+}
+
+/// Analyze the entry and explicit include roots as one graph.
+///
+/// Every root is required. A JavaScript root is parsed and its dependencies join
+/// the same traversal; any other root is recorded as a required payload file. A
+/// module shared by several roots is read and parsed once.
+///
+/// # Errors
+///
+/// Returns the same errors as [`analyze`].
+pub fn analyze_roots(
+    entry: &Path,
+    roots: &[PathBuf],
+    fs: &impl FileSystem,
+) -> Result<Analysis, Error> {
+    analyze_roots_with(entry, roots, fs, &BTreeSet::new(), &[])
+}
+
+/// [`analyze_roots`], with package names whose missing dependencies the caller has
+/// explicitly excluded (`--allow-missing`) and custom package conditions.
+///
+/// # Errors
+///
+/// Returns the same errors as [`analyze`].
+pub fn analyze_roots_with(
+    entry: &Path,
+    roots: &[PathBuf],
+    fs: &impl FileSystem,
+    allow_missing: &BTreeSet<String>,
+    custom_conditions: &[String],
+) -> Result<Analysis, Error> {
     let fs = ManifestRecorder::new(fs);
-    // Required targets are queued in front of optional ones, so the entry's
+    let roots: BTreeSet<PathBuf> = roots.iter().cloned().collect();
+    // Declaration files, JSON and assets are payload data, not modules. They join
+    // the result as required files after the walk instead of being parsed.
+    let (data_roots, module_roots): (Vec<_>, Vec<_>) = roots
+        .into_iter()
+        .partition(|root| !thinpack_resolve::is_javascript(root));
+    // Required targets are queued in front of optional ones, so every root's
     // non-optional closure is complete before any optional file is read and a file
-    // reached both ways is classified by its required edge.
-    let mut pending = VecDeque::from([(entry.to_path_buf(), false)]);
+    // reached both ways is classified by its required edge. `files` doubles as the
+    // visited set: each module is read and parsed once however many roots reach it.
+    let mut pending = VecDeque::with_capacity(module_roots.len() + 1);
+    pending.push_back((entry.to_path_buf(), false));
+    pending.extend(module_roots.into_iter().map(|root| (root, false)));
     let mut files = BTreeSet::new();
     let mut required = BTreeSet::new();
     let mut builtins: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
@@ -188,19 +231,9 @@ pub fn analyze_with(
             continue;
         }
 
-        let bytes = fs.read(&path).map_err(|error| Error::Read {
-            path: path.clone(),
-            message: error.to_string(),
-        })?;
-        let source = String::from_utf8(bytes).map_err(|_| Error::Read {
-            path: path.clone(),
-            message: "module is not valid UTF-8".to_owned(),
-        })?;
-        let source = typescript::strip(&path, source, &mut stripped)?;
-
         let optional_dependencies = thinpack_resolve::optional_dependencies(&path, &fs);
         let (specifiers, detected) =
-            parse_specifiers(&source, &path, &fs, &mut warnings, &mut static_files)?;
+            load_module(&path, &fs, &mut stripped, &mut warnings, &mut static_files)?;
         if let Some(format) = detected {
             formats.insert(path.clone(), format);
         }
@@ -261,6 +294,12 @@ pub fn analyze_with(
         }
     }
 
+    warnings.sort();
+    warnings.dedup();
+    // An explicit include is required even if the graph only reaches it through an
+    // optional edge, or does not reach it at all.
+    files.extend(data_roots.iter().cloned());
+    required.extend(data_roots);
     Ok(Analysis {
         files: files.into_iter().collect(),
         required,
@@ -407,6 +446,8 @@ fn parser_dialect(
 /// Explains a file whose syntax belongs to the other module format than the one its
 /// path resolves to. The loader would reject it after the artifact is written, so
 /// packing fails first and names the two ways to ask for the format it is written in.
+/// Packing reads the file on disk; a hook that assigns a format or source only runs
+/// in the artifact, so the message says why a hook cannot resolve this failure.
 fn format_mismatch(
     source: &str,
     path: &Path,
@@ -430,13 +471,13 @@ fn format_mismatch(
         Format::Esm => (
             source_type.with_commonjs(true),
             format!(
-                "uses CommonJS syntax but is loaded as an ES module; rename it to {commonjs} or remove \"type\": \"module\" from the nearest package.json"
+                "uses CommonJS syntax but is loaded as an ES module; rename it to {commonjs} or remove \"type\": \"module\" from the nearest package.json. The analyzer does not run loader hooks; it uses the source and format on disk"
             ),
         ),
         Format::CommonJs => (
             source_type.with_module(true),
             format!(
-                "uses ES module syntax but is loaded as CommonJS; rename it to {esm} or add \"type\": \"module\" to the nearest package.json"
+                "uses ES module syntax but is loaded as CommonJS; rename it to {esm} or add \"type\": \"module\" to the nearest package.json. The analyzer does not run loader hooks; it uses the source and format on disk"
             ),
         ),
         Format::Json => return None,
@@ -446,6 +487,25 @@ fn format_mismatch(
         .diagnostics
         .is_empty()
         .then_some(message)
+}
+
+fn load_module(
+    path: &Path,
+    fs: &impl FileSystem,
+    stripped: &mut BTreeMap<PathBuf, String>,
+    warnings: &mut Vec<Warning>,
+    static_files: &mut BTreeSet<PathBuf>,
+) -> Result<(Vec<SpecifierEntry>, Option<Format>), Error> {
+    let bytes = fs.read(path).map_err(|error| Error::Read {
+        path: path.to_path_buf(),
+        message: error.to_string(),
+    })?;
+    let source = String::from_utf8(bytes).map_err(|_| Error::Read {
+        path: path.to_path_buf(),
+        message: "module is not valid UTF-8".to_owned(),
+    })?;
+    let source = typescript::strip(path, source, stripped)?;
+    parse_specifiers(&source, path, fs, warnings, static_files)
 }
 
 fn parse_specifiers(
@@ -524,31 +584,6 @@ fn js_string(value: oxc_str::JSStr<'_>) -> String {
         .map_or_else(|| value.display().to_string(), str::to_owned)
 }
 
-/// The vendored undici bundle (`crates/node/http/vendor/undici.js`) requires these, so a
-/// static reference to one of its globals has to pull all of them into the payload.
-/// `http2` and `sqlite` are not here: the bundle probes both and handles their absence.
-const FETCH_BUILTINS: [&str; 16] = [
-    "assert",
-    "async_hooks",
-    "buffer",
-    "crypto",
-    "diagnostics_channel",
-    "events",
-    "http",
-    "net",
-    "perf_hooks",
-    "querystring",
-    "stream",
-    "tls",
-    "url",
-    "util",
-    "worker_threads",
-    "zlib",
-];
-/// The globals the bundle sits behind. A static reference to any of them — `fetch(...)`,
-/// `new Response(...)`, `Response.json(...)` — is what pulls [`FETCH_BUILTINS`].
-const FETCH_GLOBALS: [&str; 5] = ["fetch", "Headers", "Request", "Response", "FormData"];
-
 /// The global an expression names, either bare or through `globalThis`.
 fn global_name<'a>(expression: &'a Expression<'_>) -> Option<&'a str> {
     match expression {
@@ -559,19 +594,6 @@ fn global_name<'a>(expression: &'a Expression<'_>) -> Option<&'a str> {
             }
             _ => None,
         },
-        _ => None,
-    }
-}
-
-/// The global an expression references: bare, through `globalThis`, or as the receiver of a
-/// static call, so `fetch(...)`, `globalThis.fetch(...)`, `Response.json(...)` and
-/// `globalThis.Response.redirect(...)` all name one.
-fn referenced_global<'a>(expression: &'a Expression<'_>) -> Option<&'a str> {
-    if let Some(name) = global_name(expression) {
-        return Some(name);
-    }
-    match expression {
-        Expression::StaticMemberExpression(member) => global_name(&member.object),
         _ => None,
     }
 }
@@ -645,6 +667,20 @@ impl SpecifierCollector<'_, '_> {
     fn add_builtins(&mut self, builtins: &[&str]) {
         for builtin in builtins {
             self.add_specifier((*builtin).to_owned(), false);
+        }
+    }
+
+    /// A static reference to a global selects the capability that owns it, so the
+    /// whole shared closure follows the reference instead of a local call name.
+    fn add_global(&mut self, name: &str) {
+        if let Some(module) = thinpack_caps::module_for_global(name) {
+            self.add_builtins(module.builtins);
+        }
+    }
+
+    fn add_global_reference(&mut self, identifier: &IdentifierReference<'_>) {
+        if identifier.is_global_reference(self.semantic.scoping()) {
+            self.add_global(identifier.name.as_str());
         }
     }
 
@@ -815,10 +851,37 @@ impl<'a> VisitJs<'a> for SpecifierCollector<'a, '_> {
         self.dynamic_function(&call.callee, &call.arguments);
         self.static_asset(call);
         self.require_call(call);
-        if referenced_global(&call.callee).is_some_and(|name| FETCH_GLOBALS.contains(&name)) {
-            self.add_builtins(&FETCH_BUILTINS);
-        }
         walk_js::walk_call_expression(self, call);
+    }
+
+    fn visit_identifier_reference(&mut self, identifier: &IdentifierReference<'a>) {
+        self.add_global_reference(identifier);
+        walk_js::walk_identifier_reference(self, identifier);
+    }
+
+    fn visit_static_member_expression(&mut self, member: &StaticMemberExpression<'a>) {
+        if let Expression::Identifier(object) = &member.object
+            && object.name == "globalThis"
+            && object.is_global_reference(self.semantic.scoping())
+        {
+            self.add_global(member.property.name.as_str());
+        }
+        walk_js::walk_static_member_expression(self, member);
+    }
+
+    fn visit_variable_declarator(&mut self, declarator: &VariableDeclarator<'a>) {
+        if let Some(Expression::Identifier(init)) = declarator.init.as_ref()
+            && init.name == "globalThis"
+            && init.is_global_reference(self.semantic.scoping())
+            && let BindingPattern::ObjectPattern(pattern) = &declarator.id
+        {
+            for property in &pattern.properties {
+                if let PropertyKey::StaticIdentifier(key) = &property.key {
+                    self.add_global(key.name.as_str());
+                }
+            }
+        }
+        walk_js::walk_variable_declarator(self, declarator);
     }
 
     fn visit_try_statement(&mut self, statement: &TryStatement<'a>) {
@@ -837,11 +900,6 @@ impl<'a> VisitJs<'a> for SpecifierCollector<'a, '_> {
 
     fn visit_new_expression(&mut self, expression: &NewExpression<'a>) {
         self.dynamic_function(&expression.callee, &expression.arguments);
-        match global_name(&expression.callee) {
-            Some("WebSocket") => self.add_builtins(&FETCH_BUILTINS),
-            Some(name) if FETCH_GLOBALS.contains(&name) => self.add_builtins(&FETCH_BUILTINS),
-            _ => {}
-        }
         walk_js::walk_new_expression(self, expression);
     }
 }
@@ -857,6 +915,7 @@ mod tests {
     struct MemoryFs {
         files: BTreeMap<PathBuf, String>,
         directories: BTreeSet<PathBuf>,
+        reads: RefCell<BTreeMap<PathBuf, usize>>,
     }
 
     impl MemoryFs {
@@ -864,6 +923,7 @@ mod tests {
             let mut fs = Self {
                 files: BTreeMap::new(),
                 directories: BTreeSet::new(),
+                reads: RefCell::new(BTreeMap::new()),
             };
             for (path, contents) in files {
                 let path = PathBuf::from(path);
@@ -890,10 +950,16 @@ mod tests {
         }
 
         fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
-            self.files
+            let contents = self
+                .files
                 .get(path)
-                .map(|contents| contents.clone().into_bytes())
-                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
+                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+            *self
+                .reads
+                .borrow_mut()
+                .entry(path.to_path_buf())
+                .or_default() += 1;
+            Ok(contents.clone().into_bytes())
         }
     }
 
@@ -995,6 +1061,34 @@ mod tests {
     }
 
     #[test]
+    fn typescript_in_node_modules_is_rejected() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.ts",
+                "import { value } from 'dep';\nconsole.log(value);\n",
+            ),
+            (
+                "/app/node_modules/dep/package.json",
+                r#"{"name": "dep", "type": "module", "exports": "./index.ts"}"#,
+            ),
+            (
+                "/app/node_modules/dep/index.ts",
+                "export const value: number = 1;\n",
+            ),
+        ]);
+        match analyze(Path::new("/app/main.ts"), &fs) {
+            Err(Error::Unsupported { path, message }) => {
+                assert_eq!(path, PathBuf::from("/app/node_modules/dep/index.ts"));
+                assert!(
+                    message.contains("ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING"),
+                    "{message}"
+                );
+            }
+            other => panic!("expected an unsupported TypeScript error, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn typescript_type_only_imports_are_erased_before_analysis() {
         let fs = MemoryFs::new(&[(
             "/app/main.ts",
@@ -1088,6 +1182,10 @@ mod tests {
                 assert!(message.contains("loaded as CommonJS"), "{message}");
                 assert!(message.contains("rename it to .mjs"), "{message}");
                 assert!(message.contains("\"type\": \"module\""), "{message}");
+                assert!(
+                    message.contains("The analyzer does not run loader hooks"),
+                    "{message}"
+                );
             }
             other => panic!("expected a format error, got {other:?}"),
         }
@@ -1103,6 +1201,10 @@ mod tests {
             Err(Error::Format { message, .. }) => {
                 assert!(message.contains("loaded as an ES module"), "{message}");
                 assert!(message.contains("remove \"type\": \"module\""), "{message}");
+                assert!(
+                    message.contains("The analyzer does not run loader hooks"),
+                    "{message}"
+                );
             }
             other => panic!("expected a format error, got {other:?}"),
         }
@@ -1275,6 +1377,67 @@ mod tests {
     }
 
     #[test]
+    fn shared_roots_are_read_once_without_changing_the_analysis() {
+        let fixture = [
+            ("/app/package.json", "{}"),
+            (
+                "/app/main.js",
+                "try { require('./shared'); } catch {}\ntry { require('./guarded'); } catch {}\nrequire('./entry-only');\n",
+            ),
+            ("/app/entry-only.js", "require('node:events');\n"),
+            (
+                "/app/extra.js",
+                "require('./shared');\nrequire('node:fs');\n",
+            ),
+            (
+                "/app/shared.js",
+                "require('./leaf');\nrequire('node:path');\n",
+            ),
+            ("/app/leaf.js", "require('node:os');\n"),
+            ("/app/guarded.js", "module.exports = 1;\n"),
+        ];
+        let roots = [
+            PathBuf::from("/app/extra.js"),
+            PathBuf::from("/app/shared.js"),
+            PathBuf::from("/app/leaf.js"),
+        ];
+
+        let separate = MemoryFs::new(&fixture);
+        let mut merged = analyze(Path::new("/app/main.js"), &separate).unwrap();
+        for root in &roots {
+            merged.merge(analyze(root, &separate).unwrap());
+        }
+
+        let fs = MemoryFs::new(&fixture);
+        let analysis = analyze_roots(Path::new("/app/main.js"), &roots, &fs).unwrap();
+        assert_eq!(analysis.files, merged.files);
+        assert_eq!(analysis.required, merged.required);
+        assert_eq!(analysis.builtins, merged.builtins);
+        assert_eq!(analysis.warnings, merged.warnings);
+        assert_eq!(capabilities(&analysis), capabilities(&merged));
+        for root in [
+            "/app/main.js",
+            "/app/entry-only.js",
+            "/app/extra.js",
+            "/app/shared.js",
+            "/app/leaf.js",
+            "/app/guarded.js",
+        ] {
+            assert_eq!(
+                fs.reads.borrow().get(Path::new(root)),
+                Some(&1),
+                "{root} was read more than once"
+            );
+        }
+        assert!(analysis.required.contains(&PathBuf::from("/app/shared.js")));
+        assert!(
+            !analysis
+                .required
+                .contains(&PathBuf::from("/app/guarded.js"))
+        );
+    }
+
+    #[test]
     fn warns_about_dynamic_requires() {
         let fs = MemoryFs::new(&[(
             "/app/main.js",
@@ -1380,7 +1543,9 @@ mod tests {
         let fs = MemoryFs::new(&[("/app/main.js", "new WebSocket('ws://127.0.0.1:1');\n")]);
         let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
         let capabilities = capabilities(&analysis);
-        for name in ["http", "net", "tls", "crypto", "buffer", "stream", "zlib"] {
+        for name in [
+            "fetch", "http", "net", "tls", "crypto", "buffer", "stream", "zlib",
+        ] {
             assert!(
                 capabilities.iter().any(|capability| capability == name),
                 "missing {name}: {capabilities:?}"
@@ -1466,12 +1631,17 @@ mod tests {
             "new FormData();\n",
             "Response.json({});\n",
             "globalThis.Response.redirect('/x');\n",
+            "const request = fetch;\nrequest('http://127.0.0.1/');\n",
+            "const Socket = WebSocket;\nconsole.log(Socket.name);\n",
+            "const { fetch: request } = globalThis;\nrequest('http://127.0.0.1/');\n",
         ];
         for source in cases {
             let fs = MemoryFs::new(&[("/app/main.js", source)]);
             let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
             let capabilities = capabilities(&analysis);
-            for name in FETCH_BUILTINS {
+            for name in [
+                "fetch", "http", "net", "tls", "crypto", "buffer", "stream", "zlib",
+            ] {
                 assert!(
                     capabilities.iter().any(|capability| capability == name),
                     "{source} did not pull {name}: {capabilities:?}"
@@ -1487,16 +1657,14 @@ mod tests {
     }
 
     #[test]
-    fn fetch_pulls_the_undici_builtins_only() {
+    fn fetch_selects_the_capability_and_its_closure() {
         let fs = MemoryFs::new(&[("/app/main.js", "fetch('http://127.0.0.1/');\n")]);
         let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
-        for builtin in FETCH_BUILTINS {
-            assert!(
-                analysis.builtins.contains_key(builtin),
-                "missing {builtin}: {:?}",
-                analysis.builtins
-            );
-        }
+        assert!(
+            analysis.builtins.contains_key("thinpack/internal/undici"),
+            "missing the fetch marker: {:?}",
+            analysis.builtins
+        );
         // `http2` and `sqlite` stay out: undici guards both, so a fetch app must pack
         // without them (and `--without http2`/`--without sqlite` must keep working).
         for builtin in ["http2", "sqlite"] {
@@ -1506,9 +1674,47 @@ mod tests {
                 analysis.builtins
             );
         }
-        // The sixteen builtins close over nineteen modules; the CLI adds the ambient
-        // `console` and `timers` on top, so a one-line fetch app has 21 capabilities.
-        assert_eq!(capabilities(&analysis).len(), 19);
+        let capabilities = capabilities(&analysis);
+        assert_eq!(capabilities.len(), 20);
+        assert!(capabilities.iter().any(|name| name == "fetch"));
+    }
+
+    #[test]
+    fn an_http_only_app_does_not_pull_fetch() {
+        let fs = MemoryFs::new(&[(
+            "/app/main.js",
+            "const http = require('node:http');\nhttp.createServer();\n",
+        )]);
+        let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
+        let capabilities = capabilities(&analysis);
+        assert!(capabilities.iter().any(|name| name == "http"));
+        assert!(!capabilities.iter().any(|name| name == "fetch"));
+        assert!(
+            !analysis.builtins.contains_key("thinpack/internal/undici"),
+            "HTTP pulled Undici: {:?}",
+            analysis.builtins
+        );
+    }
+
+    #[test]
+    fn shadowed_fetch_globals_do_not_pull_fetch() {
+        let cases = [
+            "function fetch() { return 1; }\nfetch();\n",
+            "const fetch = () => 1;\nfetch();\n",
+            "function connect(WebSocket) { return new WebSocket(); }\nconnect(class {});\n",
+            "class Response {};\nnew Response();\n",
+            "const globalThis = { fetch() { return 1; } };\nglobalThis.fetch();\n",
+            "const globalThis = { fetch: 1 };\nconst { fetch } = globalThis;\nconsole.log(fetch);\n",
+        ];
+        for source in cases {
+            let fs = MemoryFs::new(&[("/app/main.js", source)]);
+            let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
+            let capabilities = capabilities(&analysis);
+            assert!(
+                !capabilities.iter().any(|name| name == "fetch"),
+                "{source} pulled fetch: {capabilities:?}"
+            );
+        }
     }
 
     #[test]

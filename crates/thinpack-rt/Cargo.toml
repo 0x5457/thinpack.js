@@ -42,6 +42,7 @@ thinpack-node-dns = { workspace = true, optional = true }
 thinpack-node-domain = { workspace = true, optional = true }
 thinpack-node-tls = { workspace = true, optional = true }
 thinpack-node-http = { workspace = true, optional = true }
+thinpack-node-fetch = { workspace = true, optional = true }
 thinpack-node-https = { workspace = true, optional = true }
 thinpack-node-http2 = { workspace = true, optional = true }
 thinpack-node-inspector = { workspace = true, optional = true }
@@ -83,7 +84,7 @@ default = ["backend-quickjs", "node-all"]
 backend-quickjs = ["thinpack-core/backend-quickjs"]
 backend-v8 = ["thinpack-core/backend-v8"]
 backend-jsc = ["thinpack-core/backend-jsc"]
-node-all = ["node-assert", "node-async-hooks", "node-buffer", "node-child-process", "node-cluster", "node-console", "node-constants", "node-crypto", "node-diagnostics-channel", "node-dns", "node-domain", "node-events", "node-ffi", "node-fs", "node-http", "node-http2", "node-https", "node-inspector", "node-module", "node-net", "node-os", "node-path", "node-perf-hooks", "node-process", "node-punycode", "node-querystring", "node-readline", "node-sea", "node-sqlite", "node-stream", "node-string-decoder", "node-test", "node-timers", "node-tls", "node-tty", "node-url", "node-util", "node-v8", "node-vm", "node-worker-threads", "node-zlib"]
+node-all = ["node-assert", "node-async-hooks", "node-buffer", "node-child-process", "node-cluster", "node-console", "node-constants", "node-crypto", "node-diagnostics-channel", "node-dns", "node-domain", "node-events", "node-fetch", "node-ffi", "node-fs", "node-http", "node-http2", "node-https", "node-inspector", "node-module", "node-net", "node-os", "node-path", "node-perf-hooks", "node-process", "node-punycode", "node-querystring", "node-readline", "node-sea", "node-sqlite", "node-stream", "node-string-decoder", "node-test", "node-timers", "node-tls", "node-tty", "node-url", "node-util", "node-v8", "node-vm", "node-worker-threads", "node-zlib"]
 node-assert = ["dep:thinpack-node-assert", "node-util"]
 node-async-hooks = ["dep:thinpack-node-async-hooks"]
 node-buffer = ["dep:thinpack-node-buffer", "node-process"]
@@ -96,6 +97,7 @@ node-diagnostics-channel = ["dep:thinpack-node-diagnostics-channel"]
 node-dns = ["dep:thinpack-node-dns"]
 node-domain = ["dep:thinpack-node-domain", "node-events"]
 node-events = ["dep:thinpack-node-events", "node-process"]
+node-fetch = ["dep:thinpack-node-fetch", "node-assert", "node-async-hooks", "node-buffer", "node-crypto", "node-diagnostics-channel", "node-events", "node-http", "node-net", "node-perf-hooks", "node-querystring", "node-stream", "node-tls", "node-url", "node-util", "node-worker-threads", "node-zlib"]
 node-ffi = ["dep:thinpack-node-ffi"]
 node-fs = ["dep:thinpack-node-fs", "node-buffer", "node-path", "node-events", "node-readline", "node-string-decoder", "node-stream", "node-timers", "node-util"]
 node-http = ["dep:thinpack-node-http", "node-stream", "node-net"]

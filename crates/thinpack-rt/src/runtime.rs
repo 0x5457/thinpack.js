@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 
-use thinpack_core::{Assets, BACKEND, BuiltinSources, Runtime};
+use thinpack_core::{Assets, BACKEND, BuiltinSources, IsolateInputs, Runtime};
 use thinpack_loader::{Main, ModuleFs};
 use thinpack_pack::Pack;
 use thinpack_vfs::Vfs;
@@ -112,7 +112,7 @@ pub(crate) fn warm(pack: &Pack) -> Result<usize, Box<dyn std::error::Error>> {
     }
 
     let compiled = scripts.len() + modules.len();
-    let (extensions, builtins, loader) = extensions(input, fs)?;
+    let (extensions, builtins, loader) = extensions(input, fs, &IsolateInputs::new(None))?;
     tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .enable_io()
@@ -149,7 +149,8 @@ pub(crate) fn run(
         Main::File(path) => Some((path.clone(), thinpack_loader::is_esm(path, &fs))),
         Main::Eval(_) => None,
     };
-    let (extensions, builtins, loader) = extensions(main, fs)?;
+    let isolate = IsolateInputs::new(packed.as_ref().map(|packed| packed.files.clone()));
+    let (extensions, builtins, loader) = extensions(main, fs, &isolate)?;
 
     let outcome = tokio::runtime::Builder::new_current_thread()
         .enable_time()
@@ -159,10 +160,6 @@ pub(crate) fn run(
             let mut runtime = Runtime::new(extensions, builtins, loader)?;
             if let Some(packed) = packed {
                 runtime.install_invocation(&thinpack_core::Invocation(packed.invocation))?;
-                #[cfg(feature = "node-fs")]
-                runtime.put_state(thinpack_node_fs::VirtualMount::new(packed.files));
-                #[cfg(not(feature = "node-fs"))]
-                let _ = packed.files;
             }
             runtime.install_assets(assets);
             runtime.execute_script(
@@ -196,16 +193,18 @@ type RuntimeParts = (
     Rc<dyn deno_core::ModuleLoader>,
 );
 
-fn extensions(main: Main, fs: ModuleFs) -> Result<RuntimeParts, Box<dyn std::error::Error>> {
+fn extensions(
+    main: Main,
+    fs: ModuleFs,
+    isolate: &IsolateInputs,
+) -> Result<RuntimeParts, Box<dyn std::error::Error>> {
     let mut extensions = vec![
         thinpack_loader::init(main, fs.clone()),
         thinpack_io::init(),
         thinpack_node_internals::init(),
         bootstrap::init(),
     ];
-    extensions.extend(registry::extensions());
-    #[cfg(feature = "node-ffi")]
-    extensions.push(thinpack_node_ffi::engine());
+    extensions.extend(registry::extensions(isolate));
     let builtins = BuiltinSources::collect(&mut extensions)?;
     let loader = thinpack_loader::esm_loader(fs, builtins.clone());
     Ok((extensions, builtins, loader))
@@ -213,16 +212,16 @@ fn extensions(main: Main, fs: ModuleFs) -> Result<RuntimeParts, Box<dyn std::err
 
 fn run_worker(spec: thinpack_core::worker::WorkerSpec) -> Result<(), thinpack_core::Error> {
     let entry = spec.script.clone();
-    let (fs, assets, files) = match PACK.get().map(|pack| packed_parts(pack)) {
+    let (fs, assets, isolate) = match PACK.get().map(|pack| packed_parts(pack)) {
         Some(Ok((vfs, assets))) => {
-            let files: thinpack_core::VirtualFilesRef = vfs.clone();
-            (ModuleFs::Packed(vfs), assets, Some(files))
+            let isolate = IsolateInputs::new(Some(vfs.clone()));
+            (ModuleFs::Packed(vfs), assets, isolate)
         }
         Some(Err(error)) => return Err(thinpack_core::Error::new(error.to_string())),
-        None => (ModuleFs::Host, Assets::host(), None),
+        None => (ModuleFs::Host, Assets::host(), IsolateInputs::new(None)),
     };
     let esm = thinpack_loader::is_esm(&entry, &fs);
-    let (extensions, builtins, loader) = extensions(Main::File(entry.clone()), fs)
+    let (extensions, builtins, loader) = extensions(Main::File(entry.clone()), fs, &isolate)
         .map_err(|error| thinpack_core::Error::new(error.to_string()))?;
 
     tokio::runtime::Builder::new_current_thread()
@@ -234,12 +233,6 @@ fn run_worker(spec: thinpack_core::worker::WorkerSpec) -> Result<(), thinpack_co
             let mut runtime = Runtime::new(extensions, builtins, loader)?;
             runtime.install_worker_context(spec.context());
             runtime.install_assets(assets);
-            if let Some(files) = files {
-                #[cfg(feature = "node-fs")]
-                runtime.put_state(thinpack_node_fs::VirtualMount::new(files));
-                #[cfg(not(feature = "node-fs"))]
-                let _ = files;
-            }
             execute(&mut runtime, Some((entry, esm))).await
         })
 }

@@ -18,17 +18,19 @@ if (cluster.isPrimary) {
   console.log("forked");
   worker.on("message", (message) => {
     console.log(`primary: ${message}`);
-    worker.kill();
+    worker.send("shutdown");
   });
   worker.on("error", (error) => {
     console.log(`worker error: ${error}`);
   });
-  worker.on("exit", () => {
+  worker.on("exit", (code, signal) => {
     clearTimeout(guard);
-    process.exit(0);
+    console.log(`worker exit: code=${code} signal=${signal}`);
+    process.exit(code === 0 ? 0 : 1);
   });
 } else {
   console.log("worker branch");
+  process.on("message", () => process.exit(0));
   process.send("worker online");
   console.log("worker sent");
 }

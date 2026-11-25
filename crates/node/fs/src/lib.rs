@@ -7,14 +7,16 @@ pub use virtual_mount::VirtualMount;
 use std::borrow::Cow;
 
 use deno_core::{Extension, ExtensionFileSource};
+use thinpack_core::IsolateInputs;
 
 // `glob` feature input: the extension's own JS (glob.js) calls the ops it adds.
 use thinpack_node_internals as _;
 
 use crate::ops::OPS;
 
+/// Builds the file-system extension and, for a packed isolate, mounts its payload at `/app`.
 #[must_use]
-pub fn init() -> Extension {
+pub fn init(isolate: &IsolateInputs) -> Vec<Extension> {
     const BUILTINS: &[ExtensionFileSource] = &[
         ExtensionFileSource::new_compressed("node:fs", thinpack_js::js!("node-fs.js")),
         ExtensionFileSource::new_compressed(
@@ -87,7 +89,8 @@ pub fn init() -> Extension {
         ),
     ];
 
-    Extension {
+    let files = isolate.files();
+    let extension = Extension {
         name: "thinpack_node_fs",
         deps: &[
             "thinpack_node_internals",
@@ -101,6 +104,12 @@ pub fn init() -> Extension {
         ],
         ops: Cow::Borrowed(OPS),
         lazy_loaded_js_files: Cow::Borrowed(BUILTINS),
+        op_state_fn: Some(Box::new(move |state| {
+            if let Some(files) = files {
+                state.put(VirtualMount::new(files));
+            }
+        })),
         ..Default::default()
-    }
+    };
+    vec![extension]
 }

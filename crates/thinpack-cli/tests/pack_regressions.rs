@@ -98,6 +98,10 @@ mod unix {
         );
         assert!(error.contains("rename it to .mjs"), "{error}");
         assert!(error.contains("add \"type\": \"module\""), "{error}");
+        assert!(
+            error.contains("The analyzer does not run loader hooks"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -373,6 +377,13 @@ mod unix {
             "declare const answer: number;\n",
         )
         .expect("write declaration file");
+        fs::create_dir_all(directory.path().join("node_modules/pkg"))
+            .expect("create installed package");
+        fs::write(
+            directory.path().join("node_modules/pkg/types.d.ts"),
+            "declare const installed: number;\n",
+        )
+        .expect("write installed declaration file");
         let template = fake_template(
             &directory.path().join("thinpack-rt"),
             env!("CARGO_PKG_VERSION"),
@@ -390,6 +401,8 @@ mod unix {
                 output.to_str().expect("output path is UTF-8"),
                 "--include",
                 "types.d.ts",
+                "--include",
+                "node_modules/pkg/types.d.ts",
             ],
         );
         assert!(
@@ -423,12 +436,119 @@ mod unix {
             contents("/app/types.d.ts"),
             "declare const answer: number;\n"
         );
+        assert_eq!(
+            contents("/app/node_modules/pkg/types.d.ts"),
+            "declare const installed: number;\n"
+        );
         assert!(
             pack.manifest
                 .files
                 .iter()
                 .any(|file| file.path == "/app/package.json"),
             "the package scope is packed"
+        );
+    }
+
+    #[test]
+    fn overlapping_include_roots_keep_the_entry_capabilities() {
+        let directory = TempDir::new("overlapping-includes");
+        let entry = directory.path().join("main.js");
+        fs::write(
+            &entry,
+            "try { require('./src/shared.js'); } catch {}\nrequire('./src/app.js');\n",
+        )
+        .expect("write entry");
+        let source = directory.path().join("src");
+        fs::create_dir(&source).expect("create include directory");
+        fs::write(
+            source.join("shared.js"),
+            "module.exports = require('node:path');\n",
+        )
+        .expect("write shared module");
+        fs::write(
+            source.join("app.js"),
+            "module.exports = require('node:fs');\n",
+        )
+        .expect("write app module");
+        fs::write(source.join("notes.txt"), "payload data\n").expect("write data file");
+        let cli = Path::new(env!("CARGO_BIN_EXE_thinpack"));
+
+        let entry_only = run_pack(cli, directory.path(), &entry, &["--list-capabilities"]);
+        assert!(
+            entry_only.status.success(),
+            "entry-only analysis failed:\n{}",
+            String::from_utf8_lossy(&entry_only.stderr)
+        );
+        let included = run_pack(
+            cli,
+            directory.path(),
+            &entry,
+            &["--list-capabilities", "--include", "src"],
+        );
+        assert!(
+            included.status.success(),
+            "analysis with overlapping include roots failed:\n{}",
+            String::from_utf8_lossy(&included.stderr)
+        );
+        assert_eq!(entry_only.stdout, included.stdout);
+    }
+
+    #[test]
+    fn typescript_in_node_modules_fails_packing() {
+        let directory = TempDir::new("typescript-node-modules");
+        let entry = directory.path().join("main.ts");
+        fs::write(
+            directory.path().join("package.json"),
+            r#"{ "type": "module" }"#,
+        )
+        .expect("write package manifest");
+        fs::write(
+            &entry,
+            "import { greet } from 'dep';\nconsole.log(greet('world'));\n",
+        )
+        .expect("write TypeScript entry");
+        let dependency = directory.path().join("node_modules/dep");
+        fs::create_dir_all(&dependency).expect("create installed dependency");
+        fs::write(
+            dependency.join("package.json"),
+            r#"{ "name": "dep", "type": "module", "exports": "./index.ts" }"#,
+        )
+        .expect("write dependency manifest");
+        fs::write(
+            dependency.join("index.ts"),
+            "export const greet = (name: string): string => `hello ${name}`;\n",
+        )
+        .expect("write dependency source");
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let output = directory.path().join("packed-app");
+
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            directory.path(),
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+            ],
+        );
+        assert!(
+            !result.status.success(),
+            "packed TypeScript from node_modules"
+        );
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(error.contains("node_modules/dep/index.ts"), "{error}");
+        assert!(
+            error.contains("ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING"),
+            "{error}"
+        );
+        assert!(
+            !output.exists(),
+            "pack wrote an executable from TypeScript under node_modules"
         );
     }
 

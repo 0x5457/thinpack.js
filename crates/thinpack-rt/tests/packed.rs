@@ -10,6 +10,9 @@ use std::time::{Duration, Instant};
 
 use thinpack_pack::{Compression, FileRecord, Manifest, Template};
 
+#[cfg(unix)]
+mod tty;
+
 // A packed test normally finishes in under a second, but a debug-build RSA key generation
 // can spend several seconds searching for primes.
 const TEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -236,6 +239,48 @@ parentPort.postMessage('worker loaded from the packed VFS');
             ),
         ],
         capabilities: &["assert", "worker_threads"],
+        error: None,
+    },
+    PackedTest {
+        name: "packed::fs-main-and-worker-mount",
+        directory: "fs-main-and-worker-mount",
+        entry: "/app/main.js",
+        files: &[
+            (
+                "/app/main.js",
+                r"
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const { Worker } = require('node:worker_threads');
+
+assert.equal(fs.readFileSync('/app/data.txt', 'utf8'), 'packed\n');
+const worker = new Worker('/app/worker.js');
+worker.once('error', (error) => {
+  throw error;
+});
+worker.once('message', (message) => {
+  assert.deepEqual(message, { contents: 'packed\n', size: 7 });
+});
+worker.once('exit', (code) => {
+  assert.equal(code, 0);
+});
+",
+            ),
+            (
+                "/app/worker.js",
+                r"
+const fs = require('node:fs');
+const { parentPort } = require('node:worker_threads');
+
+parentPort.postMessage({
+  contents: fs.readFileSync('/app/data.txt', 'utf8'),
+  size: fs.statSync('/app/data.txt').size,
+});
+",
+            ),
+            ("/app/data.txt", "packed\n"),
+        ],
+        capabilities: &["assert", "fs", "worker_threads"],
         error: None,
     },
     // The analyzer's format check rests on this: a packed `package.json` makes the
@@ -575,6 +620,92 @@ assert.equal(globalThis.dependencyEvaluated, undefined);
         error: None,
     },
     PackedTest {
+        name: "packed::esm-hook-awaits-io",
+        directory: "esm-hook-awaits-io",
+        entry: "/app/main.mjs",
+        files: &[
+            (
+                "/app/main.mjs",
+                r#"
+import assert from 'node:assert/strict';
+import module from 'node:module';
+
+module.register('./hooks.mjs', import.meta.url);
+
+await assert.rejects(import('./lib.mjs'), {
+  name: 'Error',
+  code: 'ERR_ESM_HOOK_ASYNC',
+  message:
+    "the resolve hook for './lib.mjs' did not settle: ESM hooks run synchronously, " +
+    'so a hook that awaits I/O cannot finish. Use a synchronous API in the hook ' +
+    '(fs.readFileSync, for example).',
+});
+"#,
+            ),
+            (
+                "/app/hooks.mjs",
+                r"
+import fs from 'node:fs';
+
+export async function resolve(specifier, context, nextResolve) {
+  // `readFile` is a real asynchronous op, unlike the synchronous `stat` calls.
+  await fs.promises.readFile('/app/hooks.mjs', 'utf8');
+  return nextResolve(specifier, context);
+}
+",
+            ),
+            ("/app/lib.mjs", "export const value = 1;\n"),
+        ],
+        capabilities: &["assert", "fs", "module"],
+        error: None,
+    },
+    PackedTest {
+        name: "packed::esm-hook-error",
+        directory: "esm-hook-error",
+        entry: "/app/main.mjs",
+        files: &[
+            (
+                "/app/main.mjs",
+                r"
+import assert from 'node:assert/strict';
+import module from 'node:module';
+
+module.register('./hooks.mjs', import.meta.url);
+
+assert.equal((await import('./lib.mjs')).value, 'from the hook');
+
+await assert.rejects(import('./veto.mjs'), (error) => {
+  assert.ok(error instanceof SyntaxError);
+  assert.equal(error.code, undefined);
+  assert.equal(error.message, 'the hook refused ./veto.mjs');
+  assert.match(error.stack, /\/app\/hooks\.mjs/);
+  return true;
+});
+",
+            ),
+            (
+                "/app/hooks.mjs",
+                r#"
+export function load(url, context, nextLoad) {
+  if (url.endsWith('/lib.mjs')) {
+    return { format: 'module', source: "export const value = 'from the hook';\n" };
+  }
+  return nextLoad(url, context);
+}
+
+export function resolve(specifier, context, nextResolve) {
+  if (specifier === './veto.mjs') throw new SyntaxError('the hook refused ./veto.mjs');
+  return nextResolve(specifier, context);
+}
+"#,
+            ),
+            ("/app/lib.mjs", "export const value = 'from the payload';\n"),
+            ("/app/veto.mjs", "export const value = 2;\n"),
+        ],
+        capabilities: &["assert", "module"],
+        error: None,
+    },
+    PackedTest {
         name: "packed::crypto-keypair-diffie-hellman",
         directory: "crypto-keypair-diffie-hellman",
         entry: "/app/main.js",
@@ -752,6 +883,33 @@ for (const [type, options] of [
 ",
         )],
         capabilities: &["assert", "crypto"],
+        error: None,
+    },
+    PackedTest {
+        name: "packed::ffi-dlopen",
+        directory: "ffi-dlopen",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r"
+const assert = require('node:assert/strict');
+const ffi = require('node:ffi');
+
+const library = process.platform === 'win32'
+  ? 'kernel32.dll'
+  : process.platform === 'darwin' ? 'libSystem.B.dylib' : 'libc.so.6';
+const symbol = process.platform === 'win32' ? 'GetCurrentProcessId' : 'getpid';
+const { lib, functions } = ffi.dlopen(library, {
+  [symbol]: {
+    arguments: [],
+    return: process.platform === 'win32' ? 'u32' : 'i32',
+  },
+});
+assert.ok(functions[symbol]() > 0);
+lib.close();
+",
+        )],
+        capabilities: &["assert", "ffi"],
         error: None,
     },
     PackedTest {
@@ -1236,6 +1394,23 @@ assert.throws(() => vm.createContext({}), { code: 'ERR_NOT_IMPLEMENTED' });
 assert.equal(vm.runInNewContext('6 * 7'), 42);
 const script = new vm.Script('40 + 2', { filename: 'unit.js' });
 assert.equal(script.runInContext(context), 42);
+
+// A thrown value reaches the caller unchanged. A thrown null or undefined must
+// not be confused with a normal return, and returning null is not a throw.
+const calls = [
+  ['runInContext', (source) => vm.runInContext(source, context)],
+  ['runInNewContext', (source) => vm.runInNewContext(source)],
+  ['Script.runInContext', (source) => new vm.Script(source).runInContext(context)],
+  ['Script.runInNewContext', (source) => new vm.Script(source).runInNewContext()],
+  ['runInThisContext', (source) => vm.runInThisContext(source)],
+  ['Script.runInThisContext', (source) => new vm.Script(source).runInThisContext()],
+];
+for (const [api, call] of calls) {
+  assert.throws(() => call('throw null'), (thrown) => thrown === null, api);
+  assert.throws(() => call('throw undefined'), (thrown) => thrown === undefined, api);
+  assert.equal(call('null'), null, api);
+}
+assert.throws(() => vm.runInThisContext('throw new TypeError("boom")'), TypeError);
 console.log('vm context ok');
 "#,
         )],
@@ -1305,6 +1480,8 @@ pub(super) fn print_list(cli: &super::Cli) {
             println!("{}", test.name);
         }
     }
+    #[cfg(unix)]
+    tty::print_list(cli);
 }
 
 pub(super) fn execute(cli: &super::Cli) -> bool {
@@ -1317,6 +1494,9 @@ pub(super) fn execute(cli: &super::Cli) -> bool {
         .iter()
         .filter(|test| cli.matches(test.name))
         .collect();
+    #[cfg(unix)]
+    let test_count = selected.len() + startup.len() + tty::selected(cli).len();
+    #[cfg(not(unix))]
     let test_count = selected.len() + startup.len();
     if test_count == 0 {
         return true;
@@ -1337,6 +1517,17 @@ pub(super) fn execute(cli: &super::Cli) -> bool {
         report(
             test.name,
             run_startup_test(test),
+            started,
+            &mut passed,
+            &mut failed,
+        );
+    }
+    #[cfg(unix)]
+    for test in tty::selected(cli) {
+        let started = Instant::now();
+        report(
+            test.name,
+            tty::run_test(test),
             started,
             &mut passed,
             &mut failed,

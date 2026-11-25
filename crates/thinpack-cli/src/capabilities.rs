@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use thinpack_analyze::Analysis;
 use thinpack_caps::Module;
 
-use thinpack_resolve::{is_javascript, normalize};
+use thinpack_resolve::normalize;
 
 use crate::bundle::project_root;
 use crate::options::Options;
@@ -29,32 +29,14 @@ pub(crate) fn analyze_entry(options: &Options, pack: bool) -> Result<Analyzed, B
     let mut conditions = options.conditions.clone();
     conditions.sort_unstable();
     conditions.dedup();
-    let mut analysis = thinpack_analyze::analyze_with(
+    let included = expand_includes(&root, &options.include)?;
+    let mut analysis = thinpack_analyze::analyze_roots_with(
         &entry,
+        &included,
         &thinpack_resolve::HostFs,
         &allow_missing,
         &conditions,
     )?;
-    let included = expand_includes(&root, &options.include)?;
-    for file in &included {
-        if is_javascript(file) {
-            analysis.merge(thinpack_analyze::analyze_with(
-                file,
-                &thinpack_resolve::HostFs,
-                &allow_missing,
-                &conditions,
-            )?);
-        } else {
-            if !analysis.files.contains(file) {
-                analysis.files.push(file.clone());
-            }
-            // An explicit include is required even if the graph reached the file
-            // through an optional edge.
-            analysis.required.insert(file.clone());
-        }
-    }
-    analysis.files.sort();
-    analysis.files.dedup();
     if pack {
         // A module outside the root cannot be reached from the payload. Pack leaves
         // optional ones out; the warning belongs with the other optional warnings so
