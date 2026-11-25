@@ -35,8 +35,8 @@ jobs:
       # unavailable toolchain still leaves the other six assets diagnosable.
       fail-fast: false
       # Two kinds of Linux artifact. The static musl build has no libc floor and runs on any
-      # distribution, Alpine included; the glibc build inherits the runner's floor (Ubuntu 24.04
-      # is glibc 2.39) and exists for a host that wants dynamic linking.
+      # distribution, Alpine included; the glibc build needs what its metadata records, which
+      # `dist` measures on this runner rather than taking the image's version on trust.
       matrix:
         include:
           - runner: ubuntu-24.04
@@ -109,13 +109,16 @@ jobs:
           # The installer hands these archives to hosts with no musl loader at all, where a
           # dynamic pair would install and then fail to start. Both binaries run on the runner
           # either way, so only ELF itself can tell them apart: a static-pie has no PT_INTERP.
-          for binary in dist/thinpack-*-${{ matrix.target }}/thinpack*; do
-            test -x "${binary}" || { echo "::error::no staged binary matched ${binary}"; exit 1; }
-            if readelf --program-headers "${binary}" | grep -q INTERP; then
-              echo "::error::${binary} is dynamically linked; the static artifacts must not be"
-              exit 1
-            fi
-            file "${binary}"
+          for archive in dist/*.tar.gz; do
+            tar -xzf "${archive}" -C dist
+            for binary in "${archive%.tar.gz}"/thinpack*; do
+              test -x "${binary}" || { echo "::error::no staged binary matched ${binary}"; exit 1; }
+              if readelf --program-headers "${binary}" | grep -q INTERP; then
+                echo "::error::${binary} is dynamically linked; the static artifacts must not be"
+                exit 1
+              fi
+              file "${binary}"
+            done
           done
 
       - name: Build, verify, and archive
@@ -139,6 +142,7 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.sha256
+            dist/*.release.toml
           if-no-files-found: error
 
   release:
@@ -158,6 +162,32 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # Each job wrote one `[[asset]]` table per archive, so concatenating the fragments is the
+      # whole merge. The inspection below is the only place that parses the result: the manifest
+      # is what the installer trusts, and a table that names an archive nobody published, or an
+      # archive the manifest forgot, would install the wrong file on someone's machine.
+      - name: Release metadata
+        working-directory: dist
+        run: |
+          cat ./*.release.toml > thinpack-release.toml
+          rm ./*.release.toml
+          python3 - <<'PY'
+          import pathlib, tomllib
+
+          assets = tomllib.loads(pathlib.Path("thinpack-release.toml").read_text())["asset"]
+          listed = set()
+          for asset in assets:
+              archive = asset["archive"]
+              assert pathlib.Path(archive).is_file(), f"{archive} is listed but not published"
+              assert pathlib.Path(archive + ".sha256").is_file(), f"{archive} has no checksum"
+              assert asset["backend"] in {"quickjs", "v8", "jsc"}, asset
+              assert asset["target"].endswith("-gnu") == ("min_glibc" in asset), asset
+              listed.add(archive)
+          shipped = {path.name for path in pathlib.Path(".").glob("*.tar.gz")}
+          assert listed == shipped, f"listed {sorted(listed)}, published {sorted(shipped)}"
+          print(f"{len(listed)} archives, one metadata table each")
+          PY
+
       - name: Checksums
         working-directory: dist
         run: |
@@ -173,8 +203,8 @@ jobs:
         run: |
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             # Re-running a failed publish has to replace the assets, not refuse the tag.
-            gh release upload "${GITHUB_REF_NAME}" dist/*.tar.gz dist/SHA256SUMS --clobber
+            gh release upload "${GITHUB_REF_NAME}" dist/*.tar.gz dist/SHA256SUMS dist/thinpack-release.toml --clobber
           else
-            gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz dist/SHA256SUMS \
+            gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz dist/SHA256SUMS dist/thinpack-release.toml \
               --title "${GITHUB_REF_NAME}" --notes-file .github/release-notes.md ${DRAFT}
           fi
