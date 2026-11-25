@@ -218,9 +218,48 @@ fn load_package(
 ) -> Result<PathBuf, Error> {
     let (name, subpath) = split_package(specifier);
     let base = parent.parent().unwrap_or_else(|| Path::new("/"));
+    if let Some(directory) = package_self_reference(name, base, fs)? {
+        let manifest = Manifest::read(&directory.join("package.json"), fs)?;
+        return resolve_package(&directory, &manifest, subpath, prefer_import, fs);
+    }
     let directory = find_package(name, base, fs).ok_or(Error::NotFound)?;
     let manifest = Manifest::read(&directory.join("package.json"), fs)?;
+    resolve_package(&directory, &manifest, subpath, prefer_import, fs)
+}
 
+/// Node's package self-reference: the nearest package scope may import its own
+/// `name` through its `exports` map before `node_modules` is searched.
+fn package_self_reference(
+    name: &str,
+    base: &Path,
+    fs: &impl FileSystem,
+) -> Result<Option<PathBuf>, Error> {
+    for ancestor in base.ancestors() {
+        if ancestor
+            .file_name()
+            .is_some_and(|entry| entry == "node_modules")
+        {
+            return Ok(None);
+        }
+        let manifest = ancestor.join("package.json");
+        if fs.is_file(&manifest) {
+            let manifest = Manifest::read(&manifest, fs)?;
+            return Ok(
+                (manifest.name.as_deref() == Some(name) && manifest.exports.is_some())
+                    .then(|| ancestor.to_path_buf()),
+            );
+        }
+    }
+    Ok(None)
+}
+
+fn resolve_package(
+    directory: &Path,
+    manifest: &Manifest,
+    subpath: &str,
+    prefer_import: bool,
+    fs: &impl FileSystem,
+) -> Result<PathBuf, Error> {
     if let Some(exports) = &manifest.exports {
         let target =
             package::resolve_subpath(exports, subpath, prefer_import).ok_or_else(|| {
@@ -501,6 +540,31 @@ mod tests {
         assert!(
             matches!(error, Error::InvalidPackage { .. }),
             "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn resolves_a_package_self_reference() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/package.json",
+                r#"{"name":"self-ref-demo","type":"module","exports":{".":"./index.mjs","./x":"./x.mjs"}}"#,
+            ),
+            ("/app/index.mjs", ""),
+            ("/app/x.mjs", ""),
+            ("/app/bin/cli.mjs", ""),
+        ]);
+        assert_eq!(
+            resolve_from(&fs, "self-ref-demo", "/app/bin/cli.mjs")
+                .unwrap()
+                .path,
+            PathBuf::from("/app/index.mjs")
+        );
+        assert_eq!(
+            resolve_from(&fs, "self-ref-demo/x", "/app/bin/cli.mjs")
+                .unwrap()
+                .path,
+            PathBuf::from("/app/x.mjs")
         );
     }
 
