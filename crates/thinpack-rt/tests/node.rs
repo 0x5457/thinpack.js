@@ -265,6 +265,11 @@ impl Suite {
                         "the macOS JavaScriptCore framework does not expose SharedArrayBuffer"
                             .to_owned(),
                     )
+                } else if relative.ends_with("test-thinpack-async-local-storage.js") {
+                    Some(
+                        "JSC exposes no promise hooks and does not preserve the async context across promises, so AsyncLocalStorage does not follow them"
+                            .to_owned(),
+                    )
                 } else {
                     None
                 }

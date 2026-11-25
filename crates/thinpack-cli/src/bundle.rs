@@ -28,10 +28,7 @@ pub(crate) fn project_root(entry: &Path) -> Result<PathBuf, Box<dyn Error>> {
         .ok_or("entry has no parent directory")?
         .to_path_buf();
     for ancestor in directory.ancestors() {
-        if ancestor
-            .components()
-            .any(|component| component.as_os_str() == "node_modules")
-        {
+        if thinpack_resolve::is_under_node_modules(ancestor) {
             continue;
         }
         if ancestor.join("package.json").is_file() {

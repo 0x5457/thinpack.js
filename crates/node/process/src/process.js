@@ -129,31 +129,37 @@
     }
     return count <= 2 ** getColorDepth(environment);
   };
-  const setRawMode = (fd, mode) => {
-    let raw;
+  // `process.stdin` is the only readable stdio stream, so it owns the one raw
+  // mode the process surface exposes.
+  let stdinRawMode = false;
+  const setRawMode = (mode) => {
+    let rawMode;
     if (mode === "io" || mode === "raw") {
-      raw = true;
+      rawMode = mode;
     } else if (typeof mode === "string") {
       const { codes } = internalErrors();
       throw new codes.ERR_INVALID_ARG_VALUE(
         "mode", mode, "must be true, false, 'raw', or 'io'",
       );
     } else {
-      raw = Boolean(mode);
+      rawMode = mode ? "raw" : false;
     }
-    if (!raw && !ops.op_process_is_raw(fd)) return;
+    // Disabling raw mode that was never enabled must not create the terminal.
+    if (rawMode === false && !stdinRawMode) return;
+    const ttyMode = rawMode === false ? "normal" : rawMode;
     try {
-      ops.op_process_set_raw_mode(fd, raw);
+      ops.op_process_set_raw_mode(0, ttyMode);
     } catch (error) {
       const errno = Number(error.message);
       if (!Number.isInteger(errno)) throw error;
       const { ErrnoException } = internalErrors();
       throw new ErrnoException(errno, "setRawMode");
     }
+    stdinRawMode = rawMode !== false;
   };
 
   const restoreTerminal = () => {
-    if (ops.op_process_is_raw(0)) ops.op_process_set_raw_mode(0, false);
+    if (stdinRawMode) setRawMode(false);
   };
   let asyncHooks;
   const internalAsyncHooks = () =>
@@ -537,10 +543,10 @@
           return this;
         },
         get isRaw() {
-          return ops.op_process_is_raw(0);
+          return stdinRawMode;
         },
         setRawMode(mode) {
-          setRawMode(0, mode);
+          setRawMode(mode);
           return this;
         },
       };

@@ -316,7 +316,7 @@ ignore = "asserts V8's private-field error message; QuickJS reports a different 
 
 [tests."parallel/test-events-add-abort-listener.mjs"]
 module = "events"
-ignore = "abort events replayed by events.addAbortListener have no currentTarget and no stopImmediatePropagation"
+ignore = "the ESM harness imports named exports from node:assert, which the runtime does not provide"
 
 [tests."parallel/test-node-test.mjs"]
 module = "test"
@@ -340,7 +340,6 @@ ignore = "requires Node's internal event_target module"
 
 [tests."parallel/test-events-once.js"]
 module = "events"
-ignore = "AbortSignal dispatches a plain object instead of an Event, so stopImmediatePropagation is unavailable"
 
 [tests."parallel/test-events-static-geteventlisteners.js"]
 module = "events"
@@ -1337,6 +1336,12 @@ module = "tty"
 
 # --- thinpack runtime regressions ---
 
+[tests."parallel/test-thinpack-async-local-storage.js"]
+module = "async_hooks"
+
+[tests."parallel/test-thinpack-async-resource.js"]
+module = "async_hooks"
+
 [tests."parallel/test-thinpack-messageport-peer-close.js"]
 module = "worker_threads"
 timeout_ms = 5000
@@ -1368,6 +1373,9 @@ timeout_ms = 10000
 
 [tests."parallel/test-thinpack-textdecoder-streaming-utf8.js"]
 module = "util"
+
+[tests."parallel/test-thinpack-event-target.js"]
+module = "events"
 
 [tests."parallel/test-thinpack-cjs-reexport-alias-cycle.mjs"]
 module = "module"

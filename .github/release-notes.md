@@ -13,9 +13,8 @@ no libc and run on any distribution, Alpine included, for about 1 MiB more per p
 The installer picks them when the host cannot run the glibc build, `THINPACK_STATIC=1` forces
 it, and CI refuses to publish a musl artifact that is not static-PIE.
 - **`node:test`**, `node:punycode`, and the undici globals (`fetch`, `Headers`, `Request`,
-`Response`, `FormData`) that Node v26 links in. The fetch globals are lazy getters: an app that
-never touches them carries none of it, and a pack built `--without http` fails with a message
-naming the flags to re-pack with.
+`Response`, `FormData`, `WebSocket`) that Node v26 links in. The globals are lazy getters in
+their own `fetch` capability: an app that never references them carries none of the bundle.
 - **Crypto without vendored OpenSSL.** The key-material paths (RSA/RSA-PSS, EC, Ed25519,
 X25519, PKCS#1/PKCS#8/SPKI/SEC1 and JWK, X.509 public keys, PKCS#8 encryption) use RustCrypto
 instead of a bundled libcrypto, which takes about 2.7 MiB off an artifact that uses `node:crypto`

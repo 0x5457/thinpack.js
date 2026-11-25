@@ -1,3 +1,4 @@
+use crate::lexer::tokens;
 use crate::rewrite::{binding_names, strip_comments};
 use crate::{has_top_level_await, import_offsets, rewrite_dynamic_import_calls, rewrite_es_module};
 
@@ -57,6 +58,16 @@ fn regex_literals_after_a_block_are_not_divisions() {
     assert!(stripped.contains("if (ready) {} /[\"']/.test(text);"));
     assert!(stripped.contains("const f = () => {}; /[/]/.test(text);"));
     assert!(!stripped.contains("trailing"));
+}
+
+#[test]
+fn slash_equals_is_a_regex_only_in_expression_position() {
+    let source =
+        "const tag = /=import.meta/;\nlet count = 8; count /= 2; const ratio = count / 2;\n";
+    assert_eq!(rewritten_body(source), source);
+
+    let ts = tokens("count /= 2;");
+    assert!(ts[1].is_punct("/="));
 }
 
 #[test]

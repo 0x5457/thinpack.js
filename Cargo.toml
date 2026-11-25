@@ -106,6 +106,7 @@ thinpack-node-dns = { path = "crates/node/dns" }
 thinpack-node-domain = { path = "crates/node/domain" }
 thinpack-node-tls = { path = "crates/node/tls" }
 thinpack-node-http = { path = "crates/node/http" }
+thinpack-node-fetch = { path = "crates/node/fetch" }
 thinpack-node-https = { path = "crates/node/https" }
 thinpack-node-http2 = { path = "crates/node/http2" }
 thinpack-node-inspector = { path = "crates/node/inspector" }

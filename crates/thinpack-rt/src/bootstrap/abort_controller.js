@@ -1,75 +1,124 @@
+// AbortSignal follows Node.js v26.13.1 lib/internal/abort_controller.js (MIT,
+// https://github.com/nodejs/node): one EventTarget implementation and one
+// dispatch path are shared with the global EventTarget.
+
 (() => {
+  const {
+    Event,
+    EventTarget,
+    defineEventHandler,
+    kTrustEvent,
+    kWeakHandler,
+    kResistStopPropagation,
+    kMaxEventTargetListeners,
+  } = globalThis.__thinpack_event;
+
+  const kAborted = Symbol("kAborted");
+  const kReason = Symbol("kReason");
+  const kSignal = Symbol("kSignal");
+  const kDontThrow = Symbol("kDontThrow");
+
   const abortError = () =>
     new DOMException("This operation was aborted", "AbortError");
 
-  class AbortSignal {
-    constructor() {
-      this.aborted = false;
-      this.reason = undefined;
-      this.onabort = null;
-      this._listeners = null;
-      this[Symbol.for("nodejs.event_target.max_listeners")] = 0;
+  const timeoutError = () =>
+    new DOMException("The operation was aborted due to timeout", "TimeoutError");
+
+  const invalidArgType = (name, expected, actual) => {
+    const error = new TypeError(
+      `The "${name}" argument must be ${expected}. Received ${String(actual)}`,
+    );
+    error.code = "ERR_INVALID_ARG_TYPE";
+    return error;
+  };
+
+  function makeEnumerable(prototype, names) {
+    const descriptors = Object.getOwnPropertyDescriptors(prototype);
+    for (const name of names) {
+      const descriptor = descriptors[name];
+      descriptor.enumerable = true;
+      Object.defineProperty(prototype, name, descriptor);
+    }
+  }
+
+  function abortSignal(signal, reason) {
+    if (signal[kAborted]) return;
+    signal[kAborted] = true;
+    signal[kReason] = reason;
+    signal.dispatchEvent(new Event("abort", { [kTrustEvent]: true }));
+  }
+
+  class AbortSignal extends EventTarget {
+    constructor(token) {
+      if (token !== kDontThrow) {
+        const error = new TypeError("Illegal constructor");
+        error.code = "ERR_ILLEGAL_CONSTRUCTOR";
+        throw error;
+      }
+      super();
+      this[kMaxEventTargetListeners] = 0;
+      this[kAborted] = false;
+      this[kReason] = undefined;
     }
 
-    addEventListener(type, listener, options) {
-      if (type !== "abort" || typeof listener !== "function") return;
-      if (!this._listeners) this._listeners = [];
-      this._listeners.push({
-        listener,
-        once: Boolean(options && options.once),
-      });
+    get aborted() {
+      return this[kAborted];
     }
 
-    removeEventListener(type, listener) {
-      if (type !== "abort" || !this._listeners) return;
-      this._listeners = this._listeners.filter(
-        (entry) => entry.listener !== listener,
-      );
+    get reason() {
+      return this[kReason];
     }
 
     throwIfAborted() {
-      if (this.aborted) throw this.reason;
+      if (this[kAborted]) throw this[kReason];
     }
 
-    _abort(reason) {
-      if (this.aborted) return;
-      this.aborted = true;
-      this.reason = reason === undefined ? abortError() : reason;
-      const listeners = this._listeners || [];
-      this._listeners = null;
-      const event = { type: "abort", target: this };
-      if (typeof this.onabort === "function") this.onabort(event);
-      for (const entry of listeners) {
-        entry.listener.call(this, event);
-      }
-    }
-
-    static abort(reason) {
-      const signal = new AbortSignal();
-      signal._abort(reason);
+    static abort(reason = abortError()) {
+      const signal = new AbortSignal(kDontThrow);
+      signal[kAborted] = true;
+      signal[kReason] = reason;
       return signal;
     }
 
     static any(signals) {
-      const signal = new AbortSignal();
-      for (const source of signals) {
-        if (source.aborted) {
-          signal._abort(source.reason);
+      const sources = Array.from(signals);
+      for (const source of sources) {
+        if (!(source instanceof AbortSignal)) {
+          throw invalidArgType("signals", "sequence of AbortSignal", source);
+        }
+      }
+
+      const signal = new AbortSignal(kDontThrow);
+      const removers = [];
+
+      const abort = (reason) => {
+        if (signal[kAborted]) return;
+        abortSignal(signal, reason);
+        for (const remove of removers) remove();
+        removers.length = 0;
+      };
+
+      for (const source of sources) {
+        if (source[kAborted]) {
+          abort(source[kReason]);
           break;
         }
-        source.addEventListener(
-          "abort",
-          () => signal._abort(source.reason),
-          { once: true },
-        );
+        const onAbort = () => abort(source[kReason]);
+        source.addEventListener("abort", onAbort, {
+          __proto__: null,
+          once: true,
+          [kWeakHandler]: signal,
+          [kResistStopPropagation]: true,
+        });
+        removers.push(() => source.removeEventListener("abort", onAbort));
       }
       return signal;
     }
 
     static timeout(milliseconds) {
-      const signal = new AbortSignal();
+      const signal = new AbortSignal(kDontThrow);
       const timer = setTimeout(
-        () => signal._abort(abortError()),
+        () => abortSignal(signal, timeoutError()),
         milliseconds,
       );
       if (typeof timer.unref === "function") timer.unref();
@@ -77,15 +126,36 @@
     }
   }
 
+  makeEnumerable(AbortSignal.prototype, ["aborted", "reason", "throwIfAborted"]);
+  Object.defineProperty(AbortSignal.prototype, Symbol.toStringTag, {
+    __proto__: null,
+    writable: false,
+    enumerable: false,
+    configurable: true,
+    value: "AbortSignal",
+  });
+  defineEventHandler(AbortSignal.prototype, "abort");
+
   class AbortController {
-    constructor() {
-      this.signal = new AbortSignal();
+    get signal() {
+      this[kSignal] ??= new AbortSignal(kDontThrow);
+      return this[kSignal];
     }
 
-    abort(reason) {
-      this.signal._abort(reason);
+    abort(reason = abortError()) {
+      this[kSignal] ??= new AbortSignal(kDontThrow);
+      abortSignal(this[kSignal], reason);
     }
   }
+
+  makeEnumerable(AbortController.prototype, ["signal", "abort"]);
+  Object.defineProperty(AbortController.prototype, Symbol.toStringTag, {
+    __proto__: null,
+    writable: false,
+    enumerable: false,
+    configurable: true,
+    value: "AbortController",
+  });
 
   Object.defineProperty(globalThis, "AbortController", {
     value: AbortController,

@@ -495,6 +495,14 @@ pub fn is_typescript(path: &Path) -> bool {
     )
 }
 
+/// Whether any component of the path is a `node_modules` directory. Node keeps
+/// type stripping out of installed packages, and packing follows that rule.
+#[must_use]
+pub fn is_under_node_modules(path: &Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str() == "node_modules")
+}
+
 /// # Errors
 ///
 /// Returns [`Error::Unsupported`] for native addons and the manifest errors
@@ -955,6 +963,19 @@ mod tests {
             format_of(Path::new("/app/legacy/main.ts"), &fs),
             Ok(Format::CommonJs)
         );
+    }
+
+    #[test]
+    fn node_modules_is_detected_by_path_component() {
+        assert!(is_under_node_modules(Path::new(
+            "/app/node_modules/pkg/index.ts"
+        )));
+        assert!(!is_under_node_modules(Path::new(
+            "/app/node_modules_cache/index.ts"
+        )));
+        assert!(!is_under_node_modules(Path::new(
+            "/app/mynode_modules/index.ts"
+        )));
     }
 
     #[test]

@@ -22,7 +22,7 @@
     const filename = filenameOf(options);
     const specifier = specifierOf(filename);
     const [value, error] = Deno.core.evalContext(String(code), specifier);
-    if (error !== undefined && error !== null) throw error;
+    if (error) throw error.thrown;
     return value;
   };
 
@@ -42,15 +42,15 @@
       lineOffset = 0,
       columnOffset = 0,
     } = optionsOf(options);
-    const [value, error] = ops.op_vm_run_in_context(
+    const [threw, result] = ops.op_vm_run_in_context(
       id,
       String(code),
       String(filename),
       lineOffset | 0,
       columnOffset | 0,
     );
-    if (error !== null) throw error;
-    return value;
+    if (threw) throw result;
+    return result;
   };
 
   const createContext = (object, options) => {
