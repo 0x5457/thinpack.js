@@ -257,7 +257,8 @@ for adding a module.
 - `fetch`, `WebSocket` and their types are Node's own undici, vendored from
   `deps/undici/undici.js`, so they behave as Node does; `EventSource`, `MessageEvent`,
   `CloseEvent` and `ErrorEvent` are absent. `Blob`, `File` and `reportError` are present.
-  The bundle belongs to the `fetch` capability: an HTTP-only pack does not carry it, while a
+  The bundle belongs to the `fetch` capability: an HTTP-only pack carries only the llhttp
+  wasm payload extracted into `node:http`, not the bundle, while a
   `fetch` or `WebSocket` reference pulls the same sixteen-module closure and decodes the
   bundle at startup. Omitting the capability omits both globals. `docs/gaps.md` records what
   remains different.

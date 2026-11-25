@@ -8,6 +8,8 @@ mod dist;
 
 mod lint;
 
+mod llhttp;
+
 mod measure;
 
 mod size;
