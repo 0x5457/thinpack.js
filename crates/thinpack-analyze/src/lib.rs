@@ -290,11 +290,11 @@ pub fn analyze_roots_with(
         }
 
         let optional_dependencies = thinpack_resolve::optional_dependencies(&path, &fs);
-        let (specifiers, detected) = load_module(&path, &fs, &mut output)?;
-        if let Some(format) = detected {
+        let parsed = load_module(&path, &fs, &mut output)?;
+        if let Some(format) = parsed.detected {
             formats.insert(path.clone(), format);
         }
-        for ((specifier, is_import), usage) in specifiers {
+        for ((specifier, is_import), usage) in parsed.specifiers {
             // A dependency listed in `optionalDependencies` is optional even when the
             // request is unguarded, so a hoisted install the payload cannot reach is
             // omitted with a warning instead of failing the pack. The inherited edge is
@@ -337,7 +337,7 @@ pub fn analyze_roots_with(
                 if resolved
                     .file_name()
                     .is_some_and(|name| name == "package.json")
-                    && let Some(bins) = output.bin_selections.get(&specifier)
+                    && let Some(bins) = parsed.bin_selections.get(&specifier)
                 {
                     include_selected_bins(
                         &resolved,
@@ -528,7 +528,7 @@ struct Usage {
     resolve_only: bool,
 }
 
-type SpecifierEntry = ((String, bool), Usage);
+type Specifiers = BTreeMap<(String, bool), Usage>;
 
 /// Records `specifier` when it names a builtin and reports whether it did. A
 /// guarded reference to a builtin that may be absent only warns; an unguarded
@@ -672,16 +672,21 @@ struct WalkOutput {
     warnings: Vec<Warning>,
     data_files: BTreeSet<PathBuf>,
     static_dirs: BTreeMap<PathBuf, StaticDir>,
-    /// Selected package bins, keyed by the manifest specifier that named them.
-    bin_selections: BTreeMap<String, BTreeSet<String>>,
     stripped: BTreeMap<PathBuf, String>,
+}
+
+struct ParsedModule {
+    specifiers: Specifiers,
+    detected: Option<Format>,
+    // Manifest specifiers resolve relative to this module, not the whole graph.
+    bin_selections: BTreeMap<String, BTreeSet<String>>,
 }
 
 fn load_module(
     path: &Path,
     fs: &impl FileSystem,
     output: &mut WalkOutput,
-) -> Result<(Vec<SpecifierEntry>, Option<Format>), Error> {
+) -> Result<ParsedModule, Error> {
     let bytes = fs.read(path).map_err(|error| Error::Read {
         path: path.to_path_buf(),
         message: error.to_string(),
@@ -699,7 +704,7 @@ fn parse_specifiers(
     path: &Path,
     fs: &impl FileSystem,
     output: &mut WalkOutput,
-) -> Result<(Vec<SpecifierEntry>, Option<Format>), Error> {
+) -> Result<ParsedModule, Error> {
     let allocator = Allocator::default();
     let (source_type, format) = parser_dialect(path, fs)?;
     let mut parsed = Parser::new(&allocator, source, source_type).parse();
@@ -766,11 +771,15 @@ fn parse_specifiers(
         warnings: &mut output.warnings,
         data_files: &mut output.data_files,
         static_dirs: &mut output.static_dirs,
-        bin_selections: &mut output.bin_selections,
+        bin_selections: BTreeMap::new(),
         fs,
     };
     collector.visit_program(&parsed.program);
-    Ok((collector.specifiers.into_iter().collect(), detected))
+    Ok(ParsedModule {
+        specifiers: collector.specifiers,
+        detected,
+        bin_selections: collector.bin_selections,
+    })
 }
 
 /// The path expression a module load names, unwrapping `pathToFileURL(...)`.
@@ -815,7 +824,7 @@ fn global_name<'a>(expression: &'a Expression<'_>) -> Option<&'a str> {
 
 struct SpecifierCollector<'a, 's> {
     path: &'s Path,
-    specifiers: BTreeMap<(String, bool), Usage>,
+    specifiers: Specifiers,
     try_depth: usize,
     semantic: &'s Semantic<'a>,
     require_bindings: BTreeSet<SymbolId>,
@@ -828,7 +837,7 @@ struct SpecifierCollector<'a, 's> {
     warnings: &'s mut Vec<Warning>,
     data_files: &'s mut BTreeSet<PathBuf>,
     static_dirs: &'s mut BTreeMap<PathBuf, StaticDir>,
-    bin_selections: &'s mut BTreeMap<String, BTreeSet<String>>,
+    bin_selections: BTreeMap<String, BTreeSet<String>>,
     fs: &'s dyn FileSystem,
 }
 
@@ -2409,6 +2418,69 @@ mod tests {
         assert!(filter.accepts(Path::new("/app/formatters/stylish.js")));
         assert!(!filter.accepts(Path::new("/app/formatters/meta.json")));
         assert!(analysis.warnings.is_empty(), "{:?}", analysis.warnings);
+    }
+
+    #[test]
+    fn direct_eval_keeps_a_computed_manifest_dynamic() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.cjs",
+                r#"const paths = { package: "old" };
+                   eval('paths.package = "needed"');
+                   require.resolve(`${paths.package}/package.json`);"#,
+            ),
+            ("/app/node_modules/old/package.json", r#"{"name":"old"}"#),
+        ]);
+        let result = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+        assert!(result.data_files.is_empty());
+        assert!(result.warnings.iter().any(|warning| warning.strict));
+    }
+
+    #[test]
+    fn a_bin_selection_does_not_leak_to_another_importer() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.cjs",
+                r#"const path = require("node:path");
+                   const name = require.resolve("tool/package.json");
+                   const pkg = require(name);
+                   require(path.resolve(path.dirname(name), pkg.bin.tool));
+                   require("./viewer/view.cjs");"#,
+            ),
+            (
+                "/app/node_modules/tool/package.json",
+                r#"{"name":"tool","bin":{"tool":"entry.cjs"}}"#,
+            ),
+            ("/app/node_modules/tool/entry.cjs", "module.exports = 1;"),
+            (
+                "/app/viewer/view.cjs",
+                r#"require.resolve("tool/package.json");"#,
+            ),
+            (
+                "/app/viewer/node_modules/tool/package.json",
+                r#"{"name":"tool","bin":{"tool":"entry.cjs"}}"#,
+            ),
+            (
+                "/app/viewer/node_modules/tool/entry.cjs",
+                "module.exports = 2;",
+            ),
+        ]);
+        let result = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+        assert!(
+            result
+                .files
+                .contains(&PathBuf::from("/app/node_modules/tool/entry.cjs"))
+        );
+        assert!(
+            !result
+                .files
+                .contains(&PathBuf::from("/app/viewer/node_modules/tool/entry.cjs"))
+        );
+        assert!(
+            result
+                .data_files
+                .contains(Path::new("/app/viewer/node_modules/tool/package.json"))
+        );
     }
 
     #[test]

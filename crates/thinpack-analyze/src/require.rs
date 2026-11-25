@@ -216,6 +216,9 @@ pub(super) fn static_string(
     expression: &Expression<'_>,
     semantic: &Semantic<'_>,
 ) -> Option<String> {
+    if semantic.scoping().root_scope_flags().contains_direct_eval() {
+        return None;
+    }
     static_string_with(expression, semantic, &mut BTreeSet::new())
 }
 
