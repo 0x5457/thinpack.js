@@ -1,6 +1,7 @@
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap};
-use std::fmt::Write as _;
+use std::fmt::{self, Write as _};
 use std::path::{Path, PathBuf};
 
 use deno_core::{
@@ -8,7 +9,7 @@ use deno_core::{
     ModuleSourceCode, ModuleSpecifier, ModuleType, ResolutionKind,
 };
 
-use deno_error::JsErrorBox;
+use deno_error::{AdditionalProperties, JsErrorBox, JsErrorClass};
 use thinpack_core::js_string_literal;
 use thinpack_core::{BuiltinSources, file_url, path_from_url};
 use thinpack_resolve::{FileSystem, Format};
@@ -163,7 +164,7 @@ fn call_esm_bridge(
     let result = bridge.call(scope, receiver.into(), &args);
     if scope.has_caught() {
         let exception = scope.exception().unwrap();
-        return Err(JsErrorBox::generic(exception_message(scope, exception)));
+        return Err(JsErrorBox::from_err(HookError::read(scope, exception)));
     }
     let Some(result) = result else {
         return Err(JsErrorBox::generic("ESM loader hook failed"));
@@ -171,25 +172,77 @@ fn call_esm_bridge(
     Ok(result.to_rust_string_lossy(scope))
 }
 
-fn exception_message(
-    scope: &mut deno_core::v8::PinScope<'_, '_>,
-    exception: deno_core::v8::Local<'_, deno_core::v8::Value>,
-) -> String {
-    use deno_core::v8;
-    let Some(object) = exception.to_object(scope) else {
-        return exception.to_rust_string_lossy(scope);
-    };
-    let read = |scope: &mut v8::PinScope<'_, '_>, name: &str| {
-        let key = v8::String::new(scope, name).unwrap();
-        object
-            .get(scope, key.into())
-            .filter(|value| !value.is_undefined())
-            .map(|value| value.to_rust_string_lossy(scope))
-    };
-    let message = read(scope, "message").unwrap_or_else(|| exception.to_rust_string_lossy(scope));
-    match read(scope, "code") {
-        Some(code) => format!("{code}: {message}"),
-        None => message,
+/// A JavaScript error raised by an ESM loader hook, rebuilt on this side of the
+/// bridge. The bridge returns a string, so without this the engine would report a
+/// flattened message under a class and code of its own; Node hands a hook's failure
+/// to the app as it was thrown, so keep the class, message, `code` and stack.
+#[derive(Debug)]
+struct HookError {
+    class: String,
+    message: String,
+    code: Option<String>,
+    stack: Option<String>,
+}
+
+impl HookError {
+    fn read(
+        scope: &mut deno_core::v8::PinScope<'_, '_>,
+        exception: deno_core::v8::Local<'_, deno_core::v8::Value>,
+    ) -> Self {
+        use deno_core::v8;
+        let message = exception.to_rust_string_lossy(scope);
+        let Some(object) = exception.to_object(scope) else {
+            return Self {
+                class: "Error".to_owned(),
+                message,
+                code: None,
+                stack: None,
+            };
+        };
+        let read = |scope: &mut v8::PinScope<'_, '_>, name: &str| {
+            let key = v8::String::new(scope, name).unwrap();
+            object
+                .get(scope, key.into())
+                .filter(|value| value.is_string())
+                .map(|value| value.to_rust_string_lossy(scope))
+        };
+        Self {
+            class: read(scope, "name").unwrap_or_else(|| "Error".to_owned()),
+            message: read(scope, "message").unwrap_or(message),
+            code: read(scope, "code"),
+            stack: read(scope, "stack"),
+        }
+    }
+}
+
+impl fmt::Display for HookError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for HookError {}
+
+impl JsErrorClass for HookError {
+    fn get_class(&self) -> Cow<'static, str> {
+        Cow::Owned(self.class.clone())
+    }
+
+    fn get_message(&self) -> Cow<'static, str> {
+        Cow::Owned(self.message.clone())
+    }
+
+    fn get_additional_properties(&self) -> AdditionalProperties {
+        let code = self.code.clone().map(|code| ("code".into(), code.into()));
+        let stack = self
+            .stack
+            .clone()
+            .map(|stack| ("stack".into(), stack.into()));
+        Box::new(code.into_iter().chain(stack))
+    }
+
+    fn get_ref(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+        self
     }
 }
 

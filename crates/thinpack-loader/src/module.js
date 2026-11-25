@@ -253,7 +253,11 @@
     }
   };
 
-  const runHook = (name, invoke) => {
+  // Node runs module.register hooks on a loader thread, so a hook may await I/O. Here a
+  // hook runs in a synchronous checkpoint: its microtasks and the timers it schedules run,
+  // and a hook that needs the event loop (fs, net, ...) is reported as ERR_ESM_HOOK_ASYNC
+  // instead of blocking the process.
+  const runHook = (name, target, invoke) => {
     const previousSetTimeout = globalThis.setTimeout;
     const previousClearTimeout = globalThis.clearTimeout;
     const previousSetImmediate = globalThis.setImmediate;
@@ -324,10 +328,11 @@
     }
     if (settled === 0) {
       const error = new Error(
-        "the " + name + " hook is still pending after the timer checkpoint; " +
-          "hooks that wait for I/O need a loader thread",
+        "the " + name + " hook for '" + target + "' did not settle: " +
+          "ESM hooks run synchronously, so a hook that awaits I/O cannot finish. " +
+          "Use a synchronous API in the hook (fs.readFileSync, for example).",
       );
-      error.code = "ERR_NOT_IMPLEMENTED";
+      error.code = "ERR_ESM_HOOK_ASYNC";
       throw error;
     }
     if (settled === 2) throw failure;
@@ -376,6 +381,7 @@
     };
     let result = runHook(
       "resolve",
+      specifier,
       () => hooks.resolve(specifier, { ...context, data: hooks.data }, nextResolve),
     );
     if (result === undefined || result === null) {
@@ -405,6 +411,7 @@
     };
     const result = runHook(
       "load",
+      url,
       () => hooks.load(
         url,
         { format, importAttributes: attributes, conditions: importConditions, data: hooks.data },
