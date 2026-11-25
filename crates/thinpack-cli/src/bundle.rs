@@ -49,6 +49,23 @@ pub(crate) fn build(
     assets: &[AssetInput],
 ) -> Result<Bundle, Box<dyn Error>> {
     let mut files = collect_analysis_files(root, analysis)?;
+    for path in &analysis.static_files {
+        let Some(virtual_path) = virtual_path(root, path) else {
+            eprintln!(
+                "warning: static asset {} is outside the project root {}; it is left out of the payload",
+                path.display(),
+                root.display()
+            );
+            continue;
+        };
+        if files.iter().any(|file| file.path == virtual_path) {
+            continue;
+        }
+        files.push(PackedFile {
+            path: virtual_path,
+            contents: fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?,
+        });
+    }
     let manifests = collect_manifests(root, &analysis.manifests, &files)?;
     files.extend(manifests);
     files.sort_by(|left, right| left.path.cmp(&right.path));

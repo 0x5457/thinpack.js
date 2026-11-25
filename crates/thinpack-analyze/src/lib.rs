@@ -8,8 +8,9 @@ use std::path::{Path, PathBuf};
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    Argument, CallExpression, ExportAllDeclaration, ExportFromDeclaration, Expression,
-    IdentifierReference, ImportDeclaration, ImportExpression, NewExpression, TryStatement,
+    Argument, BinaryOperator, CallExpression, ExportAllDeclaration, ExportFromDeclaration,
+    Expression, IdentifierReference, ImportDeclaration, ImportExpression, NewExpression,
+    TryStatement,
 };
 
 use oxc_ast_visit::{VisitJs, walk_js};
@@ -40,6 +41,10 @@ pub struct Analysis {
     /// Files whose module format packing detected (a typeless `.js` written as an ES
     /// module); the payload records them so the loader reads the same format.
     pub formats: BTreeMap<PathBuf, Format>,
+    /// Non-JavaScript files read through `fs.readFileSync`/`readFile`/
+    /// `createReadStream` with a path built from `__dirname`. The payload carries
+    /// them but the analyzer does not parse them.
+    pub static_files: BTreeSet<PathBuf>,
     pub warnings: Vec<Warning>,
 }
 
@@ -56,6 +61,7 @@ impl Analysis {
             self.builtins.entry(builtin).or_default().extend(files);
         }
         self.formats.extend(other.formats);
+        self.static_files.extend(other.static_files);
         self.warnings.extend(other.warnings);
         self.warnings.sort();
         self.warnings.dedup();
@@ -149,6 +155,7 @@ pub fn analyze_with(
     let mut required = BTreeSet::new();
     let mut builtins: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
     let mut formats = BTreeMap::new();
+    let mut static_files = BTreeSet::new();
     let mut warnings = Vec::new();
 
     while let Some((path, optional_subtree)) = pending.pop_front() {
@@ -175,7 +182,8 @@ pub fn analyze_with(
         })?;
 
         let optional_dependencies = thinpack_resolve::optional_dependencies(&path, &fs);
-        let (specifiers, detected) = parse_specifiers(&source, &path, &fs, &mut warnings)?;
+        let (specifiers, detected) =
+            parse_specifiers(&source, &path, &fs, &mut warnings, &mut static_files)?;
         if let Some(format) = detected {
             formats.insert(path.clone(), format);
         }
@@ -241,6 +249,7 @@ pub fn analyze_with(
         manifests: fs.into_manifests(),
         builtins,
         formats,
+        static_files,
         warnings,
     })
 }
@@ -406,6 +415,7 @@ fn parse_specifiers(
     path: &Path,
     fs: &impl FileSystem,
     warnings: &mut Vec<Warning>,
+    static_files: &mut BTreeSet<PathBuf>,
 ) -> Result<(Vec<SpecifierEntry>, Option<Format>), Error> {
     let allocator = Allocator::default();
     let (source_type, format) = parser_dialect(path, fs)?;
@@ -463,6 +473,8 @@ fn parse_specifiers(
         semantic: &semantic,
         require_bindings: require::bindings(&semantic),
         warnings,
+        static_files,
+        fs,
     };
     collector.visit_program(&parsed.program);
     Ok((collector.specifiers.into_iter().collect(), detected))
@@ -526,6 +538,49 @@ fn referenced_global<'a>(expression: &'a Expression<'_>) -> Option<&'a str> {
     }
 }
 
+/// Resolve a path expression rooted at `__dirname` (`path.join`, `path.resolve`,
+/// `join`, `resolve`, or `__dirname + "..."`). Only literal segments are accepted, so
+/// arbitrary dynamic paths are left alone.
+fn join_path(expression: &Expression<'_>, base: &Path) -> Option<PathBuf> {
+    match expression.without_parentheses() {
+        Expression::Identifier(identifier) if identifier.name == "__dirname" => {
+            Some(base.to_path_buf())
+        }
+        Expression::StringLiteral(literal) => {
+            let value = literal.value.as_str()?;
+            Some(base.join(value))
+        }
+        Expression::BinaryExpression(binary) if binary.operator == BinaryOperator::Addition => {
+            let left = join_path(&binary.left, base)?;
+            let Expression::StringLiteral(right) = binary.right.without_parentheses() else {
+                return None;
+            };
+            let value = right.value.as_str()?;
+            Some(if left.is_absolute() && value.starts_with('/') {
+                PathBuf::from(value)
+            } else {
+                left.join(value)
+            })
+        }
+        Expression::CallExpression(call) => {
+            let callee = match call.callee.without_parentheses() {
+                Expression::Identifier(identifier) => identifier.name.as_str(),
+                Expression::StaticMemberExpression(member) => member.property.name.as_str(),
+                _ => return None,
+            };
+            if callee != "join" && callee != "resolve" {
+                return None;
+            }
+            let mut path = base.to_path_buf();
+            for argument in &call.arguments {
+                path = join_path(argument.as_expression()?, &path)?;
+            }
+            Some(path)
+        }
+        _ => None,
+    }
+}
+
 struct SpecifierCollector<'a, 's> {
     path: &'s Path,
     specifiers: BTreeMap<(String, bool), bool>,
@@ -533,6 +588,8 @@ struct SpecifierCollector<'a, 's> {
     semantic: &'s Semantic<'a>,
     require_bindings: BTreeSet<SymbolId>,
     warnings: &'s mut Vec<Warning>,
+    static_files: &'s mut BTreeSet<PathBuf>,
+    fs: &'s dyn FileSystem,
 }
 
 impl SpecifierCollector<'_, '_> {
@@ -644,6 +701,44 @@ impl SpecifierCollector<'_, '_> {
             strict: false,
         });
     }
+    /// Record a package-relative asset read through `fs.readFileSync`, `readFile` or
+    /// `createReadStream` when the path is built from `__dirname`. This is the
+    /// `errorhandler` case: a runtime asset that no import reaches.
+    fn static_asset(&mut self, call: &CallExpression<'_>) {
+        let Some(member) = call.callee.as_member_expression() else {
+            return;
+        };
+        let Some(property) = member
+            .static_property_name()
+            .and_then(oxc_str::JSStr::as_str)
+        else {
+            return;
+        };
+        if !matches!(property, "readFile" | "readFileSync" | "createReadStream") {
+            return;
+        }
+        let Some(expression) = call.arguments.first().and_then(Argument::as_expression) else {
+            return;
+        };
+        let Some(path) = join_path(
+            expression,
+            self.path.parent().unwrap_or_else(|| Path::new("/")),
+        ) else {
+            return;
+        };
+        if self.fs.is_file(&path) {
+            self.static_files.insert(path);
+        } else {
+            self.warnings.push(Warning {
+                message: format!(
+                    "{}: static asset {} is missing; add it with --include or --asset",
+                    self.path.display(),
+                    path.display()
+                ),
+                strict: false,
+            });
+        }
+    }
 }
 
 impl<'a> VisitJs<'a> for SpecifierCollector<'a, '_> {
@@ -680,6 +775,7 @@ impl<'a> VisitJs<'a> for SpecifierCollector<'a, '_> {
 
     fn visit_call_expression(&mut self, call: &CallExpression<'a>) {
         self.dynamic_function(&call.callee, &call.arguments);
+        self.static_asset(call);
         self.require_call(call);
         if referenced_global(&call.callee).is_some_and(|name| FETCH_GLOBALS.contains(&name)) {
             self.add_builtins(&FETCH_BUILTINS);
@@ -1129,6 +1225,23 @@ mod tests {
         let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
         assert_eq!(analysis.warnings.len(), 1);
         assert!(analysis.warnings[0].message.contains("--include"));
+    }
+
+    #[test]
+    fn records_a_static_asset_read_through_dirname() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.js",
+                "const fs = require('node:fs');\nconst path = require('node:path');\nfs.readFileSync(path.join(__dirname, 'data.css'), 'utf8');\n",
+            ),
+            ("/app/data.css", "body {}\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
+        assert!(
+            analysis.static_files.contains(Path::new("/app/data.css")),
+            "{:?}",
+            analysis.static_files
+        );
     }
 
     #[test]
