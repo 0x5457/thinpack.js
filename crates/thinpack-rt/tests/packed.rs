@@ -970,6 +970,30 @@ console.log('module.parent ok');
         capabilities: &[],
         error: None,
     },
+    PackedTest {
+        name: "packed::domain",
+        directory: "domain",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r"
+const assert = require('node:assert/strict');
+const domain = require('node:domain');
+const d = domain.create();
+let caught;
+d.on('error', (error) => { caught = error; });
+d.run(() => { throw new Error('boom'); });
+assert.equal(caught.message, 'boom');
+assert.equal(caught.domainThrown, true);
+d.run(() => { assert.equal(process.domain, d); });
+assert.equal(process.domain, null);
+assert.equal(d.bind(() => 42)(), 42);
+console.log('domain ok');
+",
+        )],
+        capabilities: &["assert", "domain"],
+        error: None,
+    },
 ];
 
 /// Packed startup cases whose source is generated because the payload is large.

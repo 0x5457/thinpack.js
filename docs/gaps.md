@@ -135,6 +135,10 @@ the divergence, why it exists, and where it lives.
 - `process.versions.undici` reports the vendored bundle's version even in a build without
   `http`, where that bundle is not compiled in
   (`crates/node/process/src/process.js`).
+- `domain` implements the synchronous `create/run/bind/intercept/add/remove/enter/exit`
+  subset. The active domain is not carried through timers or promises (no
+  `AsyncLocalStorage`-backed store), so an async error is not routed to its domain
+  (`crates/node/domain/src/domain.js`).
 - HTTP/2 over UNIX-domain sockets and TLS over non-TCP transports fail with
   `ERR_NOT_IMPLEMENTED` (`crates/node/http2/src/ops.rs`,
   `crates/node/net/src/ops.rs`).

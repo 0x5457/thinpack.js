@@ -68,6 +68,10 @@ deps = ["process"]
 builtins = ["path", "path/posix", "path/win32"]
 deps = ["process"]
 
+[modules.domain]
+builtins = ["domain"]
+deps = ["events"]
+
 [modules.events]
 builtins = ["events"]
 deps = ["process"]

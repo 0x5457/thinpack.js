@@ -3928,6 +3928,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "thinpack-node-domain"
+version = "0.2.0"
+dependencies = [
+ "deno_core",
+ "thinpack-js",
+]
+
+[[package]]
 name = "thinpack-node-events"
 version = "0.2.0"
 dependencies = [
@@ -4258,6 +4266,7 @@ dependencies = [
  "thinpack-node-crypto",
  "thinpack-node-diagnostics-channel",
  "thinpack-node-dns",
+ "thinpack-node-domain",
  "thinpack-node-events",
  "thinpack-node-ffi",
  "thinpack-node-fs",

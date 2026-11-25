@@ -100,6 +100,7 @@ thinpack-node-fs = { path = "crates/node/fs" }
 thinpack-node-stream = { path = "crates/node/stream" }
 thinpack-node-net = { path = "crates/node/net" }
 thinpack-node-dns = { path = "crates/node/dns" }
+thinpack-node-domain = { path = "crates/node/domain" }
 thinpack-node-tls = { path = "crates/node/tls" }
 thinpack-node-http = { path = "crates/node/http" }
 thinpack-node-https = { path = "crates/node/https" }
