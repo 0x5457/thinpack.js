@@ -98,6 +98,10 @@ mod unix {
         );
         assert!(error.contains("rename it to .mjs"), "{error}");
         assert!(error.contains("add \"type\": \"module\""), "{error}");
+        assert!(
+            error.contains("The analyzer does not run loader hooks"),
+            "{error}"
+        );
     }
 
     #[test]

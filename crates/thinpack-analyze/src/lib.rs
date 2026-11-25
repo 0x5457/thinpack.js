@@ -408,6 +408,8 @@ fn parser_dialect(
 /// Explains a file whose syntax belongs to the other module format than the one its
 /// path resolves to. The loader would reject it after the artifact is written, so
 /// packing fails first and names the two ways to ask for the format it is written in.
+/// Packing reads the file on disk; a hook that assigns a format or source only runs
+/// in the artifact, so the message says why a hook cannot resolve this failure.
 fn format_mismatch(
     source: &str,
     path: &Path,
@@ -431,13 +433,13 @@ fn format_mismatch(
         Format::Esm => (
             source_type.with_commonjs(true),
             format!(
-                "uses CommonJS syntax but is loaded as an ES module; rename it to {commonjs} or remove \"type\": \"module\" from the nearest package.json"
+                "uses CommonJS syntax but is loaded as an ES module; rename it to {commonjs} or remove \"type\": \"module\" from the nearest package.json. The analyzer does not run loader hooks; it uses the source and format on disk"
             ),
         ),
         Format::CommonJs => (
             source_type.with_module(true),
             format!(
-                "uses ES module syntax but is loaded as CommonJS; rename it to {esm} or add \"type\": \"module\" to the nearest package.json"
+                "uses ES module syntax but is loaded as CommonJS; rename it to {esm} or add \"type\": \"module\" to the nearest package.json. The analyzer does not run loader hooks; it uses the source and format on disk"
             ),
         ),
         Format::Json => return None,
@@ -1115,6 +1117,10 @@ mod tests {
                 assert!(message.contains("loaded as CommonJS"), "{message}");
                 assert!(message.contains("rename it to .mjs"), "{message}");
                 assert!(message.contains("\"type\": \"module\""), "{message}");
+                assert!(
+                    message.contains("The analyzer does not run loader hooks"),
+                    "{message}"
+                );
             }
             other => panic!("expected a format error, got {other:?}"),
         }
@@ -1130,6 +1136,10 @@ mod tests {
             Err(Error::Format { message, .. }) => {
                 assert!(message.contains("loaded as an ES module"), "{message}");
                 assert!(message.contains("remove \"type\": \"module\""), "{message}");
+                assert!(
+                    message.contains("The analyzer does not run loader hooks"),
+                    "{message}"
+                );
             }
             other => panic!("expected a format error, got {other:?}"),
         }
