@@ -38,6 +38,22 @@ const EAI_SERVICE: i32 = -3010;
 #[cfg(unix)]
 const EAI_SOCKTYPE: i32 = -3011;
 
+/// The platform's `AI_*` values, which Node re-exports as `dns.V4MAPPED`,
+/// `dns.ADDRCONFIG` and `dns.ALL` ("V4MAPPED", "ADDRCONFIG", "ALL" order).
+/// The POSIX headers and Winsock number the flags differently.
+#[cfg(unix)]
+const AI_FLAGS: [u32; 3] = [
+    libc::AI_V4MAPPED as u32,
+    libc::AI_ADDRCONFIG as u32,
+    libc::AI_ALL as u32,
+];
+#[cfg(windows)]
+const AI_FLAGS: [u32; 3] = [
+    windows_sys::Win32::Networking::WinSock::AI_V4MAPPED,
+    windows_sys::Win32::Networking::WinSock::AI_ADDRCONFIG,
+    windows_sys::Win32::Networking::WinSock::AI_ALL,
+];
+
 /// Mirrors libuv's `uv__getaddrinfo_translate_error`: the platform's EAI_*
 /// codes (negative on glibc/musl, small positives on apple) become libuv's
 /// stable numbers. Codes without a translation (e.g. `EAI_SYSTEM`) fall back
@@ -166,7 +182,19 @@ fn task_panic(error: &tokio::task::JoinError) -> JsErrorBox {
     JsErrorBox::new("Error", format!("ERR_DNS_INTERNAL\0{error}"))
 }
 
-pub(crate) const OPS: &[OpDecl] = &[op_dns_lookup(), op_dns_resolve(), op_dns_reverse()];
+pub(crate) const OPS: &[OpDecl] = &[
+    op_dns_flags(),
+    op_dns_lookup(),
+    op_dns_resolve(),
+    op_dns_reverse(),
+];
+
+/// The `AI_FLAGS` values, NUL-separated for the module's one-time read.
+#[op2]
+#[string]
+pub(crate) fn op_dns_flags() -> String {
+    AI_FLAGS.map(|flag| flag.to_string()).join("\0")
+}
 
 #[op2(async(lazy), fast)]
 #[string]

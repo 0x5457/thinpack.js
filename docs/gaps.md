@@ -164,6 +164,9 @@ the divergence, why it exists, and where it lives.
   handle-passing gap. IPv6 zone-indexed addresses are recognized for family validation but
   the scope is not carried through the lookup, so link-local destinations need a plain
   numeric address (`crates/node/dgram/src/dgram.js`, `crates/node/dgram/src/ops.rs`).
+- `dns.V4MAPPED`, `dns.ADDRCONFIG` and `dns.ALL` export the platform's `AI_*` values, but
+  `dns.lookup` and `dns.promises.lookup` accept and ignore `options.hints`: the resolver
+  does not forward them yet (`crates/node/dns/src/ops.rs`).
 
 ## Process and platform
 
