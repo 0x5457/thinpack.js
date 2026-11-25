@@ -403,6 +403,81 @@ mod unix {
     }
 
     #[test]
+    fn a_resolved_package_manifest_packs_its_declared_bin() {
+        let directory = TempDir::new("package-bin");
+        fs::write(
+            directory.path().join("package.json"),
+            r#"{ "name": "app", "type": "commonjs" }"#,
+        )
+        .expect("write package manifest");
+        let entry = directory.path().join("main.cjs");
+        fs::write(
+            &entry,
+            "const path = require('node:path');\n             const cli = { package: 'tool', binName: 'tool' };\n             const run = (options) => {\n               const manifest = require.resolve(`${options.package}/package.json`);\n               const pkg = require(manifest);\n               require(path.resolve(path.dirname(manifest), pkg.bin[options.binName]));\n             };\n             run(cli);\n",
+        )
+        .expect("write launcher entry");
+        let package = directory.path().join("node_modules/tool");
+        fs::create_dir_all(package.join("bin")).expect("create dependency");
+        fs::write(
+            package.join("package.json"),
+            r#"{ "name": "tool", "bin": { "tool": "./bin/tool.js" } }"#,
+        )
+        .expect("write dependency manifest");
+        fs::write(
+            package.join("bin/tool.js"),
+            "module.exports = require('./helper');\n",
+        )
+        .expect("write declared bin");
+        fs::write(package.join("bin/helper.js"), "module.exports = 42;\n")
+            .expect("write bin dependency");
+        fs::write(package.join("unused.js"), "module.exports = 0;\n")
+            .expect("write unused package file");
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let output = directory.path().join("packed-app");
+
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            directory.path(),
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+            ],
+        );
+        assert!(
+            result.status.success(),
+            "pack failed:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+
+        let pack = thinpack_pack::read_from_executable(&output)
+            .expect("read packed executable")
+            .expect("packed payload");
+        let files: Vec<&str> = pack
+            .manifest
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect();
+        for expected in [
+            "/app/node_modules/tool/package.json",
+            "/app/node_modules/tool/bin/tool.js",
+            "/app/node_modules/tool/bin/helper.js",
+        ] {
+            assert!(files.contains(&expected), "missing {expected}: {files:?}");
+        }
+        assert!(
+            !files.contains(&"/app/node_modules/tool/unused.js"),
+            "packed an undeclared package file: {files:?}"
+        );
+    }
+
+    #[test]
     fn a_typeless_js_file_with_esm_syntax_is_packed_as_esm() {
         let directory = TempDir::new("detect-module");
         let entry = directory.path().join("main.js");

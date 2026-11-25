@@ -65,7 +65,9 @@ When no matching installed template is available and the cache has both backends
 
 The analyzer follows conditional `require` calls when both branches name modules. For module names
 supplied at runtime, use `--with` to include the required built-ins explicitly. `--strict` makes
-unresolved dynamic requests an error during packing.
+unresolved dynamic requests an error during packing. Resolving a package manifest
+(`require.resolve('pkg/package.json')`) also packs the executable targets that manifest declares,
+so launchers that select a package bin at run time work without `--include`.
 
 Compiled module bytecode is cached under `<cache-root>/bytecode`, which makes a warm start
 about 29% faster (pi: 983 ms → 702 ms); `V82JSC_NO_BC_CACHE=1` disables it, and

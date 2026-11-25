@@ -1,9 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
 use oxc_ast::AstKind;
-use oxc_ast::ast::{BinaryOperator, Expression, IdentifierReference, Statement};
+use oxc_ast::ast::{
+    BinaryOperator, Expression, IdentifierReference, ObjectPropertyKind, PropertyKey, PropertyKind,
+    Statement,
+};
 use oxc_semantic::{IsGlobalReference, Scoping, Semantic, SymbolId};
-use oxc_str::JSStr;
+use oxc_span::GetSpan;
 
 pub(super) fn bindings(semantic: &Semantic<'_>) -> BTreeSet<SymbolId> {
     semantic
@@ -36,11 +39,11 @@ enum PendingSpecifier<'a, 'e> {
 pub(super) fn specifiers<'a>(
     argument: &Expression<'a>,
     semantic: &Semantic<'a>,
-    mut add: impl FnMut(JSStr<'a>),
+    mut add: impl FnMut(String),
 ) -> bool {
     let argument = argument.without_parentheses();
-    if let Expression::StringLiteral(literal) = argument {
-        add(literal.value);
+    if let Some(value) = static_string(argument, semantic) {
+        add(value);
         return true;
     }
 
@@ -56,7 +59,7 @@ pub(super) fn specifiers<'a>(
             }
         };
         match expression {
-            Expression::StringLiteral(literal) => add(literal.value),
+            Expression::StringLiteral(literal) => add(super::js_string(literal.value)),
             Expression::ConditionalExpression(branch) => {
                 pending.push(PendingSpecifier::Expression(&branch.alternate));
                 pending.push(PendingSpecifier::Expression(&branch.consequent));
@@ -86,6 +89,168 @@ pub(super) fn specifiers<'a>(
     complete
 }
 
+/// A string the expression always produces: literals, immutable bindings, template
+/// literals, and properties of inline object literals.
+///
+/// A launcher commonly names another package and its bin through a constant object,
+/// as webpack does with `cli.package` and `cli.binName`. Evaluating that constant lets
+/// the analyzer resolve the manifest instead of treating the request as dynamic.
+fn static_string(expression: &Expression<'_>, semantic: &Semantic<'_>) -> Option<String> {
+    static_string_with(expression, semantic, &mut BTreeSet::new())
+}
+
+fn static_string_with(
+    expression: &Expression<'_>,
+    semantic: &Semantic<'_>,
+    visiting: &mut BTreeSet<SymbolId>,
+) -> Option<String> {
+    match expression.without_parentheses() {
+        Expression::StringLiteral(literal) => Some(super::js_string(literal.value)),
+        Expression::TemplateLiteral(template) => {
+            let mut value = String::new();
+            for (index, quasi) in template.quasis.iter().enumerate() {
+                value.push_str(quasi.value.cooked?.as_str()?);
+                if let Some(expression) = template.expressions.get(index) {
+                    value.push_str(&static_string_with(expression, semantic, visiting)?);
+                }
+            }
+            Some(value)
+        }
+        Expression::Identifier(identifier) => {
+            let symbol = referenced_symbol(identifier, semantic.scoping())?;
+            if !is_constant(symbol, semantic) || !visiting.insert(symbol) {
+                return None;
+            }
+            let value = if let Some(init) = initializer(symbol, semantic) {
+                static_string_with(init, semantic, visiting)
+            } else {
+                parameter_value(symbol, semantic, |argument| {
+                    static_string_with(argument, semantic, visiting)
+                })
+            };
+            visiting.remove(&symbol);
+            value
+        }
+        Expression::StaticMemberExpression(member) => {
+            let Expression::Identifier(object) = member.object.without_parentheses() else {
+                return None;
+            };
+            let symbol = referenced_symbol(object, semantic.scoping())?;
+            if !is_constant(symbol, semantic) || !visiting.insert(symbol) {
+                return None;
+            }
+            let value = if let Some(init) = initializer(symbol, semantic) {
+                object_value(init, member.property.name.as_str(), semantic, visiting)
+            } else {
+                parameter_value(symbol, semantic, |argument| {
+                    object_value(argument, member.property.name.as_str(), semantic, visiting)
+                })
+            };
+            visiting.remove(&symbol);
+            value
+        }
+        _ => None,
+    }
+}
+
+/// The value a parameter receives when every call site agrees.
+///
+/// Webpack names webpack-cli through a constant object that it passes to its launcher,
+/// so the manifest request is only static after looking through those calls.
+fn parameter_value<T: PartialEq>(
+    symbol: SymbolId,
+    semantic: &Semantic<'_>,
+    mut evaluate: impl FnMut(&Expression<'_>) -> Option<T>,
+) -> Option<T> {
+    let declaration = semantic.symbol_declaration(symbol);
+    declaration.kind().as_formal_parameter()?;
+    if !is_constant(symbol, semantic) {
+        return None;
+    }
+    let nodes = semantic.nodes();
+    let (index, parameters) = nodes.ancestors(declaration.id()).find_map(|node| {
+        let parameters = node.kind().as_formal_parameters()?;
+        let index = parameters
+            .items
+            .iter()
+            .position(|item| item.node_id.get() == declaration.id())?;
+        Some((index, node))
+    })?;
+    let function = nodes.parent_node(parameters.id());
+    let function_symbol = match function.kind() {
+        AstKind::Function(function) => function.id.as_ref()?.symbol_id.get()?,
+        AstKind::ArrowFunctionExpression(_) => {
+            let AstKind::VariableDeclarator(declaration) = nodes.parent_node(function.id()).kind()
+            else {
+                return None;
+            };
+            declaration.id.get_binding_identifier()?.symbol_id.get()?
+        }
+        _ => return None,
+    };
+
+    let mut value = None;
+    for reference in semantic.symbol_references(function_symbol) {
+        let node = nodes.get_node(reference.node_id());
+        let AstKind::CallExpression(call) = nodes.parent_node(node.id()).kind() else {
+            return None;
+        };
+        if call.callee.without_parentheses().span() != node.kind().span() {
+            return None;
+        }
+        let argument = call
+            .arguments
+            .get(index)
+            .and_then(|argument| argument.as_expression())?;
+        let candidate = evaluate(argument)?;
+        if value.as_ref().is_some_and(|value| value != &candidate) {
+            return None;
+        }
+        value = Some(candidate);
+    }
+    value
+}
+
+fn object_value(
+    object: &Expression<'_>,
+    property: &str,
+    semantic: &Semantic<'_>,
+    visiting: &mut BTreeSet<SymbolId>,
+) -> Option<String> {
+    let object = match object.without_parentheses() {
+        Expression::ObjectExpression(object) => object,
+        Expression::Identifier(identifier) => {
+            let symbol = referenced_symbol(identifier, semantic.scoping())?;
+            if !is_constant(symbol, semantic) || !visiting.insert(symbol) {
+                return None;
+            }
+            let value = initializer(symbol, semantic);
+            visiting.remove(&symbol);
+            let Expression::ObjectExpression(object) = value?.without_parentheses() else {
+                return None;
+            };
+            object
+        }
+        _ => return None,
+    };
+    object.properties.iter().find_map(|entry| {
+        let ObjectPropertyKind::ObjectProperty(property_entry) = entry else {
+            return None;
+        };
+        if property_entry.kind != PropertyKind::Init || property_entry.method {
+            return None;
+        }
+        let key = match &property_entry.key {
+            PropertyKey::StaticIdentifier(identifier) => identifier.name.as_str(),
+            PropertyKey::StringLiteral(literal) => literal.value.as_str()?,
+            _ => return None,
+        };
+        (key == property)
+            .then(|| static_string_with(&property_entry.value, semantic, visiting))
+            .flatten()
+    })
+}
+
 fn initializer<'a>(symbol: SymbolId, semantic: &Semantic<'a>) -> Option<&'a Expression<'a>> {
     let AstKind::VariableDeclarator(declaration) = semantic.symbol_declaration(symbol).kind()
     else {
@@ -97,6 +262,15 @@ fn initializer<'a>(symbol: SymbolId, semantic: &Semantic<'a>) -> Option<&'a Expr
         && scoping.symbol_redeclarations(symbol).is_empty()
         && !scoping.symbol_is_mutated(symbol))
     .then(|| init.without_parentheses())
+}
+
+/// Whether every reference only reads the binding. A property assignment mutates
+/// the object without writing the binding itself, so the member target flag matters.
+fn is_constant(symbol: SymbolId, semantic: &Semantic<'_>) -> bool {
+    !semantic.scoping().symbol_is_mutated(symbol)
+        && semantic
+            .symbol_references(symbol)
+            .all(|reference| !reference.flags().is_member_write_target())
 }
 
 fn is_runtime_require(expression: &Expression<'_>, semantic: &Semantic<'_>) -> bool {

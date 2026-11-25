@@ -267,7 +267,23 @@ pub fn analyze_roots_with(
             // A resolve-only reference only locates the target, so its bytes join
             // the payload without being parsed.
             if usage.resolve_only {
-                data_files.insert(resolved);
+                data_files.insert(resolved.clone());
+                // A package manifest is how a launcher finds another executable:
+                // webpack selects webpack-cli's declared bin this way. Keep the
+                // declared targets and their closure instead of the whole package.
+                if resolved
+                    .file_name()
+                    .is_some_and(|name| name == "package.json")
+                {
+                    include_declared_bins(
+                        &resolved,
+                        optional_subtree || optional,
+                        &fs,
+                        &mut pending,
+                        &mut data_files,
+                        &mut warnings,
+                    )?;
+                }
             } else if optional_subtree || optional {
                 // Every file under an optional edge is optional, however the file
                 // itself reaches its dependencies.
@@ -294,6 +310,48 @@ pub fn analyze_roots_with(
         stripped,
         warnings,
     })
+}
+
+/// Queue the executable targets declared by a resolved package manifest.
+///
+/// A launcher can only choose a bin at run time, so packing keeps every target the
+/// manifest declares. JavaScript targets are analyzed like any other module, which
+/// brings their dependency closure; other targets stay data.
+fn include_declared_bins(
+    manifest: &Path,
+    optional: bool,
+    fs: &impl FileSystem,
+    pending: &mut VecDeque<(PathBuf, bool)>,
+    data_files: &mut BTreeSet<PathBuf>,
+    warnings: &mut Vec<Warning>,
+) -> Result<(), Error> {
+    let bins = thinpack_resolve::declared_bins(manifest, fs).map_err(|error| Error::Format {
+        path: manifest.to_path_buf(),
+        message: error.to_string(),
+    })?;
+    for bin in bins {
+        if !fs.is_file(&bin) {
+            warnings.push(Warning {
+                message: format!(
+                    "{}: declared bin {} is missing; the app must handle the error",
+                    manifest.display(),
+                    bin.display()
+                ),
+                strict: false,
+            });
+            continue;
+        }
+        if thinpack_resolve::is_javascript(&bin) {
+            if optional {
+                pending.push_back((bin, true));
+            } else {
+                pending.push_front((bin, false));
+            }
+        } else {
+            data_files.insert(bin);
+        }
+    }
+    Ok(())
 }
 
 /// Resolves one dependency edge. `None` means an optional or `--allow-missing`
@@ -734,7 +792,7 @@ impl SpecifierCollector<'_, '_> {
         let complete = argument.as_expression().is_some_and(|argument| {
             require::specifiers(argument, self.semantic, |specifier| {
                 self.add(
-                    js_string(specifier),
+                    specifier,
                     is_import,
                     optional || self.try_depth > 0,
                     resolve_only,
@@ -1539,6 +1597,78 @@ mod tests {
             analysis.data_files.contains(Path::new("/app/data.css")),
             "{:?}",
             analysis.data_files
+        );
+    }
+
+    #[test]
+    fn a_resolved_package_manifest_brings_its_declared_bins() {
+        let fs = MemoryFs::new(&[
+            ("/app/package.json", "{}"),
+            (
+                "/app/main.cjs",
+                "const cli = { package: 'tool' };\nconst run = (options) => console.log(require.resolve(`${options.package}/package.json`));\nif (process.env.ALT) run(cli); else run(cli);\n",
+            ),
+            (
+                "/app/node_modules/tool/package.json",
+                r#"{"name":"tool","bin":{"tool":"./bin/tool.js"}}"#,
+            ),
+            (
+                "/app/node_modules/tool/bin/tool.js",
+                "module.exports = require('./helper');\n",
+            ),
+            (
+                "/app/node_modules/tool/bin/helper.js",
+                "module.exports = 42;\n",
+            ),
+            ("/app/node_modules/tool/unused.js", "module.exports = 0;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+        assert!(
+            analysis
+                .data_files
+                .contains(Path::new("/app/node_modules/tool/package.json"))
+        );
+        assert!(
+            analysis
+                .files
+                .iter()
+                .any(|path| path == Path::new("/app/node_modules/tool/bin/tool.js"))
+        );
+        assert!(
+            analysis
+                .files
+                .iter()
+                .any(|path| path == Path::new("/app/node_modules/tool/bin/helper.js"))
+        );
+        assert!(
+            !analysis
+                .files
+                .iter()
+                .any(|path| path == Path::new("/app/node_modules/tool/unused.js"))
+        );
+    }
+
+    #[test]
+    fn a_mutated_launcher_object_is_not_static() {
+        let fs = MemoryFs::new(&[
+            ("/app/package.json", "{}"),
+            (
+                "/app/main.cjs",
+                "const cli = { package: 'tool' };\ncli.package = 'other';\nconst run = (options) => console.log(require.resolve(`${options.package}/package.json`));\nrun(cli);\n",
+            ),
+            ("/app/node_modules/tool/package.json", r#"{"name":"tool"}"#),
+            (
+                "/app/node_modules/other/package.json",
+                r#"{"name":"other"}"#,
+            ),
+        ]);
+        let analysis = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+        assert!(analysis.data_files.is_empty(), "{:?}", analysis.data_files);
+        assert!(
+            analysis
+                .warnings
+                .iter()
+                .any(|warning| warning.message.contains("require.resolve"))
         );
     }
 

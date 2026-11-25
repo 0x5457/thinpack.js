@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::json::{self, Json};
 use crate::{Conditions, Error, FileSystem};
@@ -10,6 +10,7 @@ pub(crate) struct Manifest {
     pub module_type: Option<bool>,
     pub exports: Option<Json>,
     pub imports: Option<Json>,
+    bins: Vec<String>,
     optional: Vec<String>,
 }
 
@@ -46,11 +47,23 @@ impl Manifest {
             module_type,
             exports: value.get("exports").cloned(),
             imports: value.get("imports").cloned(),
+            bins: bin_targets(&value),
             optional: optional_names(&value),
         })
     }
     pub(crate) fn is_module(&self) -> bool {
         self.module_type == Some(true)
+    }
+}
+
+fn bin_targets(value: &Json) -> Vec<String> {
+    match value.get("bin") {
+        Some(Json::Str(target)) => vec![target.clone()],
+        Some(Json::Object(entries)) => entries
+            .iter()
+            .filter_map(|(_, target)| target.as_str().map(str::to_owned))
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -67,6 +80,31 @@ fn optional_names(value: &Json) -> Vec<String> {
         }
     }
     names
+}
+
+/// The executable targets declared by the package manifest at `manifest`.
+///
+/// Targets are resolved against the package directory; a target that leaves the
+/// package is ignored. The caller decides whether each target is code or data.
+///
+/// # Errors
+///
+/// Returns the manifest read and parse errors.
+pub fn declared_bins(manifest: &Path, fs: &impl FileSystem) -> Result<Vec<PathBuf>, Error> {
+    let Some(directory) = manifest.parent() else {
+        return Ok(Vec::new());
+    };
+    let mut bins: Vec<PathBuf> = Manifest::read(manifest, fs)?
+        .bins
+        .into_iter()
+        .filter_map(|target| {
+            let path = crate::normalize(&directory.join(target));
+            path.starts_with(directory).then_some(path)
+        })
+        .collect();
+    bins.sort();
+    bins.dedup();
+    Ok(bins)
 }
 
 /// The optional dependency names declared by the nearest package scope above `path`.
