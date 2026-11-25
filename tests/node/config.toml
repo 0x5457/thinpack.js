@@ -216,7 +216,6 @@ module = "querystring"
 
 [tests."parallel/test-querystring.js"]
 module = "querystring"
-ignore = "requires vm.runInNewContext, which the vm module does not implement yet"
 
 # --- punycode ---
 
@@ -463,7 +462,6 @@ module = "buffer"
 
 [tests."parallel/test-buffer-bytelength.js"]
 module = "buffer"
-ignore = "requires vm.runInNewContext, which is not implemented"
 
 [tests."parallel/test-buffer-compare-offset.js"]
 module = "buffer"

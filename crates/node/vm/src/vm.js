@@ -1,13 +1,16 @@
 (() => {
+  const { ops } = Deno.core;
   const { codes } = require("node:thinpack/internal/errors");
-  const unsupported = (name) => () => {
-    throw new codes.ERR_NOT_IMPLEMENTED(`vm.${name}`);
+
+  const contexts = new WeakMap();
+  const DEFAULT_FILENAME = "evalmachine.<anonymous>";
+
+  const optionsOf = (options) => {
+    if (typeof options === "string") return { filename: options };
+    return options ?? {};
   };
 
-  const filenameOf = (options) => {
-    if (typeof options === "string") return options;
-    return options?.filename ?? "evalmachine.<anonymous>";
-  };
+  const filenameOf = (options) => optionsOf(options).filename ?? DEFAULT_FILENAME;
 
   const specifierOf = (filename) => {
     if (filename.startsWith("file://")) return filename;
@@ -23,25 +26,91 @@
     return value;
   };
 
+  const invalidContext = (context) =>
+    new codes.ERR_INVALID_ARG_TYPE("contextifiedObject", "vm.Context", context);
+
+  const contextId = (context) => {
+    const id = contexts.get(context);
+    if (id === undefined) throw invalidContext(context);
+    return id;
+  };
+
+  const runInContext = (code, context, options) => {
+    const id = contextId(context);
+    const {
+      filename = DEFAULT_FILENAME,
+      lineOffset = 0,
+      columnOffset = 0,
+    } = optionsOf(options);
+    const [value, error] = ops.op_vm_run_in_context(
+      id,
+      String(code),
+      String(filename),
+      lineOffset | 0,
+      columnOffset | 0,
+    );
+    if (error !== null) throw error;
+    return value;
+  };
+
+  const createContext = (object, options) => {
+    if (object !== undefined && (object === null || typeof object !== "object")) {
+      throw new codes.ERR_INVALID_ARG_TYPE("object", "object", object);
+    }
+    if (object !== undefined) {
+      throw new codes.ERR_NOT_IMPLEMENTED("vm.createContext with a sandbox object");
+    }
+    const codeGeneration = options?.codeGeneration;
+    const [id, global] = ops.op_vm_create_context(codeGeneration?.strings !== false);
+    contexts.set(global, id);
+    return global;
+  };
+
+  const runInNewContext = (code, contextObject, options) => {
+    const context = createContext(contextObject, options);
+    return runInContext(code, context, options);
+  };
+
   class Script {
     #code;
     #filename;
+    #lineOffset;
+    #columnOffset;
 
     constructor(code, options) {
       this.#code = String(code);
-      this.#filename = filenameOf(options);
+      const {
+        filename = DEFAULT_FILENAME,
+        lineOffset = 0,
+        columnOffset = 0,
+      } = optionsOf(options);
+      this.#filename = filename;
+      this.#lineOffset = lineOffset;
+      this.#columnOffset = columnOffset;
     }
 
     runInThisContext(options) {
-      return evaluate(this.#code, options ?? this.#filename);
+      return evaluate(this.#code, options ?? this.#runOptions());
     }
 
-    runInContext() {
-      throw new codes.ERR_NOT_IMPLEMENTED("vm.Script.runInContext");
+    runInContext(context, options) {
+      return runInContext(this.#code, context, options ?? this.#runOptions());
     }
 
-    runInNewContext() {
-      throw new codes.ERR_NOT_IMPLEMENTED("vm.Script.runInNewContext");
+    runInNewContext(contextObject, options) {
+      return runInNewContext(
+        this.#code,
+        contextObject,
+        options ?? this.#runOptions(),
+      );
+    }
+
+    #runOptions() {
+      return {
+        filename: this.#filename,
+        lineOffset: this.#lineOffset,
+        columnOffset: this.#columnOffset,
+      };
     }
 
     get [Symbol.toStringTag]() {
@@ -72,11 +141,11 @@
     constants,
     Script,
     Module,
-    createContext: unsupported("createContext"),
-    runInContext: unsupported("runInContext"),
-    runInNewContext: unsupported("runInNewContext"),
+    createContext,
+    runInContext,
+    runInNewContext,
     runInThisContext: (code, options) => evaluate(code, options),
-    isContext: () => false,
+    isContext: (object) => contexts.has(object),
     compileFunction,
     SourceTextModule: Module,
     SyntheticModule: Module,

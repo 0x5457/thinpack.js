@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 thinpack-js.workspace = true
 deno_core.workspace = true
+deno_error.workspace = true
 
 [lints]
 workspace = true
