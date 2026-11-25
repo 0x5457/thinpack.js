@@ -28,8 +28,9 @@ template without packing. `jsc` is the macOS system JavaScriptCore framework and
 has no bundled engine. Assets are exposed through node:sea;
 `--list-capabilities` prints the derived capability set and exits. `--include` packs
 additional files (data, declarations) and analyzes them when they are JavaScript;
-its paths are relative to the project root (the entry's nearest package.json), and
-it is how files loaded only by computed code reach the payload.";
+its paths are relative to the project root (the entry's nearest package.json). A
+computed module path with a literal `__dirname` directory packs that directory's
+matching files; other computed paths need `--include`.";
 
 fn main() -> std::process::ExitCode {
     let mut args = std::env::args().skip(1);

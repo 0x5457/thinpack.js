@@ -2,11 +2,11 @@ use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
 use oxc_ast::AstKind;
 use oxc_ast::ast::{
-    BinaryOperator, Expression, IdentifierReference, ObjectPropertyKind, PropertyKey, PropertyKind,
-    Statement,
+    Argument, BinaryOperator, Expression, IdentifierReference, ObjectPropertyKind, PropertyKey,
+    PropertyKind, Statement,
 };
-use oxc_semantic::{IsGlobalReference, Scoping, Semantic, SymbolId};
-use oxc_span::GetSpan;
+use oxc_semantic::{IsGlobalReference, Reference, Scoping, Semantic, SymbolId};
+use oxc_span::{GetSpan, Span};
 
 pub(super) fn bindings(semantic: &Semantic<'_>) -> BTreeSet<SymbolId> {
     semantic
@@ -29,6 +29,125 @@ pub(super) fn referenced_symbol(
     scoping
         .get_reference(identifier.reference_id.get()?)
         .symbol_id()
+}
+
+/// The argument index a `Function`-built import factory reads its specifier from.
+///
+/// `new Function("module", "return import(module)")` creates a function that imports
+/// its argument in the module that created it, so a literal call names a module the
+/// analyzer can follow. Only the literal body `return import(<parameter>)` is
+/// recognized; nothing in it is evaluated.
+pub(super) fn late_import(
+    callee: &Expression<'_>,
+    arguments: &[Argument<'_>],
+    semantic: &Semantic<'_>,
+) -> Option<usize> {
+    if !is_function_constructor(callee, semantic) {
+        return None;
+    }
+    let (body, parameters) = arguments.split_last()?;
+    let body = string_literal(body.as_expression()?)?;
+    let parameters = parameters
+        .iter()
+        .map(|argument| string_literal(argument.as_expression()?))
+        .collect::<Option<Vec<_>>>()?
+        .join(",");
+    let body = body.trim();
+    parameters.split(',').map(str::trim).position(|parameter| {
+        let expected = format!("return import({parameter})");
+        body == expected || body.strip_suffix(';').is_some_and(|body| body == expected)
+    })
+}
+
+/// A stable binding created by a `Function`-built import factory.
+pub(super) struct LateImport {
+    /// The argument index the factory body imports.
+    pub argument: usize,
+    /// The constructor expression, so its generic warning can be suppressed.
+    pub span: Span,
+}
+
+/// The stable bindings (`const load = new Function(...)`) that late-import their
+/// argument, with the argument index the body reads.
+pub(super) fn late_import_bindings(semantic: &Semantic<'_>) -> BTreeMap<SymbolId, LateImport> {
+    semantic
+        .scoping()
+        .symbol_ids()
+        .filter_map(|symbol| {
+            // An exported binding can be called from a module this walk cannot see,
+            // so keep its construction warning instead of treating it as handled. Only
+            // a directly exported declaration qualifies; a factory inside an exported
+            // function stays local to its own call graph.
+            let declaration = semantic.symbol_declaration(symbol);
+            let variable = semantic.nodes().parent_id(declaration.id());
+            if matches!(
+                semantic.nodes().kind(variable),
+                AstKind::VariableDeclaration(_)
+            ) && matches!(
+                semantic.nodes().parent_kind(variable),
+                AstKind::ExportDeclaration(_)
+            ) {
+                return None;
+            }
+            let (argument, span) = match initializer(symbol, semantic)? {
+                Expression::NewExpression(expression) => (
+                    late_import(&expression.callee, &expression.arguments, semantic)?,
+                    expression.span,
+                ),
+                Expression::CallExpression(call) => (
+                    late_import(&call.callee, &call.arguments, semantic)?,
+                    call.span,
+                ),
+                _ => return None,
+            };
+            if !semantic
+                .symbol_references(symbol)
+                .all(|reference| is_direct_call_callee(reference, semantic))
+            {
+                return None;
+            }
+            Some((symbol, LateImport { argument, span }))
+        })
+        .collect()
+}
+
+fn is_direct_call_callee(reference: &Reference, semantic: &Semantic<'_>) -> bool {
+    let AstKind::CallExpression(call) = semantic.nodes().parent_kind(reference.node_id()) else {
+        return false;
+    };
+    let AstKind::IdentifierReference(identifier) =
+        semantic.nodes().get_node(reference.node_id()).kind()
+    else {
+        return false;
+    };
+    call.callee
+        .get_identifier_reference()
+        .is_some_and(|callee| std::ptr::eq(callee, identifier))
+}
+
+fn is_function_constructor(expression: &Expression<'_>, semantic: &Semantic<'_>) -> bool {
+    match expression.without_parentheses() {
+        Expression::Identifier(identifier) => {
+            identifier.name == "Function" && identifier.is_global_reference(semantic.scoping())
+        }
+        Expression::StaticMemberExpression(member) => {
+            member.property.name == "Function"
+                && matches!(
+                    &member.object,
+                    Expression::Identifier(object)
+                        if object.name == "globalThis"
+                            && object.is_global_reference(semantic.scoping())
+                )
+        }
+        _ => false,
+    }
+}
+
+fn string_literal<'a>(expression: &'a Expression<'a>) -> Option<&'a str> {
+    match expression.without_parentheses() {
+        Expression::StringLiteral(literal) => literal.value.as_str(),
+        _ => None,
+    }
 }
 
 enum PendingSpecifier<'a, 'e> {
@@ -154,9 +273,6 @@ fn static_string_with(
 }
 
 /// The value a parameter receives when every call site agrees.
-///
-/// Webpack names webpack-cli through a constant object that it passes to its launcher,
-/// so the manifest request is only static after looking through those calls.
 fn parameter_value<T: PartialEq>(
     symbol: SymbolId,
     semantic: &Semantic<'_>,
@@ -251,7 +367,34 @@ fn object_value(
     })
 }
 
-fn initializer<'a>(symbol: SymbolId, semantic: &Semantic<'a>) -> Option<&'a Expression<'a>> {
+/// Every expression assigned to a binding: its initializer and each assignment.
+/// A computed module path often has no initializer and several assignments, so
+/// the literal prefix cannot be read from the declaration alone.
+pub(super) fn assigned_values<'a>(
+    symbol: SymbolId,
+    semantic: &Semantic<'a>,
+) -> Vec<&'a Expression<'a>> {
+    let mut values = Vec::new();
+    if let AstKind::VariableDeclarator(declaration) = semantic.symbol_declaration(symbol).kind()
+        && let Some(init) = &declaration.init
+    {
+        values.push(init.without_parentheses());
+    }
+    for reference in semantic.symbol_references(symbol) {
+        if reference.is_write()
+            && let AstKind::AssignmentExpression(assignment) =
+                semantic.nodes().parent_kind(reference.node_id())
+        {
+            values.push(assignment.right.without_parentheses());
+        }
+    }
+    values
+}
+
+pub(super) fn initializer<'a>(
+    symbol: SymbolId,
+    semantic: &Semantic<'a>,
+) -> Option<&'a Expression<'a>> {
     let AstKind::VariableDeclarator(declaration) = semantic.symbol_declaration(symbol).kind()
     else {
         return None;
@@ -271,6 +414,118 @@ fn is_constant(symbol: SymbolId, semantic: &Semantic<'_>) -> bool {
         && semantic
             .symbol_references(symbol)
             .all(|reference| !reference.flags().is_member_write_target())
+}
+
+/// The package-manifest specifiers whose loaded object is used to select a bin.
+///
+/// The selection is only a member access such as `pkg.bin[binName]` inside a
+/// computed `require`/`import` target; reading the manifest for its version alone
+/// selects nothing.
+pub(super) fn selected_bins(
+    expression: &Expression<'_>,
+    semantic: &Semantic<'_>,
+    manifests: &BTreeMap<SymbolId, BTreeSet<String>>,
+) -> Vec<(String, String)> {
+    let mut selected = BTreeSet::new();
+    collect_bin_selections(expression, semantic, manifests, &mut selected);
+    selected.into_iter().collect()
+}
+
+fn collect_bin_selections(
+    expression: &Expression<'_>,
+    semantic: &Semantic<'_>,
+    manifests: &BTreeMap<SymbolId, BTreeSet<String>>,
+    selected: &mut BTreeSet<(String, String)>,
+) {
+    match expression.without_parentheses() {
+        Expression::CallExpression(call) => {
+            for argument in &call.arguments {
+                if let Some(argument) = argument.as_expression() {
+                    collect_bin_selections(argument, semantic, manifests, selected);
+                }
+            }
+        }
+        Expression::BinaryExpression(binary) => {
+            collect_bin_selections(&binary.left, semantic, manifests, selected);
+            collect_bin_selections(&binary.right, semantic, manifests, selected);
+        }
+        Expression::TemplateLiteral(template) => {
+            for expression in &template.expressions {
+                collect_bin_selections(expression, semantic, manifests, selected);
+            }
+        }
+        Expression::ComputedMemberExpression(member) => {
+            if let Expression::StaticMemberExpression(bin) = member.object.without_parentheses()
+                && bin.property.name == "bin"
+                && let Some(name) = static_string(&member.expression, semantic)
+            {
+                add_bin_selection(&bin.object, &name, semantic, manifests, selected);
+            }
+        }
+        Expression::StaticMemberExpression(member) => {
+            if let Expression::StaticMemberExpression(bin) = member.object.without_parentheses()
+                && bin.property.name == "bin"
+            {
+                add_bin_selection(
+                    &bin.object,
+                    member.property.name.as_str(),
+                    semantic,
+                    manifests,
+                    selected,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn add_bin_selection(
+    object: &Expression<'_>,
+    name: &str,
+    semantic: &Semantic<'_>,
+    manifests: &BTreeMap<SymbolId, BTreeSet<String>>,
+    selected: &mut BTreeSet<(String, String)>,
+) {
+    let Expression::Identifier(identifier) = object.without_parentheses() else {
+        return;
+    };
+    let Some(symbol) = referenced_symbol(identifier, semantic.scoping()) else {
+        return;
+    };
+    let Some(specifiers) = manifest_specifiers(symbol, semantic, manifests) else {
+        return;
+    };
+    for specifier in specifiers {
+        selected.insert((specifier.clone(), name.to_owned()));
+    }
+}
+
+/// The manifest a binding was loaded from, either directly or through
+/// `const pkg = require(pkgPath)`.
+fn manifest_specifiers<'a>(
+    symbol: SymbolId,
+    semantic: &Semantic<'_>,
+    manifests: &'a BTreeMap<SymbolId, BTreeSet<String>>,
+) -> Option<&'a BTreeSet<String>> {
+    if let Some(specifiers) = manifests.get(&symbol) {
+        return Some(specifiers);
+    }
+    let Expression::CallExpression(call) = initializer(symbol, semantic)? else {
+        return None;
+    };
+    if !is_runtime_require(&call.callee, semantic) {
+        return None;
+    }
+    let Expression::Identifier(identifier) = call
+        .arguments
+        .first()?
+        .as_expression()?
+        .without_parentheses()
+    else {
+        return None;
+    };
+    let manifest = referenced_symbol(identifier, semantic.scoping())?;
+    manifests.get(&manifest)
 }
 
 fn is_runtime_require(expression: &Expression<'_>, semantic: &Semantic<'_>) -> bool {

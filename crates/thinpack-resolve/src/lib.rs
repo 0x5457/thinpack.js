@@ -9,7 +9,7 @@ use std::path::{Component, Path, PathBuf};
 use package::Manifest;
 
 pub use package::{
-    declared_bins, declares_optional, is_optional_dependency, optional_dependencies, package_name,
+    declared_bin, declares_optional, is_optional_dependency, optional_dependencies, package_name,
     package_type,
 };
 

@@ -84,6 +84,15 @@ pub const MODULES: &[Module] = &[
         optional: false,
     },
     Module {
+        name: "dgram",
+        feature: "node-dgram",
+        builtins: &["dgram"],
+        deps: &["events"],
+        globals: &[],
+        ambient: false,
+        optional: false,
+    },
+    Module {
         name: "diagnostics_channel",
         feature: "node-diagnostics-channel",
         builtins: &["diagnostics_channel"],

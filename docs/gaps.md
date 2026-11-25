@@ -155,6 +155,16 @@ the divergence, why it exists, and where it lives.
   same real file through different links remain distinct modules
   (`crates/thinpack-resolve/src/lib.rs`).
 
+## Networking
+
+- `dgram` implements the asynchronous socket API but not every surface Node ships around it:
+  `bind({ fd })`, the synchronous `bindSync`/`connectSync` methods, `receiveBlockList`/
+  `sendBlockList`, and the `udp.socket` diagnostics channel are absent rather than emulated.
+  Bound UDP handles are not shared between `cluster` workers, matching the cluster
+  handle-passing gap. IPv6 zone-indexed addresses are recognized for family validation but
+  the scope is not carried through the lookup, so link-local destinations need a plain
+  numeric address (`crates/node/dgram/src/dgram.js`, `crates/node/dgram/src/ops.rs`).
+
 ## Process and platform
 
 - On unix platforms that are neither Linux nor macOS, `process.memoryUsage()`

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::json::{self, Json};
@@ -10,7 +11,7 @@ pub(crate) struct Manifest {
     pub module_type: Option<bool>,
     pub exports: Option<Json>,
     pub imports: Option<Json>,
-    bins: Vec<String>,
+    bins: BTreeMap<String, String>,
     optional: Vec<String>,
 }
 
@@ -41,13 +42,14 @@ impl Manifest {
             }
         };
 
+        let name = value.get("name").and_then(Json::as_str).map(str::to_owned);
         Ok(Self {
-            name: value.get("name").and_then(Json::as_str).map(str::to_owned),
+            name: name.clone(),
             main: value.get("main").and_then(Json::as_str).map(str::to_owned),
             module_type,
             exports: value.get("exports").cloned(),
             imports: value.get("imports").cloned(),
-            bins: bin_targets(&value),
+            bins: bin_targets(&value, name.as_deref()),
             optional: optional_names(&value),
         })
     }
@@ -56,14 +58,20 @@ impl Manifest {
     }
 }
 
-fn bin_targets(value: &Json) -> Vec<String> {
+fn bin_targets(value: &Json, name: Option<&str>) -> BTreeMap<String, String> {
     match value.get("bin") {
-        Some(Json::Str(target)) => vec![target.clone()],
+        Some(Json::Str(target)) => name
+            .map(|name| BTreeMap::from([(name.to_owned(), target.clone())]))
+            .unwrap_or_default(),
         Some(Json::Object(entries)) => entries
             .iter()
-            .filter_map(|(_, target)| target.as_str().map(str::to_owned))
+            .filter_map(|(name, target)| {
+                target
+                    .as_str()
+                    .map(|target| (name.clone(), target.to_owned()))
+            })
             .collect(),
-        _ => Vec::new(),
+        _ => BTreeMap::new(),
     }
 }
 
@@ -82,29 +90,28 @@ fn optional_names(value: &Json) -> Vec<String> {
     names
 }
 
-/// The executable targets declared by the package manifest at `manifest`.
+/// The executable target declared as `name` by the package manifest at `manifest`.
 ///
-/// Targets are resolved against the package directory; a target that leaves the
-/// package is ignored. The caller decides whether each target is code or data.
+/// The target is resolved against the package directory; a target that leaves the
+/// package is ignored. The caller decides whether the target is code or data.
 ///
 /// # Errors
 ///
 /// Returns the manifest read and parse errors.
-pub fn declared_bins(manifest: &Path, fs: &impl FileSystem) -> Result<Vec<PathBuf>, Error> {
+pub fn declared_bin(
+    manifest: &Path,
+    name: &str,
+    fs: &impl FileSystem,
+) -> Result<Option<PathBuf>, Error> {
     let Some(directory) = manifest.parent() else {
-        return Ok(Vec::new());
+        return Ok(None);
     };
-    let mut bins: Vec<PathBuf> = Manifest::read(manifest, fs)?
-        .bins
-        .into_iter()
-        .filter_map(|target| {
-            let path = crate::normalize(&directory.join(target));
-            path.starts_with(directory).then_some(path)
-        })
-        .collect();
-    bins.sort();
-    bins.dedup();
-    Ok(bins)
+    let manifest = Manifest::read(manifest, fs)?;
+    let Some(target) = manifest.bins.get(name) else {
+        return Ok(None);
+    };
+    let path = crate::normalize(&directory.join(target));
+    Ok(path.starts_with(directory).then_some(path))
 }
 
 /// The optional dependency names declared by the nearest package scope above `path`.
