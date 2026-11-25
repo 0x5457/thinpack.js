@@ -1371,6 +1371,10 @@ stdin_pipe = true
 module = "child_process"
 timeout_ms = 10000
 
+[tests."parallel/test-thinpack-child-process-stdio.js"]
+module = "child_process"
+timeout_ms = 10000
+
 [tests."parallel/test-thinpack-cluster-fork-stdio.js"]
 module = "cluster"
 timeout_ms = 10000
@@ -1423,3 +1427,102 @@ timeout_ms = 10000
 [tests."parallel/test-thinpack-fetch-body-used.js"]
 module = "http"
 timeout_ms = 10000
+
+# --- dgram ---
+
+[tests."parallel/test-dgram-address.js"]
+module = "dgram"
+
+[tests."parallel/test-dgram-bind-default-address.js"]
+module = "dgram"
+
+[tests."parallel/test-dgram-bind-error-repeat.js"]
+module = "dgram"
+
+[tests."parallel/test-dgram-bind.js"]
+module = "dgram"
+
+[tests."parallel/test-dgram-close-in-listening.js"]
+module = "dgram"
+
+[tests."parallel/test-dgram-close-is-not-callback.js"]
+module = "dgram"
+
+[tests."parallel/test-thinpack-dgram-close-rebind.js"]
+module = "dgram"
+
+[tests."parallel/test-thinpack-dgram-connect-callback-once.js"]
+module = "dgram"
+
+[tests."parallel/test-thinpack-dgram-reconnect-payload.js"]
+module = "dgram"
+
+[tests."parallel/test-dgram-connect-send-callback-buffer.js"]
+module = "dgram"
+
+[tests."parallel/test-dgram-connect-send-default-host.js"]
+module = "dgram"
+
+[tests."parallel/test-dgram-connect.js"]
+module = "dgram"
+
+[tests."parallel/test-dgram-createSocket-type.js"]
+module = "dgram"
+
+[tests."parallel/test-dgram-implicit-bind.js"]
+module = "dgram"
+
+[tests."parallel/test-dgram-ipv6only.js"]
+module = "dgram"
+
+[tests."parallel/test-dgram-membership.js"]
+module = "dgram"
+
+[tests."parallel/test-dgram-msgsize.js"]
+module = "dgram"
+
+[tests."parallel/test-dgram-multicast-loopback.js"]
+module = "dgram"
+
+[tests."parallel/test-dgram-multicast-set-interface.js"]
+module = "dgram"
+
+[tests."parallel/test-dgram-multicast-setTTL.js"]
+module = "dgram"
+
+[tests."parallel/test-dgram-ref.js"]
+module = "dgram"
+
+[tests."parallel/test-dgram-send-callback-buffer.js"]
+module = "dgram"
+
+[tests."parallel/test-dgram-send-callback-multi-buffer.js"]
+module = "dgram"
+
+[tests."parallel/test-dgram-send-callback-recursive.js"]
+module = "dgram"
+
+[tests."parallel/test-dgram-send-default-host.js"]
+module = "dgram"
+
+[tests."parallel/test-dgram-send-empty-array.js"]
+module = "dgram"
+
+[tests."parallel/test-dgram-send-empty-packet.js"]
+module = "dgram"
+
+[tests."parallel/test-dgram-sendto.js"]
+module = "dgram"
+
+[tests."parallel/test-dgram-setBroadcast.js"]
+module = "dgram"
+
+[tests."parallel/test-dgram-setTTL.js"]
+module = "dgram"
+
+[tests."parallel/test-dgram-udp4.js"]
+module = "dgram"
+
+[tests."parallel/test-dgram-unref.js"]
+module = "dgram"
+

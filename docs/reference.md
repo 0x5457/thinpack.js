@@ -65,7 +65,21 @@ When no matching installed template is available and the cache has both backends
 
 The analyzer follows conditional `require` calls when both branches name modules. For module names
 supplied at runtime, use `--with` to include the required built-ins explicitly. `--strict` makes
-unresolved dynamic requests an error during packing.
+unresolved dynamic requests an error during packing. When a computed module load selects a literal
+`pkg.bin[name]` from a resolved package manifest, packing also carries that declared target, so a
+launcher that selects a package bin at run time works without `--include`.
+
+A path built from `__dirname` can name files the module never imports: files read through
+`fs.readFileSync`, `readFile`, or `createReadStream` are packed as data, and so is every file under
+a directory listed with `fs.readdir` or `readdirSync`. Enumeration counts only on the `fs` module,
+and a scanned directory is expanded like `--include` only when it is below the project root and is
+neither a package root nor `node_modules`; anything broader still needs `--include`. `path.join`,
+`path.resolve`, string concatenation, and single-assignment bindings of them are evaluated. A
+`require` of one constant path built that way packs the named file. A computed `require`/`import`
+whose loaded binding has a `path.join`/`path.resolve` call with a literal `__dirname` directory and
+one final computed segment, or whose argument is a template literal naming
+``./commands/${command}.js``, packs that directory's files matching the segment's literal suffix,
+or JavaScript modules when it has none; other computed module paths still need `--include`.
 
 The optionality of a guarded `require`/`import()` or an `optionalDependencies` entry extends
 through the static dependencies it reaches: a missing module there becomes a warning, and the
@@ -96,14 +110,15 @@ erasable syntax is accepted: `enum`, `namespace`, parameter properties, `import 
 `--experimental-transform-types`. TypeScript under `node_modules` is not stripped either: Node
 refuses it with `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`, so packing rejects it instead of
 building an artifact that behaves differently. TypeScript outside the payload is not stripped at
-run time.
+run time. A declaration file that a packed module names and that sits beside it joins the payload
+as data, so the TypeScript compiler finds its standard library without `--include`.
 
 ## Built-in modules
 
 Ambient (every template): `console`, `process`, `timers`, `buffer`, `url`, plus `util` because
 `console` formats through it.
 
-On demand: `assert`, `async_hooks`, `child_process`, `constants`, `crypto`,
+On demand: `assert`, `async_hooks`, `child_process`, `constants`, `crypto`, `dgram`,
 `diagnostics_channel`, `dns`, `events`, `fetch`, `ffi`, `fs`, `http`, `http2`, `https`,
 `inspector`, `module`, `net`, `os`, `path`, `perf_hooks`, `querystring`, `readline`, `sea`,
 `sqlite`, `stream`, `string_decoder`, `test`, `tls`, `tty`, `util`, `v8`, `vm`, `worker_threads`,

@@ -1541,6 +1541,25 @@ console.log('fs named exports ok');
         ]),
     },
     PackedTest {
+        name: "packed::util-named-exports",
+        directory: "util-named-exports",
+        entry: "/app/main.mjs",
+        files: &[(
+            "/app/main.mjs",
+            r"import util, { MIMEType, parseArgs } from 'node:util';
+import { createRequire } from 'node:module';
+const cjs = createRequire(import.meta.url)('node:util');
+if (util !== cjs || parseArgs !== cjs.parseArgs || MIMEType !== cjs.MIMEType) {
+  throw new Error('util export identity mismatch');
+}
+const { values } = parseArgs({ args: ['--flag'], options: { flag: { type: 'boolean' } } });
+if (values.flag !== true) throw new Error('parseArgs mismatch');
+",
+        )],
+        capabilities: &["util", "module"],
+        error: None,
+    },
+    PackedTest {
         name: "packed::cjs-named-exports",
         directory: "cjs-named-exports",
         entry: "/app/main.mjs",
@@ -1579,6 +1598,43 @@ console.log('domain ok');
 ",
         )],
         capabilities: &["assert", "domain"],
+        error: None,
+    },
+    PackedTest {
+        name: "packed::dgram-roundtrip",
+        directory: "dgram-roundtrip",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r"const assert = require('node:assert/strict');
+// The bare name is what aws-sdk and Node-RED use.
+const dgram = require('dgram');
+const server = dgram.createSocket('udp4');
+server.on('message', (message, rinfo) => {
+  assert.equal(message.toString(), 'thinpack-dgram');
+  assert.equal(rinfo.address, '127.0.0.1');
+  assert.equal(rinfo.family, 'IPv4');
+  server.send('pong', rinfo.port, rinfo.address, (error, bytes) => {
+    assert.ifError(error);
+    assert.equal(bytes, 4);
+    server.close(() => console.log('dgram ok'));
+  });
+});
+server.bind(0, '127.0.0.1', () => {
+  const client = dgram.createSocket('udp4');
+  client.on('message', (message, rinfo) => {
+    assert.equal(message.toString(), 'pong');
+    assert.equal(rinfo.address, '127.0.0.1');
+    client.close();
+  });
+  client.send('thinpack-dgram', server.address().port, '127.0.0.1', (error, bytes) => {
+    assert.ifError(error);
+    assert.equal(bytes, 14);
+  });
+});
+",
+        )],
+        capabilities: &["assert", "dgram"],
         error: None,
     },
     PackedTest {

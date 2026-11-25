@@ -101,6 +101,7 @@ thinpack-node-fs = { path = "crates/node/fs" }
 thinpack-node-stream = { path = "crates/node/stream" }
 thinpack-node-net = { path = "crates/node/net" }
 thinpack-node-dns = { path = "crates/node/dns" }
+thinpack-node-dgram = { path = "crates/node/dgram" }
 thinpack-node-domain = { path = "crates/node/domain" }
 thinpack-node-tls = { path = "crates/node/tls" }
 thinpack-node-http = { path = "crates/node/http" }
@@ -147,5 +148,5 @@ panic = "abort"
 [patch.crates-io]
 # The forks carry the patches that used to live in `vendor/`; each branch's THINPACK.md records
 # its delta from upstream and how to rebase it onto a new release.
-v8x = { git = "https://github.com/thinpack-js/v8x", rev = "7e52ef68192f92c5f46e0923017ed7c9ad8135d1" }
+v8x = { git = "https://github.com/thinpack-js/v8x", rev = "f1f4c537e66fdaf8a4a922e36e5441542fe671a7" }
 deno_v8 = { git = "https://github.com/thinpack-js/deno", rev = "894c3bbc9b5a16a43f8fc3c53fbd7698fa8f2eb9" }

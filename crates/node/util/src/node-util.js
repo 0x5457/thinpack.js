@@ -698,3 +698,16 @@ defineLazyProperties(
   'node:thinpack/internal/util/trace_sigint',
   ['setTraceSigInt'],
 );
+
+// The facade skips getters by default. These lazy exports are part of util.
+globalThis.__thinpack_declare_builtin_exports__('node:util', [
+  'MIMEParams',
+  'MIMEType',
+  'TextDecoder',
+  'TextEncoder',
+  'debounce',
+  'diff',
+  'parseArgs',
+  'setTraceSigInt',
+  'throttle',
+]);

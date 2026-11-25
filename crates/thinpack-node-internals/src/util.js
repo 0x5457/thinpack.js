@@ -142,6 +142,13 @@
     [-49, ["EUNATCH", "protocol driver not attached"]],
     [-8, ["ENOEXEC", "exec format error"]],
   ]);
+  // The table holds Linux errno values; macOS and Windows use libuv's
+  // platform EMSGSIZE values, so map those to the same code.
+  if (process.platform === "win32") {
+    systemErrors.set(-4065, ["EMSGSIZE", "message too long"]);
+  } else if (process.platform === "darwin") {
+    systemErrors.set(-40, ["EMSGSIZE", "message too long"]);
+  }
   const once = (callback, { preserveReturnValue = false } = kEmptyObject) => {
     let called = false;
     let returnValue;

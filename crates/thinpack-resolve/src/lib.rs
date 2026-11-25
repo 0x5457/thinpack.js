@@ -9,7 +9,8 @@ use std::path::{Component, Path, PathBuf};
 use package::Manifest;
 
 pub use package::{
-    declares_optional, is_optional_dependency, optional_dependencies, package_name, package_type,
+    declared_bin, declares_optional, is_optional_dependency, optional_dependencies, package_name,
+    package_type,
 };
 
 pub trait FileSystem {
@@ -477,7 +478,8 @@ pub fn is_javascript(path: &Path) -> bool {
 
 /// `.d.ts`, `.d.mts` and `.d.cts` describe types for a caller; they are not
 /// executable modules even though their last extension says TypeScript.
-fn is_declaration(path: &Path) -> bool {
+#[must_use]
+pub fn is_declaration(path: &Path) -> bool {
     let name = path
         .file_name()
         .and_then(|name| name.to_str())

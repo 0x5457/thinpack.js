@@ -1225,10 +1225,15 @@ function rejectWithReason(signal, reject) {
 async function raceWithSignal(opPromise, signal) {
   if (!signal) return opPromise;
   const { promise: abortPromise, reject } = PromiseWithResolvers();
-  // eslint-disable-next-line no-unused-vars
-  using _ = EventEmitter.addAbortListener(signal,
-                                          rejectWithReason(signal, reject));
-  return await SafePromiseRace([opPromise, abortPromise]);
+  // `using` would be clearer, but the system JavaScriptCore framework does not
+  // parse explicit resource management; dispose the listener explicitly.
+  const abortListener = EventEmitter.addAbortListener(
+    signal, rejectWithReason(signal, reject));
+  try {
+    return await SafePromiseRace([opPromise, abortPromise]);
+  } finally {
+    abortListener[SymbolDispose]();
+  }
 }
 
 async function writeFileHandle(filehandle, data, signal, encoding) {

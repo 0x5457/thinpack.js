@@ -4423,7 +4423,7 @@ dependencies = [
 [[package]]
 name = "thinpack-jsc-rewrite"
 version = "0.2.0"
-source = "git+https://github.com/thinpack-js/v8x?rev=7e52ef68192f92c5f46e0923017ed7c9ad8135d1#7e52ef68192f92c5f46e0923017ed7c9ad8135d1"
+source = "git+https://github.com/thinpack-js/v8x?rev=f1f4c537e66fdaf8a4a922e36e5441542fe671a7#f1f4c537e66fdaf8a4a922e36e5441542fe671a7"
 
 [[package]]
 name = "thinpack-loader"
@@ -4536,6 +4536,19 @@ dependencies = [
  "tokio",
  "x25519-dalek",
  "x509-cert",
+]
+
+[[package]]
+name = "thinpack-node-dgram"
+version = "0.2.0"
+dependencies = [
+ "deno_core",
+ "deno_error",
+ "libc",
+ "socket2 0.5.10",
+ "thinpack-js",
+ "tokio",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4907,6 +4920,7 @@ dependencies = [
  "thinpack-node-console",
  "thinpack-node-constants",
  "thinpack-node-crypto",
+ "thinpack-node-dgram",
  "thinpack-node-diagnostics-channel",
  "thinpack-node-dns",
  "thinpack-node-domain",
@@ -5274,7 +5288,7 @@ dependencies = [
 [[package]]
 name = "v8x"
 version = "149.4.0-rc.4"
-source = "git+https://github.com/thinpack-js/v8x?rev=7e52ef68192f92c5f46e0923017ed7c9ad8135d1#7e52ef68192f92c5f46e0923017ed7c9ad8135d1"
+source = "git+https://github.com/thinpack-js/v8x?rev=f1f4c537e66fdaf8a4a922e36e5441542fe671a7#f1f4c537e66fdaf8a4a922e36e5441542fe671a7"
 dependencies = [
  "bindgen 0.70.1",
  "bitflags",

@@ -45,14 +45,14 @@
     }
 
     /// Binds this object to a spawned entry: starts the stdio pumps and the exit reporting.
-    _attach(id, pid, piped) {
+    /// `stdio` names the streams that were spawned as pipes; inherited and ignored streams
+    /// keep their `null` stream properties, as in Node.
+    _attach(id, pid, stdio) {
       this._id = id;
       this.pid = pid;
-      if (piped) {
-        this.stdout = this.#readable(1);
-        this.stderr = this.#readable(2);
-        this.stdin = this.#writable();
-      }
+      if (stdio.stdin) this.stdin = this.#writable();
+      if (stdio.stdout) this.stdout = this.#readable(1);
+      if (stdio.stderr) this.stderr = this.#readable(2);
       this.#wait();
     }
 
