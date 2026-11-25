@@ -120,6 +120,14 @@ the divergence, why it exists, and where it lives.
   over (EBUSY, EMFILE, …) surface directly
   (`crates/node/fs/src/binding_fs.js`).
 
+## Module resolution
+
+- The resolver keeps lexical paths (Node's `--preserve-symlinks` behavior) instead of
+  canonicalizing symlinks. `__dirname`, `require.resolve` and a linked package's own
+  dependency lookup therefore see the link location, and two specifiers that reach the
+  same real file through different links remain distinct modules
+  (`crates/thinpack-resolve/src/lib.rs`).
+
 ## Process and platform
 
 - On unix platforms that are neither Linux nor macOS, `process.memoryUsage()`
