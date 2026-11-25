@@ -320,7 +320,7 @@ fn disconnect(socket: &UdpSocket) -> io::Result<()> {
     use windows_sys::Win32::Networking::WinSock::{AF_UNSPEC, SOCKADDR, connect};
 
     let address = SOCKADDR {
-        sa_family: AF_UNSPEC as u16,
+        sa_family: AF_UNSPEC,
         sa_data: [0; 14],
     };
     // SAFETY: the socket is open, and `address` is a correctly sized `sockaddr`
