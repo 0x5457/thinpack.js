@@ -274,6 +274,67 @@ parentPort.postMessage('worker loaded from the packed VFS');
         capabilities: &[],
         error: None,
     },
+    // A packed app owns `/app`, but a path outside it is a real path on the
+    // machine, as the `fs` module has always treated it: a tool that loads a
+    // file the user already has (ESLint's project flat config) gets it.
+    PackedTest {
+        name: "packed::host-module-paths",
+        directory: "host-module-paths",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r#"
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { pathToFileURL } = require('node:url');
+
+const directory = process.cwd();
+const helper = path.join(directory, 'host-helper.cjs');
+const cjsConfig = path.join(directory, 'host.config.cjs');
+const esmHelper = path.join(directory, 'host-helper.mjs');
+const esmConfig = path.join(directory, 'host.config.mjs');
+fs.writeFileSync(helper, 'module.exports = "no-undef";\n');
+fs.writeFileSync(
+  cjsConfig,
+  'module.exports = [{ rules: { [require("./host-helper.cjs")]: "error" } }];\n',
+);
+fs.writeFileSync(esmHelper, 'export const rule = "no-undef";\n');
+fs.writeFileSync(
+  esmConfig,
+  'import { rule } from "./host-helper.mjs";\n' +
+    'export default [{ rules: { [rule]: "error" } }];\n',
+);
+
+// CommonJS loaded by absolute path, resolving its own relative require.
+const cjs = require(cjsConfig);
+assert.equal(cjs[0].rules['no-undef'], 'error');
+
+// A relative specifier in the payload still resolves inside `/app`, even when
+// the working directory has a file with that name.
+fs.writeFileSync(path.join(directory, 'shadowed.cjs'), 'module.exports = 1;\n');
+assert.throws(() => require('./shadowed.cjs'), /Cannot find module '\.\/shadowed\.cjs'/);
+
+// The ES module equivalent, through the loader dynamic `import()` uses. The
+// timer fails the test if the import never settles instead of exiting early.
+const timer = setTimeout(() => {
+  console.error('the host ES module import never settled');
+  process.exit(1);
+}, 2000);
+import(`${pathToFileURL(esmConfig).href}?mtime=1`)
+  .then(({ default: config }) => {
+    clearTimeout(timer);
+    assert.equal(config[0].rules['no-undef'], 'error');
+  })
+  .catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+"#,
+        )],
+        capabilities: &["assert", "fs"],
+        error: None,
+    },
     PackedTest {
         name: "packed::commonjs-esm-diagnostic",
         directory: "commonjs-esm-diagnostic",

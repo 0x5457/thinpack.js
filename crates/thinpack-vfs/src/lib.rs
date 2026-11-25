@@ -13,7 +13,11 @@ pub struct Vfs {
     conditions: Vec<String>,
 }
 
-const ROOT: &str = "/app";
+/// The virtual root a payload is mounted at.
+///
+/// Paths under it belong to the payload; the rest of the path space is the host
+/// file system, and both the `fs` module and the module loader split on it.
+pub const ROOT: &str = "/app";
 
 impl Vfs {
     /// # Errors

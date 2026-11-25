@@ -244,8 +244,9 @@ for adding a module.
 - WebAssembly is always available and cannot be trimmed (WAMR on QuickJS, about 217 KB).
 - ESM loader hooks run inside synchronous checkpoints, so hooks that wait on I/O fail. A hook
   that assigns a module format is invisible to packing, which follows the `package.json` rule.
-- `/app/**` comes from the payload: `fs` reads it, writes return `EROFS`; anything outside
-  `/app` goes to the host file system.
+- `/app/**` comes from the payload: `fs` reads it, writes return `EROFS`, and modules under
+  it are the bundled ones; anything outside `/app` goes to the host file system, including a
+  module the app computes at run time (a project ESLint config, say), as it does under Node.
 - The payload is rooted at the entry's nearest `package.json`. A required dependency resolved
   above that root (a hoisted monorepo install) fails the pack; an optional one is left out with
   a warning, and the app must handle its absence.
