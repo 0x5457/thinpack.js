@@ -1,4 +1,5 @@
 mod require;
+mod typescript;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -34,8 +35,7 @@ pub struct Analysis {
     pub required: BTreeSet<PathBuf>,
     /// The `package.json` files the resolver and [`thinpack_resolve::format_of`] read
     /// while analyzing. The loader reads the same ones at run time, so the payload
-    /// has to carry them. TypeScript-extension files are not format-checked, so their
-    /// scope manifests are not recorded.
+    /// has to carry them.
     pub manifests: BTreeSet<PathBuf>,
     pub builtins: BTreeMap<String, BTreeSet<PathBuf>>,
     /// Files whose module format packing detected (a typeless `.js` written as an ES
@@ -45,6 +45,10 @@ pub struct Analysis {
     /// `createReadStream` with a path built from `__dirname`. The payload carries
     /// them but the analyzer does not parse them.
     pub static_files: BTreeSet<PathBuf>,
+    /// TypeScript files replaced by the JavaScript packing stripped them to. The
+    /// payload stores this text under the original path, so neither the loader nor
+    /// the packed app ever evaluates TypeScript.
+    pub stripped: BTreeMap<PathBuf, String>,
     pub warnings: Vec<Warning>,
 }
 
@@ -62,6 +66,7 @@ impl Analysis {
         }
         self.formats.extend(other.formats);
         self.static_files.extend(other.static_files);
+        self.stripped.extend(other.stripped);
         self.warnings.extend(other.warnings);
         self.warnings.sort();
         self.warnings.dedup();
@@ -85,6 +90,13 @@ pub enum Error {
         path: PathBuf,
         message: String,
     },
+    /// The file is TypeScript that packing cannot turn into JavaScript: `.tsx`, or
+    /// syntax Node's strip-only mode rejects (enums, namespaces, parameter
+    /// properties, and other constructs that need a transform).
+    Unsupported {
+        path: PathBuf,
+        message: String,
+    },
     Resolve {
         specifier: String,
         from: PathBuf,
@@ -101,7 +113,8 @@ impl fmt::Display for Error {
         match self {
             Self::Read { path, message }
             | Self::Parse { path, message }
-            | Self::Format { path, message } => {
+            | Self::Format { path, message }
+            | Self::Unsupported { path, message } => {
                 write!(formatter, "{}: {message}", path.display())
             }
             Self::Resolve {
@@ -128,9 +141,10 @@ impl std::error::Error for Error {}
 ///
 /// Returns [`Error::Read`] for unreadable or non-UTF-8 modules, [`Error::Parse`]
 /// when a module does not parse in the format it will be loaded in, [`Error::Format`]
-/// when that format is undecidable or contradicts the source, [`Error::Resolve`]
-/// for unresolvable non-optional specifiers and [`Error::UnknownBuiltin`] for
-/// `node:` builtins that thinpack does not ship.
+/// when that format is undecidable or contradicts the source, [`Error::Unsupported`]
+/// for TypeScript that cannot be stripped, [`Error::Resolve`] for unresolvable
+/// non-optional specifiers and [`Error::UnknownBuiltin`] for `node:` builtins that
+/// thinpack does not ship.
 pub fn analyze(entry: &Path, fs: &impl FileSystem) -> Result<Analysis, Error> {
     analyze_with(entry, fs, &BTreeSet::new(), &[])
 }
@@ -157,6 +171,7 @@ pub fn analyze_with(
     let mut builtins: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
     let mut formats = BTreeMap::new();
     let mut static_files = BTreeSet::new();
+    let mut stripped = BTreeMap::new();
     let mut warnings = Vec::new();
 
     while let Some((path, optional_subtree)) = pending.pop_front() {
@@ -181,6 +196,7 @@ pub fn analyze_with(
             path: path.clone(),
             message: "module is not valid UTF-8".to_owned(),
         })?;
+        let source = typescript::strip(&path, source, &mut stripped)?;
 
         let optional_dependencies = thinpack_resolve::optional_dependencies(&path, &fs);
         let (specifiers, detected) =
@@ -252,6 +268,7 @@ pub fn analyze_with(
         builtins,
         formats,
         static_files,
+        stripped,
         warnings,
     })
 }
@@ -350,26 +367,28 @@ fn record_builtin(
     Ok(true)
 }
 
-/// The parser dialect for a file: the extension supplies the language (JavaScript,
-/// JSX, or JavaScript for an unknown extension) and [`thinpack_resolve::format_of`]
-/// supplies the module kind the loader will read it in. Parsing with the loader's
-/// rule — instead of letting a generic `.js` accept both dialects — is what makes
-/// packing reject a file whose syntax and format disagree, rather than leaving that
-/// failure to the artifact.
+/// The parser dialect for a file: the extension supplies the language and
+/// [`thinpack_resolve::format_of`] supplies the module kind the loader will read it
+/// in. Parsing with the loader's rule — instead of letting a generic `.js` accept
+/// both dialects — is what makes packing reject a file whose syntax and format
+/// disagree, rather than leaving that failure to the artifact.
 ///
-/// The returned format is present only when it decided the dialect. `.cjs` and
-/// `.mjs` name their format, and TypeScript is not a language the loader can execute
-/// as either format, so those keep oxc's own choice and are not diagnosed against the
-/// manifest.
+/// TypeScript reaches this point after [`typescript::strip`], so it parses as
+/// JavaScript. `.mts`/`.cts` fix their format like `.mjs`/`.cjs`, and their format
+/// is therefore not diagnosed against the manifest; `.ts` follows the `.js` rules.
 fn parser_dialect(
     path: &Path,
     fs: &impl FileSystem,
 ) -> Result<(SourceType, Option<Format>), Error> {
-    let source_type = SourceType::from_path(path).unwrap_or_default();
-    let format_from_extension = path
-        .extension()
-        .is_some_and(|extension| extension == "cjs" || extension == "mjs");
-    if source_type.is_typescript() || format_from_extension {
+    let extension = path.extension().and_then(|extension| extension.to_str());
+    let source_type = match extension {
+        Some("ts") => SourceType::unambiguous(),
+        Some("mts") => SourceType::mjs(),
+        Some("cts") => SourceType::cjs(),
+        _ => SourceType::from_path(path).unwrap_or_default(),
+    };
+    let format_from_extension = matches!(extension, Some("cjs" | "mjs" | "cts" | "mts"));
+    if format_from_extension {
         return Ok((source_type, None));
     }
     let format = thinpack_resolve::format_of(path, fs).map_err(|error| Error::Format {
@@ -390,18 +409,35 @@ fn parser_dialect(
 /// packing fails first and names the two ways to ask for the format it is written in.
 fn format_mismatch(
     source: &str,
+    path: &Path,
     allocator: &Allocator,
     source_type: SourceType,
     format: Format,
 ) -> Option<String> {
+    // A TypeScript file switches formats through its TypeScript extension, the
+    // same choice Node documents for `.ts`.
+    let commonjs = if thinpack_resolve::is_typescript(path) {
+        ".cts"
+    } else {
+        ".cjs"
+    };
+    let esm = if thinpack_resolve::is_typescript(path) {
+        ".mts"
+    } else {
+        ".mjs"
+    };
     let (other, message) = match format {
         Format::Esm => (
             source_type.with_commonjs(true),
-            "uses CommonJS syntax but is loaded as an ES module; rename it to .cjs or remove \"type\": \"module\" from the nearest package.json",
+            format!(
+                "uses CommonJS syntax but is loaded as an ES module; rename it to {commonjs} or remove \"type\": \"module\" from the nearest package.json"
+            ),
         ),
         Format::CommonJs => (
             source_type.with_module(true),
-            "uses ES module syntax but is loaded as CommonJS; rename it to .mjs or add \"type\": \"module\" to the nearest package.json",
+            format!(
+                "uses ES module syntax but is loaded as CommonJS; rename it to {esm} or add \"type\": \"module\" to the nearest package.json"
+            ),
         ),
         Format::Json => return None,
     };
@@ -409,7 +445,7 @@ fn format_mismatch(
         .parse()
         .diagnostics
         .is_empty()
-        .then_some(message.to_owned())
+        .then_some(message)
 }
 
 fn parse_specifiers(
@@ -450,7 +486,7 @@ fn parse_specifiers(
     }
     if !parsed.diagnostics.is_empty() {
         if let Some(format) = format
-            && let Some(message) = format_mismatch(source, &allocator, source_type, format)
+            && let Some(message) = format_mismatch(source, path, &allocator, source_type, format)
         {
             return Err(Error::Format {
                 path: path.to_path_buf(),
@@ -929,16 +965,109 @@ mod tests {
     }
 
     #[test]
-    fn a_typescript_file_is_analyzed_but_not_format_checked() {
+    fn typescript_is_stripped_and_format_checked() {
         let fs = MemoryFs::new(&[
+            ("/app/package.json", r#"{"type": "module"}"#),
             (
-                "/app/main.js",
-                "const helper = require('./helper.ts');\nconsole.log(helper);\n",
+                "/app/main.ts",
+                "import { helper } from './helper.ts';\nconst value: number = helper(1);\nconsole.log(value);\n",
             ),
-            ("/app/helper.ts", "export const helper: number = 1;\n"),
+            (
+                "/app/helper.ts",
+                "export function helper(value: number): number { return value; }\n",
+            ),
         ]);
-        let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
+        let analysis = analyze(Path::new("/app/main.ts"), &fs).unwrap();
         assert!(analysis.files.contains(&PathBuf::from("/app/helper.ts")));
+        assert!(
+            analysis
+                .manifests
+                .contains(&PathBuf::from("/app/package.json"))
+        );
+        assert!(analysis.formats.is_empty());
+
+        let main = &analysis.stripped[Path::new("/app/main.ts")];
+        assert!(!main.contains(": number"), "{main}");
+        assert!(main.contains("helper(1)"), "{main}");
+        let helper = &analysis.stripped[Path::new("/app/helper.ts")];
+        assert!(!helper.contains(": number"), "{helper}");
+        assert!(helper.contains("return value;"), "{helper}");
+    }
+
+    #[test]
+    fn typescript_type_only_imports_are_erased_before_analysis() {
+        let fs = MemoryFs::new(&[(
+            "/app/main.ts",
+            "import type { Missing } from './missing.ts';\nconst value: Missing = 1 as Missing;\nconsole.log(value);\n",
+        )]);
+        let analysis = analyze(Path::new("/app/main.ts"), &fs).unwrap();
+        assert_eq!(analysis.files, vec![PathBuf::from("/app/main.ts")]);
+        assert!(analysis.formats.is_empty());
+        assert_eq!(analysis.warnings, Vec::new());
+    }
+
+    #[test]
+    fn typescript_transform_only_syntax_is_rejected() {
+        let fs = MemoryFs::new(&[("/app/main.ts", "enum Mode { A }\nconsole.log(Mode.A);\n")]);
+        match analyze(Path::new("/app/main.ts"), &fs) {
+            Err(Error::Unsupported { path, message }) => {
+                assert_eq!(path, PathBuf::from("/app/main.ts"));
+                assert!(
+                    message.contains("TypeScript enum is not supported in strip-only mode"),
+                    "{message}"
+                );
+                assert!(message.starts_with("1:"), "{message}");
+            }
+            other => panic!("expected an unsupported TypeScript error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tsx_is_rejected() {
+        let fs = MemoryFs::new(&[("/app/main.tsx", "console.log(<div />);\n")]);
+        match analyze(Path::new("/app/main.tsx"), &fs) {
+            Err(Error::Unsupported { path, message }) => {
+                assert_eq!(path, PathBuf::from("/app/main.tsx"));
+                assert!(
+                    message.contains("TypeScript JSX (.tsx) is not supported"),
+                    "{message}"
+                );
+            }
+            other => panic!("expected an unsupported TypeScript error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mts_and_cts_fix_their_format() {
+        let fs = MemoryFs::new(&[
+            ("/app/package.json", r#"{"type": "commonjs"}"#),
+            ("/app/main.mts", "export const value: number = 1;\n"),
+            (
+                "/app/main.cts",
+                "const value: number = require('./other.cjs');\nmodule.exports = value;\n",
+            ),
+            ("/app/other.cjs", "module.exports = 1;\n"),
+        ]);
+        let esm = analyze(Path::new("/app/main.mts"), &fs).unwrap();
+        assert!(esm.formats.is_empty());
+        let commonjs = analyze(Path::new("/app/main.cts"), &fs).unwrap();
+        assert!(commonjs.formats.is_empty());
+        assert!(commonjs.stripped.contains_key(Path::new("/app/main.cts")));
+    }
+
+    #[test]
+    fn a_ts_file_loaded_as_commonjs_suggests_mts() {
+        let fs = MemoryFs::new(&[
+            ("/app/package.json", r#"{"type": "commonjs"}"#),
+            ("/app/main.ts", "import 'node:fs';\n"),
+        ]);
+        match analyze(Path::new("/app/main.ts"), &fs) {
+            Err(Error::Format { message, .. }) => {
+                assert!(message.contains("rename it to .mts"), "{message}");
+                assert!(!message.contains(".mjs"), "{message}");
+            }
+            other => panic!("expected a format error, got {other:?}"),
+        }
     }
 
     #[test]

@@ -460,13 +460,38 @@ fn load_index(directory: &Path, fs: &impl FileSystem) -> Option<PathBuf> {
     None
 }
 
-/// Whether the loader can execute this file as JavaScript. JSON and native
-/// addons are separate formats; TypeScript is not a language the loader runs.
+/// Whether the loader executes this file as JavaScript.
+///
+/// TypeScript counts: packing strips its types, and the loader never sees a type
+/// annotation. `.tsx` counts only so an explicit include reaches the analyzer's
+/// unsupported-syntax error instead of being packed as an asset that cannot run.
+/// Declaration files are data, not modules, so they stay out; JSON and native
+/// addons are separate formats.
 #[must_use]
 pub fn is_javascript(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|extension| extension.to_str()),
-        Some("js" | "cjs" | "mjs")
+        Some("js" | "cjs" | "mjs" | "ts" | "cts" | "mts" | "tsx")
+    ) && !is_declaration(path)
+}
+
+/// `.d.ts`, `.d.mts` and `.d.cts` describe types for a caller; they are not
+/// executable modules even though their last extension says TypeScript.
+fn is_declaration(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    name.ends_with(".d.ts") || name.ends_with(".d.mts") || name.ends_with(".d.cts")
+}
+
+/// Whether the path names TypeScript, which a packed artifact carries only after
+/// packing stripped its types into JavaScript.
+#[must_use]
+pub fn is_typescript(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some("ts" | "cts" | "mts" | "tsx")
     )
 }
 
@@ -478,10 +503,12 @@ pub fn format_of(path: &Path, fs: &impl FileSystem) -> Result<Format, Error> {
     if let Some(format) = fs.format_override(path) {
         return Ok(format);
     }
+    // TypeScript follows Node's extension rules: `.mts` and `.cts` fix the
+    // format, and `.ts` reads the package scope like `.js`.
     match path.extension().and_then(|extension| extension.to_str()) {
         Some("json") => Ok(Format::Json),
-        Some("mjs") => Ok(Format::Esm),
-        Some("cjs") => Ok(Format::CommonJs),
+        Some("mjs" | "mts") => Ok(Format::Esm),
+        Some("cjs" | "cts") => Ok(Format::CommonJs),
         Some("node") => Err(Error::Unsupported {
             path: path.to_path_buf(),
         }),
@@ -895,6 +922,39 @@ mod tests {
             ("/app/helper.js", ""),
         ]);
         assert_eq!(format_of(Path::new("/app/helper.js"), &fs), Ok(Format::Esm));
+    }
+
+    #[test]
+    fn typescript_modules_are_javascript_but_declarations_are_not() {
+        assert!(is_javascript(Path::new("/app/main.ts")));
+        assert!(is_javascript(Path::new("/app/main.mts")));
+        assert!(is_javascript(Path::new("/app/main.cts")));
+        assert!(is_javascript(Path::new("/app/main.tsx")));
+        assert!(!is_javascript(Path::new("/app/types.d.ts")));
+        assert!(!is_javascript(Path::new("/app/types.d.mts")));
+        assert!(!is_javascript(Path::new("/app/types.d.cts")));
+    }
+
+    #[test]
+    fn typescript_extensions_follow_node_format_rules() {
+        let fs = MemoryFs::new(&[
+            ("/app/package.json", r#"{"type": "module"}"#),
+            ("/app/main.ts", ""),
+            ("/app/main.mts", ""),
+            ("/app/main.cts", ""),
+            ("/app/legacy/package.json", r#"{"type": "commonjs"}"#),
+            ("/app/legacy/main.ts", ""),
+        ]);
+        assert_eq!(format_of(Path::new("/app/main.ts"), &fs), Ok(Format::Esm));
+        assert_eq!(format_of(Path::new("/app/main.mts"), &fs), Ok(Format::Esm));
+        assert_eq!(
+            format_of(Path::new("/app/main.cts"), &fs),
+            Ok(Format::CommonJs)
+        );
+        assert_eq!(
+            format_of(Path::new("/app/legacy/main.ts"), &fs),
+            Ok(Format::CommonJs)
+        );
     }
 
     #[test]

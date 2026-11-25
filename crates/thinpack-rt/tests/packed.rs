@@ -256,6 +256,63 @@ parentPort.postMessage('worker loaded from the packed VFS');
         capabilities: &[],
         error: None,
     },
+    // TypeScript reaches the payload already stripped, so the loader only has to
+    // read the extensions as the formats Node assigns them.
+    PackedTest {
+        name: "packed::typescript-module-formats",
+        directory: "typescript-module-formats",
+        entry: "/app/main.ts",
+        files: &[
+            ("/app/package.json", r#"{"type": "module"}"#),
+            (
+                "/app/main.ts",
+                r"
+import { value } from './lib.mts';
+import legacy from './legacy.cts';
+if (value !== 41 || legacy !== 1) {
+  throw new Error(`unexpected values: ${value} ${legacy}`);
+}
+console.log('startup complete');
+",
+            ),
+            ("/app/lib.mts", "export const value         = 41;\n"),
+            ("/app/legacy.cts", "module.exports = 1;\n"),
+        ],
+        capabilities: &[],
+        error: None,
+    },
+    // Packing strips the payload's TypeScript. A file on the host was never
+    // stripped, so the loader refuses it with a diagnostic instead of handing V8
+    // source it cannot parse.
+    PackedTest {
+        name: "packed::host-typescript-diagnostic",
+        directory: "host-typescript-diagnostic",
+        entry: "/app/main.mjs",
+        files: &[(
+            "/app/main.mjs",
+            r"
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import Module from 'node:module';
+import path from 'node:path';
+
+const require = Module.createRequire(import.meta.url);
+const { pathToFileURL } = require('node:url');
+const file = path.join(process.cwd(), 'host-typescript.ts');
+fs.writeFileSync(file, 'const value: number = 1;\nmodule.exports = value;\n');
+const check = (error) => {
+  assert.equal(error.code, 'ERR_UNKNOWN_FILE_EXTENSION');
+  assert.match(error.message, /TypeScript outside the packed payload is not type-stripped/);
+  return true;
+};
+assert.throws(() => require(file), check);
+await assert.rejects(import(pathToFileURL(file).href), check);
+console.log('startup complete');
+",
+        )],
+        capabilities: &["assert", "fs", "module", "path", "url"],
+        error: None,
+    },
     // A directory manifest may point outside its own directory; the payload Vfs
     // knows only normalized paths, so the resolver has to normalize the target.
     PackedTest {

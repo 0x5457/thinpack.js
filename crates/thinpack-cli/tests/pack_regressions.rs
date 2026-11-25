@@ -346,6 +346,113 @@ mod unix {
     }
 
     #[test]
+    fn typescript_is_stripped_into_the_payload() {
+        let directory = TempDir::new("typescript");
+        let entry = directory.path().join("main.ts");
+        fs::write(
+            directory.path().join("package.json"),
+            r#"{ "type": "module" }"#,
+        )
+        .expect("write package manifest");
+        fs::write(
+            &entry,
+            "import { greet } from './helper.ts';\n\
+             const name: string = 'world';\n\
+             console.log(greet(name));\n",
+        )
+        .expect("write TypeScript entry");
+        fs::write(
+            directory.path().join("helper.ts"),
+            "export function greet(name: string): string {\n\
+             \x20 return `hello ${name}`;\n\
+             }\n",
+        )
+        .expect("write TypeScript helper");
+        fs::write(
+            directory.path().join("types.d.ts"),
+            "declare const answer: number;\n",
+        )
+        .expect("write declaration file");
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let output = directory.path().join("packed-app");
+
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            directory.path(),
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+                "--include",
+                "types.d.ts",
+            ],
+        );
+        assert!(
+            result.status.success(),
+            "pack failed:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+
+        let pack = thinpack_pack::read_from_executable(&output)
+            .expect("read packed executable")
+            .expect("packed payload");
+        let contents = |path: &str| {
+            let file = pack
+                .manifest
+                .files
+                .iter()
+                .find(|file| file.path == path)
+                .unwrap_or_else(|| panic!("{path} is packed"));
+            std::str::from_utf8(pack.slice_of(file).expect("the file has contents"))
+                .expect("packed JavaScript is UTF-8")
+        };
+
+        assert_eq!(pack.manifest.entry, "/app/main.ts");
+        assert!(!contents("/app/main.ts").contains(": string"));
+        assert!(contents("/app/main.ts").contains("greet(name)"));
+        assert!(!contents("/app/helper.ts").contains(": string"));
+        assert!(contents("/app/helper.ts").contains("return `hello ${name}`;"));
+        // Declaration files are data the app may read, not modules: keep them
+        // byte for byte even though their last extension is TypeScript.
+        assert_eq!(
+            contents("/app/types.d.ts"),
+            "declare const answer: number;\n"
+        );
+        assert!(
+            pack.manifest
+                .files
+                .iter()
+                .any(|file| file.path == "/app/package.json"),
+            "the package scope is packed"
+        );
+    }
+
+    #[test]
+    fn typescript_transform_only_syntax_fails_packing() {
+        let directory = TempDir::new("typescript-enum");
+        let entry = directory.path().join("main.ts");
+        fs::write(&entry, "enum Mode { A }\nconsole.log(Mode.A);\n").expect("write TS entry");
+
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            directory.path(),
+            &entry,
+            &["--list-capabilities"],
+        );
+        assert!(!result.status.success(), "packed a TypeScript enum");
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            error.contains("main.ts: 1:1: TypeScript enum is not supported in strip-only mode"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn an_allowed_missing_package_packs_with_a_warning() {
         let directory = TempDir::new("allow-missing");
         let entry = directory.path().join("main.js");
