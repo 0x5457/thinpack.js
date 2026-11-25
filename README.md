@@ -1,12 +1,14 @@
 <p align="center">
-  <img src="docs/assets/thinpack-logo.png" alt="Thinpack.js logo" width="160">
+  <img src="docs/assets/thinpack-logo.png" alt="Thinpack.js logo" width="180">
 </p>
 
 <h1 align="center">thinpack.js</h1>
 
-[![CI](https://github.com/0x5457/thinpack.js/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/0x5457/thinpack.js/actions/workflows/ci.yml)
+<p align="center">Ship a Node.js CLI as one executable. Users can run it without installing Node.js, Bun, or npm.</p>
 
-Ship a Node.js CLI as one executable. Users can run it without installing Node.js, Bun, or npm.
+<p align="center">
+  <a href="https://github.com/0x5457/thinpack.js/actions/workflows/ci.yml"><img src="https://github.com/0x5457/thinpack.js/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+</p>
 
 In the [Linux x86-64 benchmark](#compared-with-other-single-file-approaches), TypeScript's `tsc` packed to **9.0 MiB** with Thinpack versus **109.6 MiB** with Bun `--compile`. Thinpack used a QuickJS runtime rebuilt for the app. The ready-made runtime is larger; QuickJS trades startup speed for a smaller executable.
 
