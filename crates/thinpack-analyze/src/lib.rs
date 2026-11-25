@@ -1578,7 +1578,7 @@ mod tests {
         let fs = MemoryFs::new(&[
             (
                 "/app/compiler.js",
-                "const libs = ['lib.d.ts', 'helper.js', 'data.json', 'nested/lib.d.ts'];\nfor (const lib of libs) fs.readFileSync(lib);\n",
+                "const fs = require('node:fs');\nconst libs = ['lib.d.ts', 'helper.js', 'data.json', 'nested/lib.d.ts'];\nfor (const lib of libs) fs.readFileSync(lib);\n",
             ),
             ("/app/lib.d.ts", "/// <reference lib=\"es2020\" />\n"),
             ("/app/helper.js", "module.exports = 42;\n"),
