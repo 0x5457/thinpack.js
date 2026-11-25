@@ -8,23 +8,85 @@ use std::os::unix::process::CommandExt as _;
 use crate::ChildError;
 use crate::table;
 
-/// How the three standard streams of a spawned child are connected.
-///
-/// Both modules pick one policy for all three streams: `node:child_process` always pipes,
-/// and a cluster worker either pipes every stream (`silent: true`) or inherits them.
+/// How one standard stream of a spawned child is connected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Stdio {
+enum Stream {
     Piped,
     Inherit,
+    Ignore,
 }
 
-impl Stdio {
-    /// The value both command flavours accept: tokio's `Command` reuses `std::process::Stdio`.
-    fn pipe(self) -> ProcessStdio {
+impl Stream {
+    fn parse(word: Option<&str>) -> Result<Self, ChildError> {
+        match word {
+            Some("pipe") => Ok(Self::Piped),
+            Some("inherit") => Ok(Self::Inherit),
+            Some("ignore") => Ok(Self::Ignore),
+            Some(other) => Err(ChildError::new(
+                "ERR_INVALID_ARG_VALUE",
+                format!("unknown stdio {other:?}"),
+            )),
+            None => Err(ChildError::new(
+                "ERR_INVALID_ARG_VALUE",
+                "stdio must name three streams",
+            )),
+        }
+    }
+
+    /// The value `std::process::Command` accepts; tokio's command reuses it.
+    fn process(self) -> ProcessStdio {
         match self {
             Self::Piped => ProcessStdio::piped(),
             Self::Inherit => ProcessStdio::inherit(),
+            Self::Ignore => ProcessStdio::null(),
         }
+    }
+}
+
+/// How a child's three standard streams are connected.
+///
+/// A cluster worker picks one policy for all three (`silent: true` pipes, the default
+/// inherits); `node:child_process` picks one per stream from its `stdio` option.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stdio {
+    stdin: Stream,
+    stdout: Stream,
+    stderr: Stream,
+}
+
+impl Stdio {
+    /// Every stream piped, the default of both modules.
+    pub const PIPED: Self = Self::all(Stream::Piped);
+    /// Every stream inherited from the parent.
+    pub const INHERITED: Self = Self::all(Stream::Inherit);
+
+    const fn all(stream: Stream) -> Self {
+        Self {
+            stdin: stream,
+            stdout: stream,
+            stderr: stream,
+        }
+    }
+
+    /// Parses the three `\0`-joined `pipe`/`inherit`/`ignore` words the modules send.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ERR_INVALID_ARG_VALUE` unless exactly three known words are present.
+    pub fn parse(spec: &str) -> Result<Self, ChildError> {
+        let mut words = spec.split('\0');
+        let stdio = Self {
+            stdin: Stream::parse(words.next())?,
+            stdout: Stream::parse(words.next())?,
+            stderr: Stream::parse(words.next())?,
+        };
+        if words.next().is_some() {
+            return Err(ChildError::new(
+                "ERR_INVALID_ARG_VALUE",
+                "stdio names more than three streams",
+            ));
+        }
+        Ok(stdio)
     }
 }
 
@@ -78,8 +140,11 @@ impl Spawn {
     /// `env` option both modules implement.
     fn command(&self, stdio: Stdio) -> std::process::Command {
         let mut command = std::process::Command::new(&self.program);
-        command.args(&self.args).stdin(stdio.pipe());
-        command.stdout(stdio.pipe()).stderr(stdio.pipe());
+        command
+            .args(&self.args)
+            .stdin(stdio.stdin.process())
+            .stdout(stdio.stdout.process())
+            .stderr(stdio.stderr.process());
         if !self.env.is_empty() {
             command
                 .env_clear()
@@ -169,10 +234,12 @@ pub struct Completed {
     pub stderr: Vec<u8>,
 }
 
-/// Runs a child to completion, writing `input` to its stdin.
+/// Runs a child to completion with the requested stream connections, writing `input` to
+/// its stdin when stdin is piped.
 ///
 /// The synchronous half of the layer: it drives `wait_with_output` itself instead of going
-/// through the table, and shares only the request parsing with [`spawn`].
+/// through the table, and shares only the request parsing with [`spawn`]. The captured
+/// outputs stay empty for streams that are inherited or ignored.
 ///
 /// # Errors
 ///
@@ -181,11 +248,12 @@ pub struct Completed {
 /// # Panics
 ///
 /// Panics if the stdin writer thread panics, which it does not: it only writes to the pipe.
-pub fn run_to_completion(request: &Spawn, input: Vec<u8>) -> Result<Completed, ChildError> {
-    let mut child = request
-        .command(Stdio::Piped)
-        .spawn()
-        .map_err(ChildError::spawn)?;
+pub fn run_to_completion(
+    request: &Spawn,
+    stdio: Stdio,
+    input: Vec<u8>,
+) -> Result<Completed, ChildError> {
+    let mut child = request.command(stdio).spawn().map_err(ChildError::spawn)?;
     let pid = child.id();
     let input_pipe = child.stdin.take();
     // Writing stdin in-line would deadlock with a child that fills an output pipe while the

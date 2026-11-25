@@ -21,9 +21,11 @@ fn op_child_spawn(
     #[string] argv: &str,
     #[string] env: &str,
     #[string] cwd: &str,
+    #[string] stdio: &str,
 ) -> Result<String, JsErrorBox> {
     let request = Spawn::parse(argv, env, cwd).map_err(wire_error)?;
-    thinpack_child::spawn(&request, Stdio::Piped, None)
+    let stdio = Stdio::parse(stdio).map_err(wire_error)?;
+    thinpack_child::spawn(&request, stdio, None)
         .map(|spawned| format!("{}\0{}", spawned.id, spawned.pid))
         .map_err(wire_error)
 }
@@ -37,10 +39,12 @@ fn op_child_spawn_sync(
     #[string] argv: &str,
     #[string] env: &str,
     #[string] cwd: &str,
+    #[string] stdio: &str,
     #[buffer(copy)] input: Vec<u8>,
 ) -> Result<Box<[u8]>, JsErrorBox> {
     let request = Spawn::parse(argv, env, cwd).map_err(wire_error)?;
-    let completed = run_to_completion(&request, input).map_err(wire_error)?;
+    let stdio = Stdio::parse(stdio).map_err(wire_error)?;
+    let completed = run_to_completion(&request, stdio, input).map_err(wire_error)?;
 
     let mut payload = Vec::with_capacity(20 + completed.stdout.len() + completed.stderr.len());
     payload.extend_from_slice(&completed.exited.code.unwrap_or(-1).to_le_bytes());
