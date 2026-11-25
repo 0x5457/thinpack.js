@@ -63,9 +63,12 @@ comes before the cache so an app always packs against its own closure and uses Q
 For ordinary packing, `--backend` takes precedence over the backend of an installed template.
 When no matching installed template is available and the cache has both backends, pass `--backend`.
 
-The analyzer follows conditional `require` calls when both branches name modules. For module names
-supplied at runtime, use `--with` to include the required built-ins explicitly. `--strict` makes
-unresolved dynamic requests an error during packing.
+The analyzer follows conditional `require` calls when both branches name modules. A computed
+`require`/`import` path that names a literal `__dirname`-rooted directory packs that
+directory, so shipped candidates such as ESLint's formatters need no flag; a user-supplied or
+working-directory path still needs `--include`. For module names supplied at runtime, use
+`--with` to include the required built-ins explicitly. `--strict` makes unresolved dynamic
+requests an error during packing.
 
 Compiled module bytecode is cached under `<cache-root>/bytecode`, which makes a warm start
 about 29% faster (pi: 983 ms → 702 ms); `V82JSC_NO_BC_CACHE=1` disables it, and

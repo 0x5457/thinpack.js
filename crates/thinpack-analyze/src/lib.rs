@@ -47,6 +47,11 @@ pub struct Analysis {
     /// `require.resolve`/`import.meta.resolve`. Resolving a path does not make it a
     /// module, so the analyzer keeps its bytes and parses nothing.
     pub data_files: BTreeSet<PathBuf>,
+    /// Directories a computed module load can choose from when its path is
+    /// rooted at a literal `__dirname` directory (`ESLint`'s shipped formatter
+    /// fallback). Packing expands them like `--include` roots so the artifact
+    /// carries every candidate without a manual flag.
+    pub module_dirs: BTreeSet<PathBuf>,
     /// TypeScript files replaced by the JavaScript packing stripped them to. The
     /// payload stores this text under the original path, so neither the loader nor
     /// the packed app ever evaluates TypeScript.
@@ -68,6 +73,7 @@ impl Analysis {
         }
         self.formats.extend(other.formats);
         self.data_files.extend(other.data_files);
+        self.module_dirs.extend(other.module_dirs);
         self.stripped.extend(other.stripped);
         self.warnings.extend(other.warnings);
         self.warnings.sort();
@@ -216,6 +222,7 @@ pub fn analyze_roots_with(
     let mut builtins: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
     let mut formats = BTreeMap::new();
     let mut data_files = BTreeSet::new();
+    let mut module_dirs = BTreeSet::new();
     let mut stripped = BTreeMap::new();
     let mut warnings = Vec::new();
 
@@ -234,8 +241,14 @@ pub fn analyze_roots_with(
         }
 
         let optional_dependencies = thinpack_resolve::optional_dependencies(&path, &fs);
-        let (specifiers, detected) =
-            load_module(&path, &fs, &mut stripped, &mut warnings, &mut data_files)?;
+        let (specifiers, detected) = load_module(
+            &path,
+            &fs,
+            &mut stripped,
+            &mut warnings,
+            &mut data_files,
+            &mut module_dirs,
+        )?;
         if let Some(format) = detected {
             formats.insert(path.clone(), format);
         }
@@ -291,6 +304,7 @@ pub fn analyze_roots_with(
         builtins,
         formats,
         data_files,
+        module_dirs,
         stripped,
         warnings,
     })
@@ -532,6 +546,7 @@ fn load_module(
     stripped: &mut BTreeMap<PathBuf, String>,
     warnings: &mut Vec<Warning>,
     data_files: &mut BTreeSet<PathBuf>,
+    module_dirs: &mut BTreeSet<PathBuf>,
 ) -> Result<(Vec<SpecifierEntry>, Option<Format>), Error> {
     let bytes = fs.read(path).map_err(|error| Error::Read {
         path: path.to_path_buf(),
@@ -542,7 +557,7 @@ fn load_module(
         message: "module is not valid UTF-8".to_owned(),
     })?;
     let source = typescript::strip(path, source, stripped)?;
-    parse_specifiers(&source, path, fs, warnings, data_files)
+    parse_specifiers(&source, path, fs, warnings, data_files, module_dirs)
 }
 
 fn parse_specifiers(
@@ -551,6 +566,7 @@ fn parse_specifiers(
     fs: &impl FileSystem,
     warnings: &mut Vec<Warning>,
     data_files: &mut BTreeSet<PathBuf>,
+    module_dirs: &mut BTreeSet<PathBuf>,
 ) -> Result<(Vec<SpecifierEntry>, Option<Format>), Error> {
     let allocator = Allocator::default();
     let (source_type, format) = parser_dialect(path, fs)?;
@@ -609,6 +625,7 @@ fn parse_specifiers(
         require_bindings: require::bindings(&semantic),
         warnings,
         data_files,
+        module_dirs,
         fs,
     };
     collector.visit_program(&parsed.program);
@@ -643,6 +660,7 @@ struct SpecifierCollector<'a, 's> {
     require_bindings: BTreeSet<SymbolId>,
     warnings: &'s mut Vec<Warning>,
     data_files: &'s mut BTreeSet<PathBuf>,
+    module_dirs: &'s mut BTreeSet<PathBuf>,
     fs: &'s dyn FileSystem,
 }
 
@@ -731,7 +749,8 @@ impl SpecifierCollector<'_, '_> {
         let Some(argument) = call.arguments.first() else {
             return;
         };
-        let complete = argument.as_expression().is_some_and(|argument| {
+        let expression = argument.as_expression();
+        let complete = expression.is_some_and(|argument| {
             require::specifiers(argument, self.semantic, |specifier| {
                 self.add(
                     js_string(specifier),
@@ -741,7 +760,7 @@ impl SpecifierCollector<'_, '_> {
                 );
             })
         });
-        if !complete {
+        if !complete && !expression.is_some_and(|argument| self.add_module_dirs(argument)) {
             self.warnings.push(Warning {
                 message: format!(
                     "{}: `{target}{member}(...)` with a non-literal argument cannot be analyzed. Add required built-ins with `--with <module>`, and computed local files with `--include <path>` (relative to the project root).",
@@ -779,6 +798,21 @@ impl SpecifierCollector<'_, '_> {
             strict: false,
         });
     }
+    /// Record the directories a computed module path selects from. The path has
+    /// to name a literal `__dirname`-rooted directory, so a user-supplied
+    /// absolute or working-directory path still needs `--include`.
+    fn add_module_dirs(&mut self, expression: &Expression<'_>) -> bool {
+        let base = self.path.parent().unwrap_or_else(|| Path::new("/"));
+        let directories: Vec<PathBuf> =
+            static_path::computed_directories(expression, base, self.semantic)
+                .into_iter()
+                .filter(|directory| self.fs.is_dir(directory))
+                .collect();
+        let found = !directories.is_empty();
+        self.module_dirs.extend(directories);
+        found
+    }
+
     /// Record a package-relative asset read through `fs.readFileSync`, `readFile` or
     /// `createReadStream` when the path is built from `__dirname`. This is the
     /// `errorhandler` case: a runtime asset that no import reaches.
@@ -840,13 +874,14 @@ impl<'a> VisitJs<'a> for SpecifierCollector<'a, '_> {
             Expression::StringLiteral(literal) => {
                 self.add_specifier(js_string(literal.value), true);
             }
-            _ => self.warnings.push(Warning {
+            _ if !self.add_module_dirs(&expression.source) => self.warnings.push(Warning {
                 message: format!(
                     "{}: `import(...)` with a non-literal argument cannot be analyzed; add computed local files with `--include <path>` (relative to the project root)",
                     self.path.display()
                 ),
                 strict: true,
             }),
+            _ => {}
         }
         walk_js::walk_import_expression(self, expression);
     }
@@ -1523,6 +1558,51 @@ mod tests {
         let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
         assert_eq!(analysis.warnings.len(), 1);
         assert!(analysis.warnings[0].message.contains("--include"));
+    }
+
+    #[test]
+    fn a_computed_module_path_records_its_literal_directory() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/lib/main.js",
+                "const path = require('node:path');\n\
+                 const { pathToFileURL } = require('node:url');\n\
+                 async function load(name) {\n\
+                   let formatterPath = path.resolve(process.cwd(), name);\n\
+                   formatterPath = path.resolve(__dirname, '../', 'formatters', `${name}.js`);\n\
+                   return import(pathToFileURL(formatterPath));\n\
+                 }\n\
+                 console.log(load);\n",
+            ),
+            ("/app/formatters/stylish.js", "module.exports = () => '';\n"),
+            ("/app/formatters/json.js", "module.exports = () => '[]';\n"),
+            ("/app/formatters/meta.json", "[]\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/lib/main.js"), &fs).unwrap();
+        assert_eq!(
+            analysis.module_dirs,
+            BTreeSet::from([PathBuf::from("/app/formatters")])
+        );
+        assert!(analysis.warnings.is_empty(), "{:?}", analysis.warnings);
+    }
+
+    #[test]
+    fn a_computed_module_path_without_a_literal_directory_is_left_alone() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/lib/main.js",
+                "const path = require('node:path');\n\
+                 const name = process.argv[2];\n\
+                 require(path.resolve(__dirname, name));\n\
+                 require(path.resolve(process.cwd(), name));\n\
+                 require(path.join('relative', name));\n",
+            ),
+            ("/app/lib/relative/plugin.js", "module.exports = 1;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/lib/main.js"), &fs).unwrap();
+        assert!(analysis.module_dirs.is_empty());
+        assert_eq!(analysis.warnings.len(), 1);
+        assert!(analysis.warnings[0].message.contains("non-literal"));
     }
 
     #[test]

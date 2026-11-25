@@ -29,14 +29,32 @@ pub(crate) fn analyze_entry(options: &Options, pack: bool) -> Result<Analyzed, B
     let mut conditions = options.conditions.clone();
     conditions.sort_unstable();
     conditions.dedup();
-    let included = expand_includes(&root, &options.include)?;
-    let mut analysis = thinpack_analyze::analyze_roots_with(
-        &entry,
-        &included,
-        &thinpack_resolve::HostFs,
-        &allow_missing,
-        &conditions,
-    )?;
+    let mut included = expand_includes(&root, &options.include)?;
+    let mut expanded = BTreeSet::new();
+    let mut analysis = loop {
+        let analysis = thinpack_analyze::analyze_roots_with(
+            &entry,
+            &included,
+            &thinpack_resolve::HostFs,
+            &allow_missing,
+            &conditions,
+        )?;
+        let discovered: Vec<PathBuf> = analysis
+            .module_dirs
+            .iter()
+            .map(|directory| normalize(directory))
+            .filter(|directory| directory.starts_with(&root) && expanded.insert(directory.clone()))
+            .collect();
+        if discovered.is_empty() {
+            break analysis;
+        }
+        // A computed module path under a literal `__dirname`-rooted directory names
+        // files that can be loaded; treat it like `--include` and analyze the result
+        // again for further computed paths.
+        included.extend(expand_includes(&root, &discovered)?);
+        included.sort();
+        included.dedup();
+    };
     if pack {
         // A module outside the root cannot be reached from the payload. Pack leaves
         // optional ones out; the warning belongs with the other optional warnings so

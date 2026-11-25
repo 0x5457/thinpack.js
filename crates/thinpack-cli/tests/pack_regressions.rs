@@ -777,6 +777,81 @@ mod unix {
     }
 
     #[test]
+    fn a_computed_module_path_packs_its_literal_directory() {
+        let directory = TempDir::new("computed-module-directory");
+        let project = directory.path().join("project");
+        fs::create_dir_all(project.join("lib/formatters")).expect("create formatter directory");
+        fs::write(
+            project.join("package.json"),
+            r#"{ "name": "app", "type": "commonjs" }"#,
+        )
+        .expect("write project manifest");
+        let entry = project.join("main.js");
+        fs::write(
+            &entry,
+            "const path = require('node:path');\n\
+             const { pathToFileURL } = require('node:url');\n\
+             async function load(name) {\n\
+               let formatterPath = path.resolve(process.cwd(), name);\n\
+               formatterPath = path.resolve(__dirname, 'lib', 'formatters', `${name}.js`);\n\
+               return import(pathToFileURL(formatterPath));\n\
+             }\n\
+             console.log(load);\n",
+        )
+        .expect("write entry loading a computed formatter path");
+        fs::write(
+            project.join("lib/formatters/stylish.js"),
+            "module.exports = () => '';\n",
+        )
+        .expect("write shipped formatter");
+        fs::write(
+            project.join("lib/formatters/json.js"),
+            "module.exports = () => '[]';\n",
+        )
+        .expect("write shipped formatter");
+
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let output = directory.path().join("packed-app");
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            &project,
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+            ],
+        );
+        assert!(
+            result.status.success(),
+            "pack failed:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(!stderr.contains("non-literal argument"), "{stderr}");
+
+        let pack = thinpack_pack::read_from_executable(&output)
+            .expect("read packed executable")
+            .expect("packed payload");
+        for formatter in ["stylish.js", "json.js"] {
+            let path = format!("/app/lib/formatters/{formatter}");
+            assert!(
+                pack.manifest.files.iter().any(|file| file.path == path),
+                "{path} was not packed: {:?}",
+                pack.manifest
+                    .files
+                    .iter()
+                    .map(|file| &file.path)
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
     fn a_joined_asset_with_a_leading_slash_stays_under_dirname() {
         let directory = TempDir::new("leading-slash-asset");
         let project = directory.path().join("project");
