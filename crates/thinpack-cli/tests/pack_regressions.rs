@@ -403,6 +403,204 @@ mod unix {
     }
 
     #[test]
+    fn a_strict_pack_refuses_an_unproven_object_require_target() {
+        for (name, source) in [
+            (
+                "constant-provenance-duplicate",
+                "const paths = { entry: './old.cjs', entry: './needed.cjs' };\nconsole.log(require(paths.entry));\n",
+            ),
+            (
+                "constant-provenance-alias",
+                "const paths = { entry: './old.cjs' };\nconst alias = paths;\nalias.entry = './needed.cjs';\nconsole.log(require(paths.entry));\n",
+            ),
+        ] {
+            let directory = TempDir::new(name);
+            fs::write(
+                directory.path().join("package.json"),
+                r#"{ "name": "app", "type": "commonjs" }"#,
+            )
+            .expect("write package manifest");
+            let entry = directory.path().join("main.cjs");
+            fs::write(&entry, source).expect("write entry");
+            fs::write(
+                directory.path().join("old.cjs"),
+                "module.exports = 'old';\n",
+            )
+            .expect("write old target");
+            fs::write(
+                directory.path().join("needed.cjs"),
+                "module.exports = 'needed';\n",
+            )
+            .expect("write needed target");
+            let template = fake_template(
+                &directory.path().join("thinpack-rt"),
+                env!("CARGO_PKG_VERSION"),
+            );
+            let output = directory.path().join("packed-app");
+            let result = run_pack(
+                Path::new(env!("CARGO_BIN_EXE_thinpack")),
+                directory.path(),
+                &entry,
+                &[
+                    "--strict",
+                    "--template",
+                    template.to_str().expect("template path is UTF-8"),
+                    "--output",
+                    output.to_str().expect("output path is UTF-8"),
+                ],
+            );
+            let error = String::from_utf8_lossy(&result.stderr);
+            assert!(!result.status.success(), "{name} packed: {error}");
+            assert!(error.contains("non-literal argument"), "{name}: {error}");
+            assert!(!output.exists(), "{name} wrote an unprovable pack");
+        }
+    }
+
+    #[test]
+    fn a_resolved_package_manifest_packs_its_declared_bin() {
+        let directory = TempDir::new("package-bin");
+        fs::write(
+            directory.path().join("package.json"),
+            r#"{ "name": "app", "type": "commonjs" }"#,
+        )
+        .expect("write package manifest");
+        let entry = directory.path().join("main.cjs");
+        fs::write(
+            &entry,
+            "const path = require('node:path');\n             const cli = { package: 'tool', binName: 'tool' };\n             const run = (options) => {\n               const manifest = require.resolve(`${options.package}/package.json`);\n               const pkg = require(manifest);\n               require(path.resolve(path.dirname(manifest), pkg.bin[options.binName]));\n             };\n             run(cli);\n",
+        )
+        .expect("write launcher entry");
+        let package = directory.path().join("node_modules/tool");
+        fs::create_dir_all(package.join("bin")).expect("create dependency");
+        fs::write(
+            package.join("package.json"),
+            r#"{ "name": "tool", "bin": { "tool": "./bin/tool.js", "other": "./bin/other.js" } }"#,
+        )
+        .expect("write dependency manifest");
+        fs::write(
+            package.join("bin/tool.js"),
+            "module.exports = require('./helper');\n",
+        )
+        .expect("write declared bin");
+        fs::write(package.join("bin/helper.js"), "module.exports = 42;\n")
+            .expect("write bin dependency");
+        fs::write(package.join("bin/other.js"), "module.exports = 'other';\n")
+            .expect("write unselected bin");
+        fs::write(package.join("unused.js"), "module.exports = 0;\n")
+            .expect("write unused package file");
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let output = directory.path().join("packed-app");
+
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            directory.path(),
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+            ],
+        );
+        assert!(
+            result.status.success(),
+            "pack failed:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+
+        let pack = thinpack_pack::read_from_executable(&output)
+            .expect("read packed executable")
+            .expect("packed payload");
+        let files: Vec<&str> = pack
+            .manifest
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect();
+        for expected in [
+            "/app/node_modules/tool/package.json",
+            "/app/node_modules/tool/bin/tool.js",
+            "/app/node_modules/tool/bin/helper.js",
+        ] {
+            assert!(files.contains(&expected), "missing {expected}: {files:?}");
+        }
+        assert!(
+            !files.contains(&"/app/node_modules/tool/bin/other.js"),
+            "packed an unselected bin: {files:?}"
+        );
+        assert!(
+            !files.contains(&"/app/node_modules/tool/unused.js"),
+            "packed an undeclared package file: {files:?}"
+        );
+    }
+
+    #[test]
+    fn a_package_manifest_resolved_for_its_version_packs_no_bins() {
+        let directory = TempDir::new("manifest-version");
+        fs::write(
+            directory.path().join("package.json"),
+            r#"{ "name": "app" }"#,
+        )
+        .expect("write package manifest");
+        let entry = directory.path().join("main.cjs");
+        fs::write(
+            &entry,
+            "const fs = require('node:fs');\nconst manifest = require.resolve('tool/package.json');\nconsole.log(JSON.parse(fs.readFileSync(manifest, 'utf8')).version);\n",
+        )
+        .expect("write entry");
+        let package = directory.path().join("node_modules/tool");
+        fs::create_dir_all(package.join("bin")).expect("create dependency");
+        fs::write(
+            package.join("package.json"),
+            r#"{ "name": "tool", "version": "1.2.3", "bin": { "tool": "./bin/tool.js" } }"#,
+        )
+        .expect("write dependency manifest");
+        fs::write(package.join("bin/tool.js"), "module.exports = 42;\n")
+            .expect("write declared bin");
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let output = directory.path().join("packed-app");
+
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            directory.path(),
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+            ],
+        );
+        assert!(
+            result.status.success(),
+            "pack failed:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+
+        let pack = thinpack_pack::read_from_executable(&output)
+            .expect("read packed executable")
+            .expect("packed payload");
+        assert!(
+            pack.manifest
+                .files
+                .iter()
+                .all(|file| !file.path.starts_with("/app/node_modules/tool/bin/")),
+            "packed a bin for a version-only manifest resolve: {:?}",
+            pack.manifest
+                .files
+                .iter()
+                .map(|file| &file.path)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn a_typeless_js_file_with_esm_syntax_is_packed_as_esm() {
         let directory = TempDir::new("detect-module");
         let entry = directory.path().join("main.js");

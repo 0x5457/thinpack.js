@@ -1,10 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
 use oxc_ast::AstKind;
-use oxc_ast::ast::{Argument, BinaryOperator, Expression, IdentifierReference, Statement};
+use oxc_ast::ast::{
+    Argument, BinaryOperator, BindingPattern, CallExpression, Expression, IdentifierReference,
+    ObjectExpression, ObjectPropertyKind, PropertyKey, PropertyKind, Statement,
+    StaticMemberExpression,
+};
 use oxc_semantic::{IsGlobalReference, Reference, Scoping, Semantic, SymbolId};
-use oxc_span::Span;
-use oxc_str::JSStr;
+use oxc_span::{GetSpan, Span};
 
 pub(super) fn bindings(semantic: &Semantic<'_>) -> BTreeSet<SymbolId> {
     semantic
@@ -156,14 +159,9 @@ enum PendingSpecifier<'a, 'e> {
 pub(super) fn specifiers<'a>(
     argument: &Expression<'a>,
     semantic: &Semantic<'a>,
-    mut add: impl FnMut(JSStr<'a>),
+    mut add: impl FnMut(String),
 ) -> bool {
     let argument = argument.without_parentheses();
-    if let Expression::StringLiteral(literal) = argument {
-        add(literal.value);
-        return true;
-    }
-
     let mut pending = vec![PendingSpecifier::Expression(argument)];
     let mut bindings = BTreeMap::new();
     let mut complete = true;
@@ -176,7 +174,7 @@ pub(super) fn specifiers<'a>(
             }
         };
         match expression {
-            Expression::StringLiteral(literal) => add(literal.value),
+            Expression::StringLiteral(literal) => add(super::js_string(literal.value)),
             Expression::ConditionalExpression(branch) => {
                 pending.push(PendingSpecifier::Expression(&branch.alternate));
                 pending.push(PendingSpecifier::Expression(&branch.consequent));
@@ -204,6 +202,338 @@ pub(super) fn specifiers<'a>(
         }
     }
     complete
+}
+
+/// The string an expression always produces, for the manifest and bin names a
+/// launcher reads out of a plain data object.
+///
+/// Only a literal, a template of static parts, and a property of a plain object
+/// literal are accepted. A property read is sound only while no alias or call can
+/// mutate or replace the object, so
+/// the object binding is limited to `const` initialized by an unambiguous literal
+/// whose references are member reads or known direct calls.
+pub(super) fn static_string(
+    expression: &Expression<'_>,
+    semantic: &Semantic<'_>,
+) -> Option<String> {
+    if semantic.scoping().root_scope_flags().contains_direct_eval() {
+        return None;
+    }
+    static_string_with(expression, semantic, &mut BTreeSet::new())
+}
+
+fn static_string_with(
+    expression: &Expression<'_>,
+    semantic: &Semantic<'_>,
+    visiting: &mut BTreeSet<SymbolId>,
+) -> Option<String> {
+    match expression.without_parentheses() {
+        Expression::StringLiteral(literal) => Some(super::js_string(literal.value)),
+        Expression::TemplateLiteral(template) => {
+            let mut value = String::new();
+            for (index, quasi) in template.quasis.iter().enumerate() {
+                value.push_str(quasi.value.cooked?.as_str()?);
+                if let Some(expression) = template.expressions.get(index) {
+                    value.push_str(&static_string_with(expression, semantic, visiting)?);
+                }
+            }
+            Some(value)
+        }
+        Expression::StaticMemberExpression(member) => member_value(member, semantic, visiting),
+        _ => None,
+    }
+}
+
+/// A property of a plain object literal or of a parameter that every direct call
+/// passes such a literal (or a binding frozen by the same rules).
+fn member_value(
+    member: &StaticMemberExpression<'_>,
+    semantic: &Semantic<'_>,
+    visiting: &mut BTreeSet<SymbolId>,
+) -> Option<String> {
+    let property = member.property.name.as_str();
+    let Expression::Identifier(object) = member.object.without_parentheses() else {
+        return None;
+    };
+    let symbol = referenced_symbol(object, semantic.scoping())?;
+    if !visiting.insert(symbol) {
+        return None;
+    }
+    let value = if initializer(symbol, semantic).is_some() {
+        object_binding(symbol, semantic)
+            .and_then(|object| object_value(object, property, semantic, visiting))
+    } else {
+        parameter_value(symbol, semantic, |argument| {
+            object_argument_value(argument, property, semantic, visiting)
+        })
+    };
+    visiting.remove(&symbol);
+    value
+}
+
+/// A plain object literal: no spread, methods, accessors, computed keys, duplicate
+/// keys, or `__proto__`. The remaining properties have one unambiguous value.
+fn plain_object<'a>(expression: &'a Expression<'a>) -> Option<&'a ObjectExpression<'a>> {
+    let Expression::ObjectExpression(object) = expression.without_parentheses() else {
+        return None;
+    };
+    let mut keys = BTreeSet::new();
+    for entry in &object.properties {
+        let ObjectPropertyKind::ObjectProperty(property) = entry else {
+            return None;
+        };
+        if property.kind != PropertyKind::Init || property.method || property.computed {
+            return None;
+        }
+        let key = match &property.key {
+            PropertyKey::StaticIdentifier(identifier) => identifier.name.as_str(),
+            PropertyKey::StringLiteral(literal) => literal.value.as_str()?,
+            _ => return None,
+        };
+        if key == "__proto__" || !keys.insert(key) {
+            return None;
+        }
+    }
+    Some(object)
+}
+
+fn object_value<'a>(
+    object: &'a ObjectExpression<'a>,
+    property_name: &str,
+    semantic: &Semantic<'a>,
+    visiting: &mut BTreeSet<SymbolId>,
+) -> Option<String> {
+    let property = object.properties.iter().find_map(|entry| {
+        let ObjectPropertyKind::ObjectProperty(property) = entry else {
+            return None;
+        };
+        let key = match &property.key {
+            PropertyKey::StaticIdentifier(identifier) => identifier.name.as_str(),
+            PropertyKey::StringLiteral(literal) => literal.value.as_str()?,
+            _ => return None,
+        };
+        (key == property_name).then_some(property)
+    })?;
+    static_string_with(&property.value, semantic, visiting)
+}
+
+/// A `const` object that no visible reference can mutate, alias, or export.
+fn object_binding<'a>(
+    symbol: SymbolId,
+    semantic: &Semantic<'a>,
+) -> Option<&'a ObjectExpression<'a>> {
+    let object = plain_object(initializer(symbol, semantic)?)?;
+    if is_exported(symbol, semantic) {
+        return None;
+    }
+    semantic
+        .symbol_references(symbol)
+        .all(|reference| {
+            is_member_read(reference, semantic) || is_safe_call_argument(reference, semantic)
+        })
+        .then_some(object)
+}
+
+fn object_argument_value(
+    argument: &Expression<'_>,
+    property: &str,
+    semantic: &Semantic<'_>,
+    visiting: &mut BTreeSet<SymbolId>,
+) -> Option<String> {
+    match argument.without_parentheses() {
+        Expression::ObjectExpression(_) => {
+            object_value(plain_object(argument)?, property, semantic, visiting)
+        }
+        Expression::Identifier(identifier) => {
+            let symbol = referenced_symbol(identifier, semantic.scoping())?;
+            if !visiting.insert(symbol) {
+                return None;
+            }
+            let value = object_binding(symbol, semantic)
+                .and_then(|object| object_value(object, property, semantic, visiting));
+            visiting.remove(&symbol);
+            value
+        }
+        _ => None,
+    }
+}
+
+/// The object a parameter receives, when every direct call passes the same plain
+/// object and the parameter only reads properties.
+fn parameter_value<T: PartialEq>(
+    symbol: SymbolId,
+    semantic: &Semantic<'_>,
+    mut evaluate: impl FnMut(&Expression<'_>) -> Option<T>,
+) -> Option<T> {
+    let declaration = semantic.symbol_declaration(symbol);
+    let parameter = declaration.kind().as_formal_parameter()?;
+    if parameter.initializer.is_some()
+        || !matches!(&parameter.pattern, BindingPattern::BindingIdentifier(_))
+        || !is_constant(symbol, semantic)
+        || !references_only_member_reads(symbol, semantic)
+    {
+        return None;
+    }
+    let nodes = semantic.nodes();
+    let (index, parameters) = nodes.ancestors(declaration.id()).find_map(|node| {
+        let parameters = node.kind().as_formal_parameters()?;
+        let index = parameters
+            .items
+            .iter()
+            .position(|item| item.node_id.get() == declaration.id())?;
+        Some((index, node))
+    })?;
+    let AstKind::ArrowFunctionExpression(function) = nodes.parent_node(parameters.id()).kind()
+    else {
+        return None;
+    };
+    let AstKind::VariableDeclarator(binding) = nodes.parent_node(function.node_id.get()).kind()
+    else {
+        return None;
+    };
+    let function_symbol = binding.id.get_binding_identifier()?.symbol_id.get()?;
+    if arrow_function(function_symbol, semantic).is_none_or(|bound| bound.span != function.span) {
+        return None;
+    }
+
+    let mut value = None;
+    for reference in semantic.symbol_references(function_symbol) {
+        let node = nodes.get_node(reference.node_id());
+        let AstKind::CallExpression(call) = nodes.parent_node(node.id()).kind() else {
+            return None;
+        };
+        let argument = call_argument(call, index)?;
+        let candidate = evaluate(argument)?;
+        if value.as_ref().is_some_and(|value| value != &candidate) {
+            return None;
+        }
+        value = Some(candidate);
+    }
+    value
+}
+
+/// The argument at `index`, unless a spread makes the position ambiguous.
+fn call_argument<'a>(call: &'a CallExpression<'a>, index: usize) -> Option<&'a Expression<'a>> {
+    if call
+        .arguments
+        .iter()
+        .any(|argument| matches!(argument, Argument::SpreadElement(_)))
+    {
+        return None;
+    }
+    call.arguments.get(index)?.as_expression()
+}
+
+fn is_member_read(reference: &Reference, semantic: &Semantic<'_>) -> bool {
+    let nodes = semantic.nodes();
+    let AstKind::StaticMemberExpression(member) = nodes.parent_kind(reference.node_id()) else {
+        return false;
+    };
+    !reference.is_write()
+        && !reference.flags().is_member_write_target()
+        && member
+            .object
+            .get_identifier_reference()
+            .is_some_and(|object| {
+                object.span() == nodes.get_node(reference.node_id()).kind().span()
+            })
+}
+
+/// A read passed straight to a local arrow whose parameter only reads properties.
+fn is_safe_call_argument(reference: &Reference, semantic: &Semantic<'_>) -> bool {
+    if reference.is_write() {
+        return false;
+    }
+    let nodes = semantic.nodes();
+    let AstKind::CallExpression(call) = nodes.parent_kind(reference.node_id()) else {
+        return false;
+    };
+    if call
+        .arguments
+        .iter()
+        .any(|argument| matches!(argument, Argument::SpreadElement(_)))
+    {
+        return false;
+    }
+    let span = nodes.get_node(reference.node_id()).kind().span();
+    let Some(index) = call.arguments.iter().position(|argument| {
+        argument.as_expression().is_some_and(|expression| {
+            expression
+                .without_parentheses()
+                .get_identifier_reference()
+                .is_some_and(|identifier| identifier.span() == span)
+        })
+    }) else {
+        return false;
+    };
+    let Expression::Identifier(callee) = call.callee.without_parentheses() else {
+        return false;
+    };
+    let Some(function_symbol) = referenced_symbol(callee, semantic.scoping()) else {
+        return false;
+    };
+    let Some(function) = arrow_function(function_symbol, semantic) else {
+        return false;
+    };
+    let Some(parameter) = parameter_symbol(function, index) else {
+        return false;
+    };
+    references_only_member_reads(parameter, semantic)
+}
+
+/// A local `const` arrow whose references are direct calls only.
+fn arrow_function<'a>(
+    symbol: SymbolId,
+    semantic: &Semantic<'a>,
+) -> Option<&'a oxc_ast::ast::ArrowFunctionExpression<'a>> {
+    let Expression::ArrowFunctionExpression(function) = initializer(symbol, semantic)? else {
+        return None;
+    };
+    if is_exported(symbol, semantic)
+        || !semantic
+            .symbol_references(symbol)
+            .all(|reference| is_direct_call_callee(reference, semantic))
+        || function
+            .scope_id
+            .get()
+            .is_some_and(|scope| semantic.scoping().scope_flags(scope).contains_direct_eval())
+    {
+        return None;
+    }
+    Some(function)
+}
+
+/// The simple identifier bound at `index`, without a default value.
+fn parameter_symbol(
+    function: &oxc_ast::ast::ArrowFunctionExpression<'_>,
+    index: usize,
+) -> Option<SymbolId> {
+    let parameter = function.params.items.get(index)?;
+    if parameter.initializer.is_some() {
+        return None;
+    }
+    let BindingPattern::BindingIdentifier(binding) = &parameter.pattern else {
+        return None;
+    };
+    binding.symbol_id.get()
+}
+
+fn references_only_member_reads(symbol: SymbolId, semantic: &Semantic<'_>) -> bool {
+    semantic
+        .symbol_references(symbol)
+        .all(|reference| is_member_read(reference, semantic))
+}
+
+fn is_exported(symbol: SymbolId, semantic: &Semantic<'_>) -> bool {
+    let declaration = semantic.symbol_declaration(symbol);
+    let variable = semantic.nodes().parent_id(declaration.id());
+    matches!(
+        semantic.nodes().kind(variable),
+        AstKind::VariableDeclaration(_)
+    ) && matches!(
+        semantic.nodes().parent_kind(variable),
+        AstKind::ExportDeclaration(_)
+    )
 }
 
 /// Every expression assigned to a binding: its initializer and each assignment.
@@ -244,6 +574,127 @@ pub(super) fn initializer<'a>(
         && scoping.symbol_redeclarations(symbol).is_empty()
         && !scoping.symbol_is_mutated(symbol))
     .then(|| init.without_parentheses())
+}
+
+/// Whether every reference only reads the binding. A property assignment mutates
+/// the object without writing the binding itself, so the member target flag matters.
+fn is_constant(symbol: SymbolId, semantic: &Semantic<'_>) -> bool {
+    !semantic.scoping().symbol_is_mutated(symbol)
+        && semantic
+            .symbol_references(symbol)
+            .all(|reference| !reference.flags().is_member_write_target())
+}
+
+/// The package-manifest specifiers whose loaded object is used to select a bin.
+///
+/// The selection is only a member access such as `pkg.bin[binName]` inside a
+/// computed `require`/`import` target; reading the manifest for its version alone
+/// selects nothing.
+pub(super) fn selected_bins(
+    expression: &Expression<'_>,
+    semantic: &Semantic<'_>,
+    manifests: &BTreeMap<SymbolId, BTreeSet<String>>,
+) -> Vec<(String, String)> {
+    let mut selected = BTreeSet::new();
+    collect_bin_selections(expression, semantic, manifests, &mut selected);
+    selected.into_iter().collect()
+}
+
+fn collect_bin_selections(
+    expression: &Expression<'_>,
+    semantic: &Semantic<'_>,
+    manifests: &BTreeMap<SymbolId, BTreeSet<String>>,
+    selected: &mut BTreeSet<(String, String)>,
+) {
+    match expression.without_parentheses() {
+        Expression::CallExpression(call) => {
+            for argument in &call.arguments {
+                if let Some(argument) = argument.as_expression() {
+                    collect_bin_selections(argument, semantic, manifests, selected);
+                }
+            }
+        }
+        Expression::BinaryExpression(binary) => {
+            collect_bin_selections(&binary.left, semantic, manifests, selected);
+            collect_bin_selections(&binary.right, semantic, manifests, selected);
+        }
+        Expression::TemplateLiteral(template) => {
+            for expression in &template.expressions {
+                collect_bin_selections(expression, semantic, manifests, selected);
+            }
+        }
+        Expression::ComputedMemberExpression(member) => {
+            if let Expression::StaticMemberExpression(bin) = member.object.without_parentheses()
+                && bin.property.name == "bin"
+                && let Some(name) = static_string(&member.expression, semantic)
+            {
+                add_bin_selection(&bin.object, &name, semantic, manifests, selected);
+            }
+        }
+        Expression::StaticMemberExpression(member) => {
+            if let Expression::StaticMemberExpression(bin) = member.object.without_parentheses()
+                && bin.property.name == "bin"
+            {
+                add_bin_selection(
+                    &bin.object,
+                    member.property.name.as_str(),
+                    semantic,
+                    manifests,
+                    selected,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn add_bin_selection(
+    object: &Expression<'_>,
+    name: &str,
+    semantic: &Semantic<'_>,
+    manifests: &BTreeMap<SymbolId, BTreeSet<String>>,
+    selected: &mut BTreeSet<(String, String)>,
+) {
+    let Expression::Identifier(identifier) = object.without_parentheses() else {
+        return;
+    };
+    let Some(symbol) = referenced_symbol(identifier, semantic.scoping()) else {
+        return;
+    };
+    let Some(specifiers) = manifest_specifiers(symbol, semantic, manifests) else {
+        return;
+    };
+    for specifier in specifiers {
+        selected.insert((specifier.clone(), name.to_owned()));
+    }
+}
+
+/// The manifest a binding was loaded from, either directly or through
+/// `const pkg = require(pkgPath)`.
+fn manifest_specifiers<'a>(
+    symbol: SymbolId,
+    semantic: &Semantic<'_>,
+    manifests: &'a BTreeMap<SymbolId, BTreeSet<String>>,
+) -> Option<&'a BTreeSet<String>> {
+    if let Some(specifiers) = manifests.get(&symbol) {
+        return Some(specifiers);
+    }
+    let Expression::CallExpression(call) = initializer(symbol, semantic)? else {
+        return None;
+    };
+    if !is_runtime_require(&call.callee, semantic) {
+        return None;
+    }
+    let Expression::Identifier(identifier) = call
+        .arguments
+        .first()?
+        .as_expression()?
+        .without_parentheses()
+    else {
+        return None;
+    };
+    let manifest = referenced_symbol(identifier, semantic.scoping())?;
+    manifests.get(&manifest)
 }
 
 fn is_runtime_require(expression: &Expression<'_>, semantic: &Semantic<'_>) -> bool {

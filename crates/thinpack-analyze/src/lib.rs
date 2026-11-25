@@ -9,6 +9,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use oxc_allocator::Allocator;
+use oxc_ast::AstKind;
 use oxc_ast::ast::{
     Argument, BindingPattern, CallExpression, ExportAllDeclaration, ExportFromDeclaration,
     Expression, IdentifierReference, ImportDeclaration, ImportExpression, NewExpression,
@@ -289,11 +290,11 @@ pub fn analyze_roots_with(
         }
 
         let optional_dependencies = thinpack_resolve::optional_dependencies(&path, &fs);
-        let (specifiers, detected) = load_module(&path, &fs, &mut output)?;
-        if let Some(format) = detected {
+        let parsed = load_module(&path, &fs, &mut output)?;
+        if let Some(format) = parsed.detected {
             formats.insert(path.clone(), format);
         }
-        for ((specifier, is_import), usage) in specifiers {
+        for ((specifier, is_import), usage) in parsed.specifiers {
             // A dependency listed in `optionalDependencies` is optional even when the
             // request is unguarded, so a hoisted install the payload cannot reach is
             // omitted with a warning instead of failing the pack. The inherited edge is
@@ -333,6 +334,21 @@ pub fn analyze_roots_with(
             // A resolve-only reference only locates the target, so its bytes join
             // the payload without being parsed.
             if usage.resolve_only {
+                if resolved
+                    .file_name()
+                    .is_some_and(|name| name == "package.json")
+                    && let Some(bins) = parsed.bin_selections.get(&specifier)
+                {
+                    include_selected_bins(
+                        &resolved,
+                        bins,
+                        optional_edge,
+                        &fs,
+                        &mut pending,
+                        &mut output.data_files,
+                        &mut output.warnings,
+                    )?;
+                }
                 output.data_files.insert(resolved);
             } else if optional_edge {
                 pending.push_back((resolved, true));
@@ -359,6 +375,65 @@ pub fn analyze_roots_with(
         stripped: output.stripped,
         warnings: output.warnings,
     })
+}
+
+fn include_selected_bins(
+    manifest: &Path,
+    bins: &BTreeSet<String>,
+    optional: bool,
+    fs: &impl FileSystem,
+    pending: &mut VecDeque<(PathBuf, bool)>,
+    data_files: &mut BTreeSet<PathBuf>,
+    warnings: &mut Vec<Warning>,
+) -> Result<(), Error> {
+    for bin in bins {
+        include_selected_bin(manifest, bin, optional, fs, pending, data_files, warnings)?;
+    }
+    Ok(())
+}
+
+/// Queue one executable target that a computed module load selected from a
+/// resolved package manifest. The manifest can be resolved for its version without
+/// selecting anything; only a literal `pkg.bin[name]` used as a module target
+/// reaches this path.
+fn include_selected_bin(
+    manifest: &Path,
+    name: &str,
+    optional: bool,
+    fs: &impl FileSystem,
+    pending: &mut VecDeque<(PathBuf, bool)>,
+    data_files: &mut BTreeSet<PathBuf>,
+    warnings: &mut Vec<Warning>,
+) -> Result<(), Error> {
+    let bin =
+        thinpack_resolve::declared_bin(manifest, name, fs).map_err(|error| Error::Format {
+            path: manifest.to_path_buf(),
+            message: error.to_string(),
+        })?;
+    let Some(bin) = bin else {
+        return Ok(());
+    };
+    if !fs.is_file(&bin) {
+        warnings.push(Warning {
+            message: format!(
+                "{}: declared bin {} is missing; the app must handle the error",
+                manifest.display(),
+                bin.display()
+            ),
+            strict: false,
+        });
+        return Ok(());
+    }
+    if thinpack_resolve::is_javascript(&bin) {
+        if optional {
+            pending.push_back((bin, true));
+        } else {
+            pending.push_front((bin, false));
+        }
+    } else {
+        data_files.insert(bin);
+    }
+    Ok(())
 }
 
 /// Resolves one dependency edge. `None` means an optional or `--allow-missing`
@@ -453,7 +528,7 @@ struct Usage {
     resolve_only: bool,
 }
 
-type SpecifierEntry = ((String, bool), Usage);
+type Specifiers = BTreeMap<(String, bool), Usage>;
 
 /// Records `specifier` when it names a builtin and reports whether it did. A
 /// guarded reference to a builtin that may be absent only warns; an unguarded
@@ -600,11 +675,18 @@ struct WalkOutput {
     stripped: BTreeMap<PathBuf, String>,
 }
 
+struct ParsedModule {
+    specifiers: Specifiers,
+    detected: Option<Format>,
+    // Manifest specifiers resolve relative to this module, not the whole graph.
+    bin_selections: BTreeMap<String, BTreeSet<String>>,
+}
+
 fn load_module(
     path: &Path,
     fs: &impl FileSystem,
     output: &mut WalkOutput,
-) -> Result<(Vec<SpecifierEntry>, Option<Format>), Error> {
+) -> Result<ParsedModule, Error> {
     let bytes = fs.read(path).map_err(|error| Error::Read {
         path: path.to_path_buf(),
         message: error.to_string(),
@@ -622,7 +704,7 @@ fn parse_specifiers(
     path: &Path,
     fs: &impl FileSystem,
     output: &mut WalkOutput,
-) -> Result<(Vec<SpecifierEntry>, Option<Format>), Error> {
+) -> Result<ParsedModule, Error> {
     let allocator = Allocator::default();
     let (source_type, format) = parser_dialect(path, fs)?;
     let mut parsed = Parser::new(&allocator, source, source_type).parse();
@@ -685,13 +767,19 @@ fn parse_specifiers(
         require_bindings: require::bindings(&semantic),
         late_import_bindings,
         late_import_factories,
+        manifest_bindings: BTreeMap::new(),
         warnings: &mut output.warnings,
         data_files: &mut output.data_files,
         static_dirs: &mut output.static_dirs,
+        bin_selections: BTreeMap::new(),
         fs,
     };
     collector.visit_program(&parsed.program);
-    Ok((collector.specifiers.into_iter().collect(), detected))
+    Ok(ParsedModule {
+        specifiers: collector.specifiers,
+        detected,
+        bin_selections: collector.bin_selections,
+    })
 }
 
 /// The path expression a module load names, unwrapping `pathToFileURL(...)`.
@@ -736,16 +824,20 @@ fn global_name<'a>(expression: &'a Expression<'_>) -> Option<&'a str> {
 
 struct SpecifierCollector<'a, 's> {
     path: &'s Path,
-    specifiers: BTreeMap<(String, bool), Usage>,
+    specifiers: Specifiers,
     try_depth: usize,
     semantic: &'s Semantic<'a>,
     require_bindings: BTreeSet<SymbolId>,
     late_import_bindings: BTreeMap<SymbolId, require::LateImport>,
     /// The constructor expressions that belong to a stable late-import binding.
     late_import_factories: BTreeSet<Span>,
+    /// Bindings assigned by `require.resolve`/`import.meta.resolve` to a literal
+    /// package manifest.
+    manifest_bindings: BTreeMap<SymbolId, BTreeSet<String>>,
     warnings: &'s mut Vec<Warning>,
     data_files: &'s mut BTreeSet<PathBuf>,
     static_dirs: &'s mut BTreeMap<PathBuf, StaticDir>,
+    bin_selections: BTreeMap<String, BTreeSet<String>>,
     fs: &'s dyn FileSystem,
 }
 
@@ -819,10 +911,17 @@ impl SpecifierCollector<'_, '_> {
             .and_then(Argument::as_expression)
             .is_some_and(|argument| {
                 require::specifiers(argument, self.semantic, |specifier| {
-                    self.add(js_string(specifier), true, self.try_depth > 0, false);
+                    self.add(specifier, true, self.try_depth > 0, false);
                 })
             });
         if !complete {
+            if let Some(argument) = call
+                .arguments
+                .get(argument_index)
+                .and_then(Argument::as_expression)
+            {
+                self.record_bin_selection(argument);
+            }
             self.warnings.push(Warning {
                 message: format!(
                     "{}: a `Function`-built import with a non-literal argument cannot be analyzed; add computed local files with `--include <path>` (relative to the project root)",
@@ -872,15 +971,33 @@ impl SpecifierCollector<'_, '_> {
         };
         let expression = argument.as_expression();
         let optional = optional || self.try_depth > 0;
+        let mut resolved = Vec::new();
         let complete = expression.is_some_and(|argument| {
+            if resolve_only
+                && let Some(specifier) = require::static_string(argument, self.semantic)
+                && specifier.ends_with("/package.json")
+            {
+                resolved.push(specifier.clone());
+                self.add(specifier, is_import, optional, true);
+                return true;
+            }
             require::specifiers(argument, self.semantic, |specifier| {
-                self.add(js_string(specifier), is_import, optional, resolve_only);
+                if resolve_only {
+                    resolved.push(specifier.clone());
+                }
+                self.add(specifier, is_import, optional, resolve_only);
             }) || self.add_constant_module_path(argument, is_import, optional, resolve_only)
         });
+        if complete && resolve_only {
+            self.record_manifest_binding(call, &resolved);
+        }
         let static_module_dir = !optional
             && !resolve_only
             && expression.is_some_and(|argument| self.add_static_module_dir(argument));
         if !complete && !static_module_dir {
+            if let Some(argument) = expression.filter(|_| !resolve_only) {
+                self.record_bin_selection(argument);
+            }
             self.warnings.push(Warning {
                 message: format!(
                     "{}: `{target}{member}(...)` with a non-literal argument cannot be analyzed. Add required built-ins with `--with <module>`, and computed local files with `--include <path>` (relative to the project root).",
@@ -888,6 +1005,35 @@ impl SpecifierCollector<'_, '_> {
                 ),
                 strict: true,
             });
+        }
+    }
+
+    fn record_manifest_binding(&mut self, call: &CallExpression<'_>, specifiers: &[String]) {
+        if specifiers.is_empty() {
+            return;
+        }
+        let AstKind::VariableDeclarator(declaration) =
+            self.semantic.nodes().parent_kind(call.node_id.get())
+        else {
+            return;
+        };
+        let Some(symbol) = declaration
+            .id
+            .get_binding_identifier()
+            .and_then(|identifier| identifier.symbol_id.get())
+        else {
+            return;
+        };
+        self.manifest_bindings
+            .entry(symbol)
+            .or_default()
+            .extend(specifiers.iter().cloned());
+    }
+
+    fn record_bin_selection(&mut self, expression: &Expression<'_>) {
+        let selected = require::selected_bins(expression, self.semantic, &self.manifest_bindings);
+        for (manifest, bin) in selected {
+            self.bin_selections.entry(manifest).or_default().insert(bin);
         }
     }
 
@@ -1144,18 +1290,19 @@ impl<'a> VisitJs<'a> for SpecifierCollector<'a, '_> {
     }
 
     fn visit_import_expression(&mut self, expression: &ImportExpression<'a>) {
-        match &expression.source {
-            Expression::StringLiteral(literal) => {
-                self.add_specifier(js_string(literal.value), true);
+        if let Expression::StringLiteral(literal) = &expression.source {
+            self.add_specifier(js_string(literal.value), true);
+        } else {
+            self.record_bin_selection(&expression.source);
+            if !self.add_static_module_dir(&expression.source) {
+                self.warnings.push(Warning {
+                    message: format!(
+                        "{}: `import(...)` with a non-literal argument cannot be analyzed; add computed local files with `--include <path>` (relative to the project root)",
+                        self.path.display()
+                    ),
+                    strict: true,
+                });
             }
-            _ if !self.add_static_module_dir(&expression.source) => self.warnings.push(Warning {
-                message: format!(
-                    "{}: `import(...)` with a non-literal argument cannot be analyzed; add computed local files with `--include <path>` (relative to the project root)",
-                    self.path.display()
-                ),
-                strict: true,
-            }),
-            _ => {}
         }
         walk_js::walk_import_expression(self, expression);
     }
@@ -2095,6 +2242,47 @@ mod tests {
     }
 
     #[test]
+    fn static_manifest_names_need_plain_data_and_direct_calls() {
+        let load = "const load = (options) => require.resolve(`${options.package}/package.json`);";
+        let cases = [
+            ("plain", format!("const cli = {{ package: 'tool' }};\n{load}\nload(cli);\n"), false),
+            ("object literal argument", format!("{load}\nload({{ package: 'tool' }});\n"), false),
+            ("spread", format!("const cli = {{ ...{{ package: 'tool' }} }};\n{load}\nload(cli);\n"), true),
+            ("computed key", format!("const cli = {{ ['package']: 'tool' }};\n{load}\nload(cli);\n"), true),
+            ("duplicate key", format!("const cli = {{ package: 'old', package: 'tool' }};\n{load}\nload(cli);\n"), true),
+            ("getter", format!("const cli = {{ get package() {{ return 'tool'; }} }};\n{load}\nload(cli);\n"), true),
+            ("alias write", format!("const cli = {{ package: 'tool' }};\nconst alias = cli;\nalias.package = 'old';\n{load}\nload(cli);\n"), true),
+            ("escape", format!("const cli = {{ package: 'tool' }};\nmutate(cli);\n{load}\nload(cli);\n"), true),
+            ("parameter reassignment", "const load = (options) => { options = { package: 'tool' }; return require.resolve(`${options.package}/package.json`); };\nload({ package: 'tool' });\n".to_owned(), true),
+            ("parameter destructuring", "const load = ({ package: name }) => require.resolve(`${name}/package.json`);\nload({ package: 'tool' });\n".to_owned(), true),
+            ("conflicting calls", format!("const cli = {{ package: 'tool' }};\nconst other = {{ package: 'other' }};\n{load}\nload(cli);\nload(other);\n"), true),
+            ("escaped function", format!("const cli = {{ package: 'tool' }};\n{load}\nmodule.exports.load = load;\nload(cli);\n"), true),
+        ];
+        for (name, source, rejected) in cases {
+            let fs = MemoryFs::new(&[
+                ("/app/package.json", r#"{"type":"commonjs"}"#),
+                ("/app/main.cjs", &source),
+                (
+                    "/app/node_modules/tool/package.json",
+                    r#"{"name":"tool","version":"1.0.0"}"#,
+                ),
+                (
+                    "/app/node_modules/other/package.json",
+                    r#"{"name":"other","version":"1.0.0"}"#,
+                ),
+            ]);
+            let analysis = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+            let strict = analysis.warnings.iter().any(|warning| warning.strict);
+            assert_eq!(strict, rejected, "{name}: {:?}", analysis.warnings);
+            let resolved = analysis
+                .data_files
+                .iter()
+                .any(|path| path.ends_with("tool/package.json"));
+            assert_eq!(resolved, !rejected, "{name}: {:?}", analysis.data_files);
+        }
+    }
+
+    #[test]
     fn a_resolve_only_target_is_still_parsed_when_also_loaded() {
         let fs = MemoryFs::new(&[
             (
@@ -2230,6 +2418,69 @@ mod tests {
         assert!(filter.accepts(Path::new("/app/formatters/stylish.js")));
         assert!(!filter.accepts(Path::new("/app/formatters/meta.json")));
         assert!(analysis.warnings.is_empty(), "{:?}", analysis.warnings);
+    }
+
+    #[test]
+    fn direct_eval_keeps_a_computed_manifest_dynamic() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.cjs",
+                r#"const paths = { package: "old" };
+                   eval('paths.package = "needed"');
+                   require.resolve(`${paths.package}/package.json`);"#,
+            ),
+            ("/app/node_modules/old/package.json", r#"{"name":"old"}"#),
+        ]);
+        let result = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+        assert!(result.data_files.is_empty());
+        assert!(result.warnings.iter().any(|warning| warning.strict));
+    }
+
+    #[test]
+    fn a_bin_selection_does_not_leak_to_another_importer() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.cjs",
+                r#"const path = require("node:path");
+                   const name = require.resolve("tool/package.json");
+                   const pkg = require(name);
+                   require(path.resolve(path.dirname(name), pkg.bin.tool));
+                   require("./viewer/view.cjs");"#,
+            ),
+            (
+                "/app/node_modules/tool/package.json",
+                r#"{"name":"tool","bin":{"tool":"entry.cjs"}}"#,
+            ),
+            ("/app/node_modules/tool/entry.cjs", "module.exports = 1;"),
+            (
+                "/app/viewer/view.cjs",
+                r#"require.resolve("tool/package.json");"#,
+            ),
+            (
+                "/app/viewer/node_modules/tool/package.json",
+                r#"{"name":"tool","bin":{"tool":"entry.cjs"}}"#,
+            ),
+            (
+                "/app/viewer/node_modules/tool/entry.cjs",
+                "module.exports = 2;",
+            ),
+        ]);
+        let result = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+        assert!(
+            result
+                .files
+                .contains(&PathBuf::from("/app/node_modules/tool/entry.cjs"))
+        );
+        assert!(
+            !result
+                .files
+                .contains(&PathBuf::from("/app/viewer/node_modules/tool/entry.cjs"))
+        );
+        assert!(
+            result
+                .data_files
+                .contains(Path::new("/app/viewer/node_modules/tool/package.json"))
+        );
     }
 
     #[test]

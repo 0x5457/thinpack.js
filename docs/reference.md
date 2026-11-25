@@ -65,7 +65,9 @@ When no matching installed template is available and the cache has both backends
 
 The analyzer follows conditional `require` calls when both branches name modules. For module names
 supplied at runtime, use `--with` to include the required built-ins explicitly. `--strict` makes
-unresolved dynamic requests an error during packing.
+unresolved dynamic requests an error during packing. When a computed module load selects a literal
+`pkg.bin[name]` from a resolved package manifest, packing also carries that declared target, so a
+launcher that selects a package bin at run time works without `--include`.
 
 A path built from `__dirname` can name files the module never imports: files read through
 `fs.readFileSync`, `readFile`, or `createReadStream` are packed as data, and so is every file under

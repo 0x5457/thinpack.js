@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use crate::json::{self, Json};
 use crate::{Conditions, Error, FileSystem};
@@ -10,6 +11,7 @@ pub(crate) struct Manifest {
     pub module_type: Option<bool>,
     pub exports: Option<Json>,
     pub imports: Option<Json>,
+    bins: BTreeMap<String, String>,
     optional: Vec<String>,
 }
 
@@ -40,17 +42,36 @@ impl Manifest {
             }
         };
 
+        let name = value.get("name").and_then(Json::as_str).map(str::to_owned);
         Ok(Self {
-            name: value.get("name").and_then(Json::as_str).map(str::to_owned),
+            name: name.clone(),
             main: value.get("main").and_then(Json::as_str).map(str::to_owned),
             module_type,
             exports: value.get("exports").cloned(),
             imports: value.get("imports").cloned(),
+            bins: bin_targets(&value, name.as_deref()),
             optional: optional_names(&value),
         })
     }
     pub(crate) fn is_module(&self) -> bool {
         self.module_type == Some(true)
+    }
+}
+
+fn bin_targets(value: &Json, name: Option<&str>) -> BTreeMap<String, String> {
+    match value.get("bin") {
+        Some(Json::Str(target)) => name
+            .map(|name| BTreeMap::from([(name.to_owned(), target.clone())]))
+            .unwrap_or_default(),
+        Some(Json::Object(entries)) => entries
+            .iter()
+            .filter_map(|(name, target)| {
+                target
+                    .as_str()
+                    .map(|target| (name.clone(), target.to_owned()))
+            })
+            .collect(),
+        _ => BTreeMap::new(),
     }
 }
 
@@ -67,6 +88,30 @@ fn optional_names(value: &Json) -> Vec<String> {
         }
     }
     names
+}
+
+/// The executable target declared as `name` by the package manifest at `manifest`.
+///
+/// The target is resolved against the package directory; a target that leaves the
+/// package is ignored. The caller decides whether the target is code or data.
+///
+/// # Errors
+///
+/// Returns the manifest read and parse errors.
+pub fn declared_bin(
+    manifest: &Path,
+    name: &str,
+    fs: &impl FileSystem,
+) -> Result<Option<PathBuf>, Error> {
+    let Some(directory) = manifest.parent() else {
+        return Ok(None);
+    };
+    let manifest = Manifest::read(manifest, fs)?;
+    let Some(target) = manifest.bins.get(name) else {
+        return Ok(None);
+    };
+    let path = crate::normalize(&directory.join(target));
+    Ok(path.starts_with(directory).then_some(path))
 }
 
 /// The optional dependency names declared by the nearest package scope above `path`.

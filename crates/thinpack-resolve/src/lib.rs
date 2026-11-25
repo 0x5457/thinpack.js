@@ -9,7 +9,8 @@ use std::path::{Component, Path, PathBuf};
 use package::Manifest;
 
 pub use package::{
-    declares_optional, is_optional_dependency, optional_dependencies, package_name, package_type,
+    declared_bin, declares_optional, is_optional_dependency, optional_dependencies, package_name,
+    package_type,
 };
 
 pub trait FileSystem {
