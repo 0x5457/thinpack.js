@@ -47,11 +47,18 @@
     return failure;
   };
 
-  const evaluate = (id, url, source, json, stack, isMain = false, wrapped = false) => {
+  const evaluate = (id, url, source, json, stack, isMain = false, wrapped = false, parent = null) => {
     const cached = cache[id];
     if (cached !== undefined) return cached.exports;
 
-    const module = { id, filename: id, exports: {}, loaded: false };
+    const module = {
+      id,
+      filename: id,
+      exports: {},
+      loaded: false,
+      // Node keeps the first requiring module; the entry module has no parent.
+      parent: parent === null ? null : cache[parent] ?? null,
+    };
     if (isMain) mainModule = module;
     cache[id] = module;
 
@@ -95,11 +102,11 @@
       case "b":
         return evaluate(id, url, body, false, stack, isMain);
       case "f":
-        return evaluate(id, url, body, false, stack, isMain, true);
+        return evaluate(id, url, body, false, stack, isMain, true, parent);
       case "j":
-        return evaluate(id, url, body, true, stack, isMain);
+        return evaluate(id, url, body, true, stack, isMain, false, parent);
       case "m":
-        return requireEsm(id, url);
+        return requireEsm(id, url, parent);
       case "e":
         if (id === "MODULE_NOT_FOUND") {
           throw fail(id, "Cannot find module '" + specifier + "'" + report(stack));
@@ -109,7 +116,7 @@
         throw fail("ERR_INTERNAL_LOADER", "unexpected loader reply: " + kind);
     }
   };
-  const requireEsm = (filename, url) => {
+  const requireEsm = (filename, url, parent) => {
     const cached = cache[filename];
     if (cached !== undefined) return cached.exports;
     let namespace;
@@ -127,7 +134,13 @@
       }
       throw error;
     }
-    const module = { id: filename, filename, exports: namespace, loaded: true };
+    const module = {
+      id: filename,
+      filename,
+      exports: namespace,
+      loaded: true,
+      parent: parent ? cache[parent] ?? null : null,
+    };
     cache[filename] = module;
     return namespace;
   };
