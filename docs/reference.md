@@ -68,10 +68,16 @@ supplied at runtime, use `--with` to include the required built-ins explicitly. 
 unresolved dynamic requests an error during packing.
 
 A path built from `__dirname` can name files the module never imports: files read through
-`fs.readFileSync`, `readFile`, or `createReadStream` are packed, and so is every file under a
-directory listed with `fs.readdir` or `readdirSync`. `path.join`, `path.resolve`, string
-concatenation, and single-assignment bindings of them are evaluated; anything else still needs
-`--include`.
+`fs.readFileSync`, `readFile`, or `createReadStream` are packed as data, and so is every file under
+a directory listed with `fs.readdir` or `readdirSync`. Enumeration counts only on the `fs` module,
+and a scanned directory is expanded like `--include` only when it is below the project root and is
+neither a package root nor `node_modules`; anything broader still needs `--include`. `path.join`,
+`path.resolve`, string concatenation, and single-assignment bindings of them are evaluated.
+
+The optionality of a guarded `require`/`import()` or an `optionalDependencies` entry extends
+through the static dependencies it reaches: a missing module there becomes a warning, and the
+handled import fails at run time as it does under Node. A file also reached by a required edge
+is still required, so its missing dependencies fail the pack.
 
 Compiled module bytecode is cached under `<cache-root>/bytecode`, which makes a warm start
 about 29% faster (pi: 983 ms → 702 ms); `V82JSC_NO_BC_CACHE=1` disables it, and
@@ -175,8 +181,9 @@ for adding a module.
   remains different.
 - No N-API or native addon loading; code that needs native code goes through `node:ffi`.
 - `crypto` key material covers RSA/RSA-PSS, EC (P-256/P-384/P-521/secp256k1), Ed25519 and
-  X25519. DSA, DH, Ed448 and X448 keys are rejected; encrypted PKCS#1/SEC1 PEM is not
-  supported (PKCS#8 encryption is).
+  X25519, plus secret keys from `createSecretKey` for HMAC, ciphers and HKDF. DSA, DH,
+  Ed448 and X448 keys are rejected; encrypted PKCS#1/SEC1 PEM is not supported (PKCS#8
+  encryption is).
 - WebAssembly is always available and cannot be trimmed (WAMR on QuickJS, about 217 KB).
 - The analyzer does not run ESM loader hooks. It determines formats from the file extension,
   package scope and syntax on disk. A hook cannot make a module analyzable or add it to the

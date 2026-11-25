@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
@@ -81,7 +81,7 @@ fn analyze_graph(
 ) -> Result<Analysis, Box<dyn Error>> {
     let mut includes = includes.to_vec();
     let mut expanded = BTreeSet::new();
-    let mut skipped = BTreeSet::new();
+    let mut skipped = BTreeMap::new();
     loop {
         let mut analysis = thinpack_analyze::analyze_roots_with(
             entry,
@@ -96,21 +96,27 @@ fn analyze_graph(
             if !expanded.insert(directory.clone()) {
                 continue;
             }
-            // The payload is rooted at the project, and a scanned directory
-            // above it cannot be reached from `/app`. Leave it to the host.
+            // The payload is rooted at the project, so a directory above it cannot
+            // be reached from `/app`. Leave it to the host.
             if !directory.starts_with(root) {
-                skipped.insert(directory);
+                skipped.insert(directory, "is outside the project root");
                 continue;
             }
-            collect_files(&directory, &mut discovered)?;
+            if !expandable_scan(root, &directory) {
+                skipped.insert(
+                    directory,
+                    "is the project root, a package root, node_modules, or a symlink",
+                );
+                continue;
+            }
+            collect_files(&directory, false, &mut discovered)?;
         }
         if discovered.is_empty() {
-            for directory in skipped {
+            for (directory, reason) in skipped {
                 analysis.warnings.push(thinpack_analyze::Warning {
                     message: format!(
-                        "static directory {} is outside the project root {}; it is left out of the payload",
-                        directory.display(),
-                        root.display()
+                        "static directory {} {reason}; add it with --include",
+                        directory.display()
                     ),
                     strict: false,
                 });
@@ -122,6 +128,19 @@ fn analyze_graph(
         includes.sort();
         includes.dedup();
     }
+}
+
+/// Whether the graph's scan of `directory` can stand in for `--include`. The
+/// directory is already known to be inside `root`; it also has to stay a bounded
+/// part of the project instead of sweeping the project root, a package root,
+/// `node_modules`, or a symlinked copy of one of those.
+fn expandable_scan(root: &Path, directory: &Path) -> bool {
+    directory != root
+        && directory
+            .file_name()
+            .is_some_and(|name| name != "node_modules")
+        && !directory.join("package.json").is_file()
+        && std::fs::symlink_metadata(directory).is_ok_and(|metadata| metadata.is_dir())
 }
 
 fn expand_includes(root: &Path, includes: &[PathBuf]) -> Result<Vec<PathBuf>, Box<dyn Error>> {
@@ -154,7 +173,7 @@ fn expand_includes(root: &Path, includes: &[PathBuf]) -> Result<Vec<PathBuf>, Bo
             )
         })?;
         if metadata.is_dir() {
-            collect_files(&path, &mut files)?;
+            collect_files(&path, true, &mut files)?;
         } else {
             files.push(path);
         }
@@ -164,16 +183,27 @@ fn expand_includes(root: &Path, includes: &[PathBuf]) -> Result<Vec<PathBuf>, Bo
     Ok(files)
 }
 
-fn collect_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), Box<dyn Error>> {
+/// Collect every regular file under `directory`. An `--include` follows links; an
+/// implicitly scanned directory does not, so a link cannot carry host files into
+/// the payload.
+fn collect_files(
+    directory: &Path,
+    follow_links: bool,
+    files: &mut Vec<PathBuf>,
+) -> Result<(), Box<dyn Error>> {
     for entry in std::fs::read_dir(directory)? {
         let entry = entry?;
         let path = entry.path();
-        let metadata = entry.metadata()?;
-        if metadata.is_dir() {
+        let file_type = if follow_links {
+            entry.metadata()?.file_type()
+        } else {
+            entry.file_type()?
+        };
+        if file_type.is_dir() {
             if entry.file_name() != ".git" {
-                collect_files(&path, files)?;
+                collect_files(&path, follow_links, files)?;
             }
-        } else if metadata.is_file() {
+        } else if file_type.is_file() {
             files.push(path);
         }
     }

@@ -307,6 +307,102 @@ mod unix {
     }
 
     #[test]
+    fn require_resolve_keeps_a_non_javascript_asset_without_parsing_it() {
+        let directory = TempDir::new("resolve-only-asset");
+        fs::write(
+            directory.path().join("package.json"),
+            r#"{ "name": "app", "type": "commonjs" }"#,
+        )
+        .expect("write package manifest");
+        let entry = directory.path().join("main.cjs");
+        fs::write(
+            &entry,
+            "console.log(require.resolve('./tool').endsWith('/tool'));\n",
+        )
+        .expect("write entry");
+        let tool = b"#!/usr/bin/env bash\nset -e\necho never-run\n";
+        fs::write(directory.path().join("tool"), tool).expect("write shell asset");
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let output = directory.path().join("packed-app");
+
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            directory.path(),
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+            ],
+        );
+        assert!(
+            result.status.success(),
+            "pack failed:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+
+        let pack = thinpack_pack::read_from_executable(&output)
+            .expect("read packed executable")
+            .expect("packed payload");
+        let asset = pack
+            .manifest
+            .files
+            .iter()
+            .find(|file| file.path == "/app/tool")
+            .expect("the resolve-only target is in the payload");
+        assert_eq!(pack.slice_of(asset), Some(tool.as_slice()));
+    }
+
+    #[test]
+    fn requiring_a_resolve_only_asset_still_fails_during_packing() {
+        let directory = TempDir::new("required-resolve-only-asset");
+        fs::write(
+            directory.path().join("package.json"),
+            r#"{ "name": "app", "type": "commonjs" }"#,
+        )
+        .expect("write package manifest");
+        let entry = directory.path().join("main.cjs");
+        fs::write(
+            &entry,
+            "console.log(require.resolve('./tool'));\nrequire('./tool');\n",
+        )
+        .expect("write entry");
+        fs::write(
+            directory.path().join("tool"),
+            "#!/usr/bin/env bash\nset -e\necho never-run\n",
+        )
+        .expect("write shell asset");
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let output = directory.path().join("packed-app");
+
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            directory.path(),
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+            ],
+        );
+        assert!(
+            !result.status.success(),
+            "packed a shell asset that the app requires"
+        );
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(error.contains("/tool:"), "{error}");
+        assert!(!output.exists(), "pack wrote an executable it cannot run");
+    }
+
+    #[test]
     fn a_typeless_js_file_with_esm_syntax_is_packed_as_esm() {
         let directory = TempDir::new("detect-module");
         let entry = directory.path().join("main.js");
@@ -631,6 +727,74 @@ mod unix {
     }
 
     #[test]
+    fn a_guarded_import_with_a_missing_static_dependency_packs() {
+        let directory = TempDir::new("guarded-missing-dependency");
+        fs::write(
+            directory.path().join("package.json"),
+            r#"{ "name": "optional-feature", "type": "module" }"#,
+        )
+        .expect("write package manifest");
+        let entry = directory.path().join("main.mjs");
+        fs::write(
+            &entry,
+            "try {\n  await import('./feature.mjs');\n} catch (error) {\n  if (error.code !== 'ERR_MODULE_NOT_FOUND') throw error;\n  console.log('optional feature unavailable');\n}\n",
+        )
+        .expect("write entry importing an optional feature");
+        fs::write(
+            directory.path().join("feature.mjs"),
+            "import 'optional-package-not-installed';\n",
+        )
+        .expect("write feature with a missing static dependency");
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let output = directory.path().join("packed-app");
+
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            directory.path(),
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+            ],
+        );
+        assert!(
+            result.status.success(),
+            "pack failed:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            error.contains("optional dependency `optional-package-not-installed` is missing"),
+            "{error}"
+        );
+
+        let pack = thinpack_pack::read_from_executable(&output)
+            .expect("read packed executable")
+            .expect("packed payload");
+        assert!(
+            pack.manifest
+                .files
+                .iter()
+                .any(|file| file.path == "/app/feature.mjs"),
+            "left out the handled feature: {:?}",
+            pack.manifest.files
+        );
+        assert!(
+            !pack
+                .manifest
+                .files
+                .iter()
+                .any(|file| file.path.contains("optional-package-not-installed")),
+            "packed the missing package"
+        );
+    }
+
+    #[test]
     fn a_dirname_relative_asset_is_packed() {
         let directory = TempDir::new("static-asset");
         let entry = directory.path().join("main.js");
@@ -866,6 +1030,85 @@ mod unix {
                 .any(|file| file.path.contains("external")),
             "outside module was packed"
         );
+    }
+
+    #[test]
+    fn a_scanned_root_or_unrelated_readdir_is_left_out() {
+        let directory = TempDir::new("scanned-bounded");
+        let project = directory.path().join("project");
+        for path in ["plugins", "lookalike", "vendor", "node_modules/dep"] {
+            fs::create_dir_all(project.join(path)).expect("create fixture directory");
+        }
+        fs::write(project.join("package.json"), r#"{ "name": "app" }"#)
+            .expect("write project manifest");
+        let entry = project.join("main.cjs");
+        fs::write(
+            &entry,
+            "const fs = require('node:fs');\n\
+             const scanner = { readdirSync: () => [] };\n\
+             scanner.readdirSync(__dirname + '/lookalike');\n\
+             fs.readdirSync(__dirname);\n\
+             fs.readdirSync(__dirname + '/node_modules');\n\
+             fs.readdirSync(__dirname + '/vendor');\n\
+             console.log(fs.readdirSync(__dirname + '/plugins'));\n",
+        )
+        .expect("write entry scanning several directories");
+        for (path, source) in [
+            ("plugins/plugin.cjs", "module.exports = 42;\n"),
+            ("root-only.cjs", "module.exports = 'root';\n"),
+            ("lookalike/lookalike.cjs", "module.exports = 'lookalike';\n"),
+            ("vendor/package.json", r#"{ "name": "vendor" }"#),
+            ("vendor/extra.cjs", "module.exports = 'vendor';\n"),
+            ("node_modules/dep/index.js", "module.exports = 'dep';\n"),
+        ] {
+            fs::write(project.join(path), source).expect("write fixture file");
+        }
+
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let output = directory.path().join("packed-app");
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            &project,
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+            ],
+        );
+        assert!(
+            result.status.success(),
+            "pack failed:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            stderr.contains("is the project root, a package root, node_modules, or a symlink"),
+            "{stderr}"
+        );
+
+        let pack = thinpack_pack::read_from_executable(&output)
+            .expect("read packed executable")
+            .expect("packed payload");
+        let paths: Vec<&str> = pack
+            .manifest
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect();
+        assert!(paths.contains(&"/app/plugins/plugin.cjs"), "{paths:?}");
+        for path in [
+            "/app/root-only.cjs",
+            "/app/lookalike/lookalike.cjs",
+            "/app/vendor/extra.cjs",
+            "/app/node_modules/dep/index.js",
+        ] {
+            assert!(!paths.contains(&path), "{path} was packed: {paths:?}");
+        }
     }
 
     #[test]

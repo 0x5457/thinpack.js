@@ -383,8 +383,8 @@ fn resolve_package(
 }
 
 fn find_package(name: &str, base: &Path, fs: &impl FileSystem) -> Option<PathBuf> {
-    base.ancestors().find_map(|directory| {
-        let candidate = directory.join("node_modules").join(name);
+    node_module_paths(base).into_iter().find_map(|directory| {
+        let candidate = directory.join(name);
         fs.is_dir(&candidate).then_some(candidate)
     })
 }
@@ -555,6 +555,24 @@ fn append_extension(path: &Path, extension: &str) -> PathBuf {
     name.push(".");
     name.push(extension);
     PathBuf::from(name)
+}
+
+/// Returns the `node_modules` lookup directories, nearest first.
+///
+/// A directory already named `node_modules` does not gain a nested entry,
+/// matching Node's `Module._nodeModulePaths`.
+#[must_use]
+pub fn node_module_paths(from: &Path) -> Vec<PathBuf> {
+    let from = normalize(from);
+    from.ancestors()
+        .filter(|directory| !directory.as_os_str().is_empty())
+        .filter(|directory| {
+            directory
+                .file_name()
+                .is_none_or(|name| name != "node_modules")
+        })
+        .map(|directory| directory.join("node_modules"))
+        .collect()
 }
 
 /// Lexically removes `.` components and resolves `..`, the same semantics the
@@ -962,6 +980,26 @@ mod tests {
         assert_eq!(
             format_of(Path::new("/app/legacy/main.ts"), &fs),
             Ok(Format::CommonJs)
+        );
+    }
+
+    #[test]
+    fn node_module_paths_follow_node_search_order() {
+        assert_eq!(
+            node_module_paths(Path::new("/app/src")),
+            vec![
+                PathBuf::from("/app/src/node_modules"),
+                PathBuf::from("/app/node_modules"),
+                PathBuf::from("/node_modules"),
+            ]
+        );
+        assert_eq!(
+            node_module_paths(Path::new("/app/node_modules/pkg")),
+            vec![
+                PathBuf::from("/app/node_modules/pkg/node_modules"),
+                PathBuf::from("/app/node_modules"),
+                PathBuf::from("/node_modules"),
+            ]
         );
     }
 

@@ -8,53 +8,53 @@ profile = "small"
 [apps.eslint]
 package = "eslint"
 version = "10.15.0"
-bytes = 7929297
-gzip_bytes = 4096138
-payload_bytes = 752377
-files = 621
+bytes = 8079402
+gzip_bytes = 4172014
+payload_bytes = 750658
+files = 609
 capabilities = 19
 
 [apps.js-yaml]
 package = "js-yaml"
 version = "5.5.0"
-bytes = 6068130
-gzip_bytes = 2808102
-payload_bytes = 56042
+bytes = 6143962
+gzip_bytes = 2847723
+payload_bytes = 56050
 files = 10
 capabilities = 14
 
 [apps.pi]
 package = "@earendil-works/pi-coding-agent"
 version = "1.5.0"
-bytes = 13819933
-gzip_bytes = 7960926
-payload_bytes = 2694405
-files = 2377
-capabilities = 34
+bytes = 14043782
+gzip_bytes = 8077160
+payload_bytes = 2676766
+files = 2304
+capabilities = 35
 
 [apps.prettier]
 package = "prettier"
 version = "3.10.1"
-bytes = 8388275
-gzip_bytes = 4630221
-payload_bytes = 1289595
+bytes = 8541163
+gzip_bytes = 4705591
+payload_bytes = 1289603
 files = 21
 capabilities = 20
 
 [apps.terser]
 package = "terser"
 version = "5.51.2"
-bytes = 6350198
-gzip_bytes = 3045668
-payload_bytes = 261694
+bytes = 6428622
+gzip_bytes = 3085174
+payload_bytes = 261702
 files = 37
 capabilities = 14
 
 [apps.tsc]
 package = "typescript"
 version = "5.9.3"
-bytes = 8153356
-gzip_bytes = 4400134
-payload_bytes = 1091892
+bytes = 8306532
+gzip_bytes = 4475852
+payload_bytes = 1091900
 files = 107
 capabilities = 18
