@@ -41,6 +41,14 @@ pub(crate) fn connection_error(connection: &Connection) -> JsErrorBox {
     sqlite_error(errcode, &message)
 }
 
+pub(crate) fn check(rc: c_int, connection: &Connection) -> Result<(), JsErrorBox> {
+    if rc == ffi::SQLITE_OK {
+        Ok(())
+    } else {
+        Err(connection_error(connection))
+    }
+}
+
 pub(crate) fn rusqlite_error(cause: rusqlite::Error) -> JsErrorBox {
     match cause {
         rusqlite::Error::SqliteFailure(code, message) => sqlite_error(

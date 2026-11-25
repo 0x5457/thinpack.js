@@ -156,7 +156,9 @@ Not ported yet: `assert`, `async_hooks`, `child_process`, `constants`,
 `inspector`, `module`, `net`, `perf_hooks`, `process`, `readline`, `sea`,
 `sqlite`, `stream`, `tls`, `v8`, `vm`, `worker_threads`, and `zlib`. The
 hand-written async_hooks check in `crates/node/async-hooks/tests/` predates
-this suite and stays there until the upstream files are ported.
+this suite and stays there until the upstream files are ported. `sqlite` has a
+single `test-thinpack-*` resource-lifecycle regression here; its upstream suite
+is not ported yet.
 
 ## Cluster notes
 

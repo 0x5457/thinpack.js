@@ -1369,6 +1369,9 @@ timeout_ms = 10000
 [tests."parallel/test-thinpack-textdecoder-streaming-utf8.js"]
 module = "util"
 
+[tests."parallel/test-thinpack-sqlite-resource-lifecycle.mjs"]
+module = "sqlite"
+
 [tests."parallel/test-thinpack-cjs-reexport-alias-cycle.mjs"]
 module = "module"
 timeout_ms = 5000
