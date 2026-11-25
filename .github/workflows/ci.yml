@@ -361,17 +361,18 @@ jobs:
         shell: bash
         run: |
           target/debug/thinpack pack examples/hello-pipe.js -o hello-pipe.exe --template target/debug/thinpack-rt.exe
-          ./hello-pipe.exe > pipe.out || true
+          ./hello-pipe.exe > pipe.out
           cat pipe.out
-          grep -q "pipe ok" pipe.out
+          grep -qxF 'client end: "pipe ok"' pipe.out
 
       - name: Pack and run hello-cluster.exe
         shell: bash
         run: |
           target/debug/thinpack pack examples/hello-cluster.js -o hello-cluster.exe --template target/debug/thinpack-rt.exe
-          ./hello-cluster.exe > cluster.out || true
+          ./hello-cluster.exe > cluster.out
           cat cluster.out
-          grep -q "primary: worker online" cluster.out
+          grep -qxF "primary: worker online" cluster.out
+          grep -qxF "worker exit: code=0 signal=null" cluster.out
 
   windows-tests:
     name: Runtime tests (windows-latest)
