@@ -1,4 +1,4 @@
-//! Node's `merve` lexer for CommonJS named exports.
+//! Node's `merve` lexer for `CommonJS` named exports.
 //!
 //! Vendored from `deps/merve` at the Node tag this repository tracks (MIT). Node calls
 //! the same lexer from `src/node_cjs_lexer.cc`; using it keeps the export set identical
@@ -9,6 +9,7 @@ use std::ffi::c_void;
 use std::os::raw::c_char;
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct MerveString {
     data: *const c_char,
     length: usize,
@@ -20,6 +21,8 @@ struct MerveErrorLoc {
     column: u32,
 }
 
+// SAFETY: these are the C functions exported by the vendored `merve.cpp`; the
+// signatures mirror `merve_c.h`.
 unsafe extern "C" {
     fn merve_parse_commonjs(
         input: *const c_char,
@@ -34,7 +37,7 @@ unsafe extern "C" {
     fn merve_get_reexport_name(result: *mut c_void, index: usize) -> MerveString;
 }
 
-/// The named exports and re-export specifiers a CommonJS source exposes.
+/// The named exports and re-export specifiers a `CommonJS` source exposes.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Analysis {
     pub exports: BTreeSet<String>,
@@ -52,24 +55,31 @@ pub fn analyze(source: &str) -> Analysis {
     // and the returned handle is freed before this function returns.
     let handle =
         unsafe { merve_parse_commonjs(source.as_ptr().cast(), source.len(), &raw mut error) };
+    // SAFETY: `handle` is either null or a live result owned by this function.
     if handle.is_null() || !unsafe { merve_is_valid(handle) } {
+        // SAFETY: freeing a null handle is a no-op; a live invalid result is owned here.
         unsafe { merve_free(handle) };
         return Analysis::default();
     }
 
     let mut analysis = Analysis::default();
+    // SAFETY: `handle` is a valid analysis result.
     let exports = unsafe { merve_get_exports_count(handle) };
     for index in 0..exports {
+        // SAFETY: `index` is below the count just read, and the handle stays live.
         if let Some(name) = unsafe { string_at(merve_get_export_name(handle, index)) } {
             analysis.exports.insert(name);
         }
     }
+    // SAFETY: `handle` is a valid analysis result.
     let reexports = unsafe { merve_get_reexports_count(handle) };
     for index in 0..reexports {
+        // SAFETY: `index` is below the count just read, and the handle stays live.
         if let Some(name) = unsafe { string_at(merve_get_reexport_name(handle, index)) } {
             analysis.reexports.push(name);
         }
     }
+    // SAFETY: the handle was created by `merve_parse_commonjs` and is freed once here.
     unsafe { merve_free(handle) };
     analysis
 }
@@ -81,6 +91,8 @@ unsafe fn string_at(value: MerveString) -> Option<String> {
     if value.data.is_null() {
         return None;
     }
+    // SAFETY: the caller guarantees a live handle, whose strings stay valid until it is
+    // freed; `length` is the byte length of that string.
     let bytes = unsafe { std::slice::from_raw_parts(value.data.cast::<u8>(), value.length) };
     std::str::from_utf8(bytes).ok().map(str::to_owned)
 }

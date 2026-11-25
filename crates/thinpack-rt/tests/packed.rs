@@ -949,6 +949,7 @@ console.log('module.parent ok');
             "/app/main.mjs",
             "import { env, pid } from 'node:process';\nif (env !== process.env) throw new Error('env mismatch');\nif (pid !== process.pid) throw new Error('pid mismatch');\nconsole.log('process exports ok');\n",
         )],
+        capabilities: &[],
         error: None,
     },
     PackedTest {
