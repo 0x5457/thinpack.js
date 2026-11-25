@@ -169,8 +169,9 @@ for adding a module.
   remains different.
 - No N-API or native addon loading; code that needs native code goes through `node:ffi`.
 - `crypto` key material covers RSA/RSA-PSS, EC (P-256/P-384/P-521/secp256k1), Ed25519 and
-  X25519. DSA, DH, Ed448 and X448 keys are rejected; encrypted PKCS#1/SEC1 PEM is not
-  supported (PKCS#8 encryption is).
+  X25519, plus secret keys from `createSecretKey` for HMAC, ciphers and HKDF. DSA, DH,
+  Ed448 and X448 keys are rejected; encrypted PKCS#1/SEC1 PEM is not supported (PKCS#8
+  encryption is).
 - WebAssembly is always available and cannot be trimmed (WAMR on QuickJS, about 217 KB).
 - The analyzer does not run ESM loader hooks. It determines formats from the file extension,
   package scope and syntax on disk. A hook cannot make a module analyzable or add it to the

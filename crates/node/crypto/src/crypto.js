@@ -7,10 +7,12 @@
     KeyObject,
     createPrivateKey,
     createPublicKey,
+    createSecretKey,
     diffieHellman,
     generateKeyPair,
     generateKeyPairSync,
     keyDer,
+    prepareSecretKey,
   } = require("node:thinpack/internal/crypto/keypair");
 
   const notImplemented = (name) => new codes.ERR_NOT_IMPLEMENTED(`crypto.${name}`);
@@ -228,7 +230,7 @@
 
     constructor(algorithm, key) {
       this.#algorithm = String(algorithm);
-      this.#key = Buffer.from(key);
+      this.#key = prepareSecretKey(key);
     }
 
     update(data, inputEncoding) {
@@ -344,7 +346,7 @@
     constructor(algorithm, key, iv, options = {}) {
       super();
       this.#spec = cipherSpec(algorithm);
-      this.#key = decode(key);
+      this.#key = prepareSecretKey(key);
       this.#iv = decode(iv);
       checkCipherParams(this.#spec, this.#key, this.#iv);
       if (options?.authTagLength !== undefined && options.authTagLength !== 16) {
@@ -419,7 +421,7 @@
     constructor(algorithm, key, iv, options = {}) {
       super();
       this.#spec = cipherSpec(algorithm);
-      this.#key = decode(key);
+      this.#key = prepareSecretKey(key);
       this.#iv = decode(iv);
       checkCipherParams(this.#spec, this.#key, this.#iv);
       if (options?.authTagLength !== undefined && options.authTagLength !== 16) {
@@ -706,7 +708,7 @@
   const hkdfSync = (digest, ikm, salt, info, keylen) => {
     const bytes = Deno.core.ops.op_crypto_hkdf(
       String(digest),
-      decode(ikm),
+      prepareSecretKey(ikm),
       decode(salt),
       decode(info),
       keylen,
@@ -716,7 +718,7 @@
 
   const hkdf = (digest, ikm, salt, info, keylen, callback) => {
     kdfAsync(() => Deno.core.ops.op_crypto_hkdf_async(
-      String(digest), decode(ikm), decode(salt), decode(info), keylen,
+      String(digest), prepareSecretKey(ikm), decode(salt), decode(info), keylen,
     ), callback);
   };
 
@@ -822,6 +824,7 @@
     X509Certificate,
     createPrivateKey,
     createPublicKey,
+    createSecretKey,
     diffieHellman,
     generateKeyPair,
     generateKeyPairSync,
