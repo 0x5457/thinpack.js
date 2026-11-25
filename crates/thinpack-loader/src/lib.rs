@@ -4,11 +4,14 @@ mod error;
 
 mod esm;
 
+#[cfg(feature = "esm-hooks")]
+mod hook;
+
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use deno_core::{Extension, ExtensionFileSource, ModuleLoader};
+use deno_core::{Extension, ExtensionFileSource};
 use thinpack_core::{BuiltinSources, file_url};
 use thinpack_resolve::{FileSystem, HostFs};
 use thinpack_vfs::Vfs;
@@ -16,6 +19,8 @@ use thinpack_vfs::Vfs;
 use crate::ops::OPS;
 
 pub use crate::esm::{EsmLoader, is_esm};
+#[cfg(feature = "esm-hooks")]
+pub use crate::hook::{HookRuntimeFactory, HookRuntimeParts};
 
 fn missing_builtin_message(specifier: &str) -> String {
     let message = format!("No such built-in module: {specifier}");
@@ -156,16 +161,28 @@ fn strip_hashbang(source: &str) -> Cow<'_, str> {
 }
 
 #[must_use]
-pub fn esm_loader(fs: ModuleFs, builtins: BuiltinSources) -> Rc<dyn ModuleLoader> {
+pub fn esm_loader(fs: ModuleFs, builtins: BuiltinSources) -> Rc<EsmLoader> {
     Rc::new(EsmLoader::new(fs, builtins))
+}
+
+/// The main loader, with a factory for the isolate that runs `module.register` hooks.
+#[cfg(feature = "esm-hooks")]
+#[must_use]
+pub fn esm_loader_with_hooks(
+    fs: ModuleFs,
+    builtins: BuiltinSources,
+    hooks: HookRuntimeFactory,
+) -> Rc<EsmLoader> {
+    Rc::new(EsmLoader::with_hooks(fs, builtins, hooks))
 }
 
 #[must_use]
 pub fn init(main: Main, fs: ModuleFs) -> Extension {
-    const JS: &[ExtensionFileSource] = &[ExtensionFileSource::new_compressed(
-        "thinpack:loader",
-        thinpack_js::js!("module.js"),
-    )];
+    const JS: &[ExtensionFileSource] = &[
+        ExtensionFileSource::new_compressed("thinpack:loader", thinpack_js::js!("module.js")),
+        #[cfg(feature = "esm-hooks")]
+        ExtensionFileSource::new_compressed("thinpack:loader-hooks", thinpack_js::js!("hooks.js")),
+    ];
 
     Extension {
         name: "thinpack_loader",

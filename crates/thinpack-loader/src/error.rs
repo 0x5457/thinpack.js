@@ -50,3 +50,71 @@ impl JsErrorClass for LoaderError {
         self
     }
 }
+
+/// A failure raised by an ESM loader hook, in the fields a rebuilt `Error` needs.
+///
+/// The hook runs in another isolate, so the error crosses the loader bridge as data
+/// instead of a live `v8` exception. Node hands a hook's failure to the app as it was
+/// thrown, so keep the class, message, `code` and stack.
+#[derive(Clone, Debug)]
+pub(crate) struct HookError {
+    pub(crate) class: String,
+    pub(crate) message: String,
+    pub(crate) code: Option<String>,
+    pub(crate) stack: Option<String>,
+}
+
+impl HookError {
+    pub(crate) fn new(class: &str, message: impl Into<String>) -> Self {
+        Self {
+            class: class.to_owned(),
+            message: message.into(),
+            code: None,
+            stack: None,
+        }
+    }
+
+    /// Encodes the failure for the JS side of the bridge, which rebuilds the error
+    /// with the class, message, `code` and stack the hook threw.
+    #[cfg(feature = "esm-hooks")]
+    pub(crate) fn encode(&self) -> String {
+        format!(
+            "err\0{}\0{}\0{}\0{}",
+            self.class,
+            self.message,
+            self.code.as_deref().unwrap_or_default(),
+            self.stack.as_deref().unwrap_or_default(),
+        )
+    }
+}
+
+impl fmt::Display for HookError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for HookError {}
+
+impl JsErrorClass for HookError {
+    fn get_class(&self) -> Cow<'static, str> {
+        Cow::Owned(self.class.clone())
+    }
+
+    fn get_message(&self) -> Cow<'static, str> {
+        Cow::Owned(self.message.clone())
+    }
+
+    fn get_additional_properties(&self) -> AdditionalProperties {
+        let code = self.code.clone().map(|code| ("code".into(), code.into()));
+        let stack = self
+            .stack
+            .clone()
+            .map(|stack| ("stack".into(), stack.into()));
+        Box::new(code.into_iter().chain(stack))
+    }
+
+    fn get_ref(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+        self
+    }
+}

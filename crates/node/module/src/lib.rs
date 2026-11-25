@@ -2,6 +2,9 @@ use std::borrow::Cow;
 
 use deno_core::{Extension, ExtensionFileSource};
 
+// Feature input: module.js exposes the loader hook bridge.
+use thinpack_loader as _;
+
 #[must_use]
 pub fn init() -> Extension {
     const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new_compressed(

@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::{self, Write as _};
@@ -9,13 +8,15 @@ use deno_core::{
     ModuleSourceCode, ModuleSpecifier, ModuleType, ResolutionKind,
 };
 
-use deno_error::{AdditionalProperties, JsErrorBox, JsErrorClass};
+use deno_error::JsErrorBox;
 use thinpack_core::js_string_literal;
 use thinpack_core::{BuiltinSources, file_url, path_from_url};
 use thinpack_resolve::{FileSystem, Format};
 
 use crate::ModuleFs;
-use crate::error::LoaderError;
+use crate::error::{HookError, LoaderError};
+#[cfg(feature = "esm-hooks")]
+use crate::hook::{HookHost, HookRuntimeFactory};
 
 #[derive(Debug)]
 struct HookLoad {
@@ -23,7 +24,6 @@ struct HookLoad {
     source: String,
 }
 
-#[derive(Debug)]
 pub struct EsmLoader {
     fs: ModuleFs,
     builtins: BuiltinSources,
@@ -32,7 +32,20 @@ pub struct EsmLoader {
     /// `ObjectKeys(module.exports)` and builds the facade once per module.
     builtin_exports: RefCell<HashMap<String, BTreeSet<String>>>,
     hook_loads: RefCell<HashMap<String, HookLoad>>,
+    #[cfg(feature = "esm-hooks")]
+    hook_attributes: RefCell<HashMap<String, String>>,
+    #[cfg(feature = "esm-hooks")]
+    hook_factory: RefCell<Option<HookRuntimeFactory>>,
+    #[cfg(feature = "esm-hooks")]
+    hook_host: RefCell<Option<HookHost>>,
     in_hook: Cell<bool>,
+    in_require: Cell<bool>,
+}
+
+impl fmt::Debug for EsmLoader {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_struct("EsmLoader").finish_non_exhaustive()
+    }
 }
 
 impl EsmLoader {
@@ -43,8 +56,103 @@ impl EsmLoader {
             builtins,
             builtin_exports: RefCell::new(HashMap::new()),
             hook_loads: RefCell::new(HashMap::new()),
+            #[cfg(feature = "esm-hooks")]
+            hook_attributes: RefCell::new(HashMap::new()),
+            #[cfg(feature = "esm-hooks")]
+            hook_factory: RefCell::new(None),
+            #[cfg(feature = "esm-hooks")]
+            hook_host: RefCell::new(None),
             in_hook: Cell::new(false),
+            in_require: Cell::new(false),
         }
+    }
+
+    #[cfg(feature = "esm-hooks")]
+    #[must_use]
+    pub fn with_hooks(fs: ModuleFs, builtins: BuiltinSources, hooks: HookRuntimeFactory) -> Self {
+        let loader = Self::new(fs, builtins);
+        *loader.hook_factory.borrow_mut() = Some(hooks);
+        loader
+    }
+
+    /// Whether `module.register` hooks are installed and applicable to this load.
+    /// `require(esm)` is synchronous in Node and bypasses the asynchronous hooks.
+    #[cfg(feature = "esm-hooks")]
+    pub(crate) fn async_active(&self) -> bool {
+        !self.in_require.get()
+            && self
+                .hook_host
+                .borrow()
+                .as_ref()
+                .is_some_and(HookHost::active)
+    }
+
+    #[cfg(not(feature = "esm-hooks"))]
+    pub(crate) const fn async_active(&self) -> bool {
+        false
+    }
+
+    pub(crate) fn enter_require(&self) {
+        self.in_require.set(true);
+    }
+
+    pub(crate) fn leave_require(&self) {
+        self.in_require.set(false);
+    }
+
+    #[cfg(feature = "esm-hooks")]
+    pub(crate) fn register(&self, url: &str, data: Vec<u8>) -> Result<(), HookError> {
+        let mut host = self.hook_host.borrow_mut();
+        if host.is_none() {
+            let factory = self.hook_factory.borrow_mut().take().ok_or_else(|| {
+                HookError::new("Error", "module.register is unavailable in this loader")
+            })?;
+            *host = Some(HookHost::start(factory)?);
+        }
+        let Some(host) = host.as_mut() else {
+            return Err(HookError::new(
+                "Error",
+                "the ESM loader hook host was not started",
+            ));
+        };
+        host.register(url, data)
+    }
+
+    #[cfg(feature = "esm-hooks")]
+    pub(crate) fn async_resolve(
+        &self,
+        specifier: &str,
+        parent: &str,
+        attributes: &str,
+        conditions: &str,
+    ) -> Result<String, HookError> {
+        self.hook_host
+            .borrow()
+            .as_ref()
+            .ok_or_else(|| HookError::new("Error", "the ESM loader hook host is not running"))?
+            .resolve(specifier, parent, attributes, conditions)
+    }
+
+    #[cfg(feature = "esm-hooks")]
+    pub(crate) fn async_load(
+        &self,
+        url: &str,
+        format: &str,
+        attributes: &str,
+        conditions: &str,
+    ) -> Result<(String, String), HookError> {
+        self.hook_host
+            .borrow()
+            .as_ref()
+            .ok_or_else(|| HookError::new("Error", "the ESM loader hook host is not running"))?
+            .load(url, format, attributes, conditions)
+    }
+
+    #[cfg(feature = "esm-hooks")]
+    fn hook_conditions(&self) -> String {
+        let mut conditions = vec!["node".to_owned(), "import".to_owned()];
+        conditions.extend(self.fs.custom_conditions().iter().cloned());
+        conditions.join("\0")
     }
 }
 
@@ -102,6 +210,12 @@ impl ModuleLoader for EsmLoader {
         // A template that omits a builtin must fail the import with the loader's own
         // `ERR_UNKNOWN_BUILTIN_MODULE`, so only a builtin this runtime carries is asked for
         // its exports.
+        #[cfg(feature = "esm-hooks")]
+        if self.hook_host.borrow().is_some() {
+            self.hook_attributes
+                .borrow_mut()
+                .insert(specifier.as_str().to_owned(), attributes.clone());
+        }
         let builtin = specifier.as_str();
         if specifier.scheme() == "node"
             && self.builtins.get(builtin).is_some()
@@ -138,6 +252,30 @@ impl ModuleLoader for EsmLoader {
                 hook_load,
                 names.as_ref(),
             ));
+        }
+        #[cfg(feature = "esm-hooks")]
+        if self.async_active() {
+            let attributes = self
+                .hook_attributes
+                .borrow_mut()
+                .remove(module_specifier.as_str())
+                .unwrap_or_default();
+            let conditions = self.hook_conditions();
+            let format = default_format(&self.fs, &self.builtins, module_specifier).unwrap_or("");
+            let result = self
+                .async_load(module_specifier.as_str(), format, &attributes, &conditions)
+                .map_err(JsErrorBox::from_err)
+                .and_then(|(format, source)| {
+                    module_from_format(
+                        &self.fs,
+                        &self.builtins,
+                        module_specifier,
+                        &format,
+                        source,
+                        names.as_ref(),
+                    )
+                });
+            return ModuleLoadResponse::Sync(result);
         }
         let referrer = maybe_referrer.map(|referrer| &referrer.specifier);
         let result = default_source(&self.fs, &self.builtins, module_specifier, referrer).and_then(
@@ -227,7 +365,7 @@ fn call_global(
     let result = bridge.call(scope, receiver.into(), &argv[..arguments.len()]);
     if scope.has_caught() {
         let exception = scope.exception().unwrap();
-        return Err(JsErrorBox::from_err(HookError::read(scope, exception)));
+        return Err(JsErrorBox::from_err(read_hook_error(scope, exception)));
     }
     let Some(result) = result else {
         return Err(JsErrorBox::generic(failed));
@@ -235,77 +373,31 @@ fn call_global(
     Ok(result.to_rust_string_lossy(scope))
 }
 
-/// A JavaScript error raised by an ESM loader hook, rebuilt on this side of the
+/// Rebuilds a JavaScript error raised by an ESM loader hook on this side of the
 /// bridge. The bridge returns a string, so without this the engine would report a
 /// flattened message under a class and code of its own; Node hands a hook's failure
 /// to the app as it was thrown, so keep the class, message, `code` and stack.
-#[derive(Debug)]
-struct HookError {
-    class: String,
-    message: String,
-    code: Option<String>,
-    stack: Option<String>,
-}
-
-impl HookError {
-    fn read(
-        scope: &mut deno_core::v8::PinScope<'_, '_>,
-        exception: deno_core::v8::Local<'_, deno_core::v8::Value>,
-    ) -> Self {
-        use deno_core::v8;
-        let message = exception.to_rust_string_lossy(scope);
-        let Some(object) = exception.to_object(scope) else {
-            return Self {
-                class: "Error".to_owned(),
-                message,
-                code: None,
-                stack: None,
-            };
-        };
-        let read = |scope: &mut v8::PinScope<'_, '_>, name: &str| {
-            let key = v8::String::new(scope, name).unwrap();
-            object
-                .get(scope, key.into())
-                .filter(|value| value.is_string())
-                .map(|value| value.to_rust_string_lossy(scope))
-        };
-        Self {
-            class: read(scope, "name").unwrap_or_else(|| "Error".to_owned()),
-            message: read(scope, "message").unwrap_or(message),
-            code: read(scope, "code"),
-            stack: read(scope, "stack"),
-        }
-    }
-}
-
-impl fmt::Display for HookError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for HookError {}
-
-impl JsErrorClass for HookError {
-    fn get_class(&self) -> Cow<'static, str> {
-        Cow::Owned(self.class.clone())
-    }
-
-    fn get_message(&self) -> Cow<'static, str> {
-        Cow::Owned(self.message.clone())
-    }
-
-    fn get_additional_properties(&self) -> AdditionalProperties {
-        let code = self.code.clone().map(|code| ("code".into(), code.into()));
-        let stack = self
-            .stack
-            .clone()
-            .map(|stack| ("stack".into(), stack.into()));
-        Box::new(code.into_iter().chain(stack))
-    }
-
-    fn get_ref(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
-        self
+fn read_hook_error(
+    scope: &mut deno_core::v8::PinScope<'_, '_>,
+    exception: deno_core::v8::Local<'_, deno_core::v8::Value>,
+) -> HookError {
+    use deno_core::v8;
+    let message = exception.to_rust_string_lossy(scope);
+    let Some(object) = exception.to_object(scope) else {
+        return HookError::new("Error", message);
+    };
+    let read = |scope: &mut v8::PinScope<'_, '_>, name: &str| {
+        let key = v8::String::new(scope, name).unwrap();
+        object
+            .get(scope, key.into())
+            .filter(|value| value.is_string())
+            .map(|value| value.to_rust_string_lossy(scope))
+    };
+    HookError {
+        class: read(scope, "name").unwrap_or_else(|| "Error".to_owned()),
+        message: read(scope, "message").unwrap_or(message),
+        code: read(scope, "code"),
+        stack: read(scope, "stack"),
     }
 }
 
@@ -437,6 +529,28 @@ fn builtin_export_names(
     }
     names
 }
+/// The format a URL loads as, without reading its source. A load hook receives this in
+/// `context.format`, as Node determines the format before it calls the hook.
+pub(crate) fn default_format(
+    fs: &ModuleFs,
+    builtins: &BuiltinSources,
+    specifier: &ModuleSpecifier,
+) -> Option<&'static str> {
+    match specifier.scheme() {
+        "node" => builtins.get(specifier.as_str()).map(|_| "builtin"),
+        "file" => {
+            let path = path_from_url(specifier)?;
+            match thinpack_resolve::format_of(&path, fs) {
+                Ok(Format::Json) => Some("json"),
+                Ok(Format::Esm) => Some("module"),
+                Ok(Format::CommonJs) => Some("commonjs"),
+                Err(_) => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn default_source(
     fs: &ModuleFs,
     builtins: &BuiltinSources,
