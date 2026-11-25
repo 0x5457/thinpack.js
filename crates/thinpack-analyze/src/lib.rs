@@ -985,9 +985,14 @@ impl SpecifierCollector<'_, '_> {
         else {
             return false;
         };
-        let specifier = path
-            .to_string_lossy()
-            .replace(std::path::MAIN_SEPARATOR, "/");
+        // A drive-less virtual root (`/app`) renders with backslashes on Windows;
+        // keep the leading `/` the resolver's absolute-specifier check expects.
+        let specifier = if path.has_root() && !path.is_absolute() {
+            path.to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, "/")
+        } else {
+            path.to_string_lossy().into_owned()
+        };
         self.add(specifier, is_import, optional, resolve_only);
         true
     }
