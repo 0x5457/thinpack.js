@@ -69,9 +69,23 @@ impl FileSystem for ModuleFs {
             Self::Virtual(vfs) => vfs.format_override(path),
         }
     }
+
+    fn custom_conditions(&self) -> &[String] {
+        match self {
+            Self::Host => &[],
+            Self::Virtual(vfs) => vfs.custom_conditions(),
+        }
+    }
 }
 
 impl ModuleFs {
+    pub(crate) fn conditions(&self, import: bool) -> thinpack_resolve::Conditions {
+        thinpack_resolve::Conditions {
+            import,
+            custom: self.custom_conditions().to_vec(),
+        }
+    }
+
     /// Renders a resolved module path the way JS names it.
     ///
     /// Payload paths are POSIX paths rooted at `/app` on every platform, and JS

@@ -28,6 +28,7 @@ pub(crate) fn pack_command(args: Vec<String>) -> Result<(), Box<dyn Error>> {
         &template.info,
         &analyzed.analysis,
         &options.assets,
+        &options.conditions,
     )?;
     let output = options
         .output

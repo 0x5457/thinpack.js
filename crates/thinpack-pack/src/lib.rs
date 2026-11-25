@@ -7,7 +7,7 @@ use thinpack_resolve::Format;
 
 pub const MAGIC: u64 = u64::from_le_bytes(*b"THINPACK");
 
-pub const FORMAT_VERSION: u32 = 5;
+pub const FORMAT_VERSION: u32 = 6;
 
 /// Runtime API level used when selecting templates with the same package version.
 pub const TEMPLATE_API: &str = "1";
@@ -180,6 +180,8 @@ pub struct Template {
 pub struct Manifest {
     pub entry: String,
     pub capabilities: Vec<String>,
+    /// Custom package `exports`/`imports` conditions (`--conditions`).
+    pub conditions: Vec<String>,
     pub template: Template,
     pub files: Vec<FileRecord>,
     pub formats: Vec<FormatRecord>,
@@ -201,6 +203,10 @@ impl Manifest {
         bytes.extend_from_slice(&self.template.capabilities_hash.to_le_bytes());
         for capability in &self.capabilities {
             push_string(&mut bytes, capability)?;
+        }
+        push_count(&mut bytes, self.conditions.len(), "conditions")?;
+        for condition in &self.conditions {
+            push_string(&mut bytes, condition)?;
         }
         for file in &self.files {
             push_string(&mut bytes, &file.path)?;
@@ -245,6 +251,12 @@ impl Manifest {
             capabilities.push(reader.string()?);
         }
 
+        let condition_count = reader.u32()? as usize;
+        let mut conditions = Vec::with_capacity(condition_count);
+        for _ in 0..condition_count {
+            conditions.push(reader.string()?);
+        }
+
         let mut files = Vec::with_capacity(file_count);
         for _ in 0..file_count {
             files.push(FileRecord {
@@ -280,6 +292,7 @@ impl Manifest {
         Ok(Self {
             entry,
             capabilities,
+            conditions,
             template,
             files,
             formats,
@@ -548,6 +561,7 @@ mod tests {
         Manifest {
             entry: "/app/main.js".to_owned(),
             capabilities: vec!["console".to_owned(), "process".to_owned()],
+            conditions: Vec::new(),
             template: Template {
                 version: "0.1.0".to_owned(),
                 backend: Backend::QuickJs,

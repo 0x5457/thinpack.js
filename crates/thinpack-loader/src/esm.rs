@@ -220,22 +220,24 @@ pub(crate) fn resolve(
         })
         .transpose()?;
     let base = parent.as_deref().unwrap_or_else(|| Path::new("/"));
-    let resolved = thinpack_resolve::resolve_import(specifier, base, fs).map_err(|error| {
-        if let (thinpack_resolve::Error::NotFound, Some(parent_url)) = (&error, &parent_url)
-            && !specifier.starts_with('#')
-        {
-            let is_path = matches!(specifier, "." | "..")
-                || specifier.starts_with("./")
-                || specifier.starts_with("../")
-                || specifier.starts_with('/');
-            let url = is_path.then(|| parent_url.join(specifier).ok()).flatten();
-            return module_not_found(fs, specifier, url.as_ref(), Some(parent_url));
-        }
-        JsErrorBox::generic(format!(
-            "cannot resolve `{specifier}` from `{referrer}`: {}",
-            error.message(|path| fs.js_path(path))
-        ))
-    })?;
+    let resolved =
+        thinpack_resolve::resolve_with_conditions(specifier, base, fs, &fs.conditions(true))
+            .map_err(|error| {
+                if let (thinpack_resolve::Error::NotFound, Some(parent_url)) = (&error, &parent_url)
+                    && !specifier.starts_with('#')
+                {
+                    let is_path = matches!(specifier, "." | "..")
+                        || specifier.starts_with("./")
+                        || specifier.starts_with("../")
+                        || specifier.starts_with('/');
+                    let url = is_path.then(|| parent_url.join(specifier).ok()).flatten();
+                    return module_not_found(fs, specifier, url.as_ref(), Some(parent_url));
+                }
+                JsErrorBox::generic(format!(
+                    "cannot resolve `{specifier}` from `{referrer}`: {}",
+                    error.message(|path| fs.js_path(path))
+                ))
+            })?;
     file_url(&resolved.path).ok_or_else(|| {
         JsErrorBox::generic(format!(
             "{} cannot be represented as a URL",
@@ -279,7 +281,9 @@ fn collect_reexports(
     visited.insert(path.to_path_buf());
 
     for specifier in thinpack_cjs_lexer::analyze(source).reexports {
-        let Ok(resolved) = thinpack_resolve::resolve(&specifier, path, fs) else {
+        let Ok(resolved) =
+            thinpack_resolve::resolve_with_conditions(&specifier, path, fs, &fs.conditions(false))
+        else {
             continue;
         };
         if !visited.insert(resolved.path.clone()) {

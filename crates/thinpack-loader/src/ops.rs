@@ -48,7 +48,12 @@ fn op_require_resolve(
         )));
     }
     let fs = op_state.borrow::<ModuleFs>();
-    match thinpack_resolve::resolve(specifier, Path::new(parent), fs) {
+    match thinpack_resolve::resolve_with_conditions(
+        specifier,
+        Path::new(parent),
+        fs,
+        &fs.conditions(false),
+    ) {
         Ok(resolved) => Ok(fs.js_path(&resolved.path)),
         Err(error) => {
             let message = if matches!(error, thinpack_resolve::Error::NotFound) {
@@ -137,7 +142,12 @@ fn op_require(
         );
     }
 
-    match thinpack_resolve::resolve(specifier, Path::new(parent), fs) {
+    match thinpack_resolve::resolve_with_conditions(
+        specifier,
+        Path::new(parent),
+        fs,
+        &fs.conditions(false),
+    ) {
         Ok(resolved) => read(&resolved, fs),
         Err(error) => resolve_error(&error, fs),
     }

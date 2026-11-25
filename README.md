@@ -73,6 +73,7 @@ cargo build --release -p thinpack-rt -p thinpack-cli
 | `--include <path>` | pack extra files (`.d.ts`, templates, computed imports); paths are relative to the project root, and JavaScript is analyzed too |
 | `--with <module>` `--without <module>` | override the derived capability set. Both accept comma-separated lists or repeated flags. |
 | `--allow-missing <package>` | pack despite a missing package (it becomes a warning); use only for dependencies an inactive feature branch loads |
+| `--conditions <name>` | add custom `exports`/`imports` conditions, like Node's `--conditions`; the payload records them for runtime resolution |
 | `--strict` | a `require`/`import` that cannot be statically evaluated is an error; missing optional dependencies only warn |
 | `--list-capabilities` | print the derived capability set and exit |
 

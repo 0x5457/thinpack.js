@@ -17,7 +17,7 @@ use oxc_ast_visit::{VisitJs, walk_js};
 use oxc_parser::Parser;
 use oxc_semantic::{IsGlobalReference, Semantic, SemanticBuilder, SymbolId};
 use oxc_span::SourceType;
-use thinpack_resolve::{FileSystem, Format};
+use thinpack_resolve::{Conditions, FileSystem, Format};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Warning {
@@ -132,7 +132,7 @@ impl std::error::Error for Error {}
 /// for unresolvable non-optional specifiers and [`Error::UnknownBuiltin`] for
 /// `node:` builtins that thinpack does not ship.
 pub fn analyze(entry: &Path, fs: &impl FileSystem) -> Result<Analysis, Error> {
-    analyze_with(entry, fs, &BTreeSet::new())
+    analyze_with(entry, fs, &BTreeSet::new(), &[])
 }
 
 /// [`analyze`], with package names whose missing dependencies the caller has
@@ -145,6 +145,7 @@ pub fn analyze_with(
     entry: &Path,
     fs: &impl FileSystem,
     allow_missing: &BTreeSet<String>,
+    custom_conditions: &[String],
 ) -> Result<Analysis, Error> {
     let fs = ManifestRecorder::new(fs);
     // Required targets are queued in front of optional ones, so the entry's
@@ -196,11 +197,12 @@ pub fn analyze_with(
             if record_builtin(&specifier, optional, &path, &mut builtins, &mut warnings)? {
                 continue;
             }
-            let resolved = if is_import {
-                thinpack_resolve::resolve_import_path(&specifier, &path, &fs)
-            } else {
-                thinpack_resolve::resolve_path(&specifier, &path, &fs)
+            let conditions = Conditions {
+                import: is_import,
+                custom: custom_conditions.to_vec(),
             };
+            let resolved =
+                thinpack_resolve::resolve_path_with_conditions(&specifier, &path, &fs, &conditions);
             let resolved = match resolved {
                 Ok(resolved) => resolved,
                 Err(error) if optional => {

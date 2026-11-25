@@ -693,6 +693,7 @@ mod tests {
         let manifest = thinpack_pack::Manifest {
             entry: "/app/main.js".to_owned(),
             capabilities: vec!["assert".to_owned(), "fs".to_owned()],
+            conditions: Vec::new(),
             template: thinpack_pack::Template {
                 version: "1.0.0".to_owned(),
                 backend: thinpack_pack::Backend::QuickJs,
