@@ -14,7 +14,7 @@ In the [Linux x86-64 benchmark](#compared-with-other-single-file-approaches), Ty
 
 ## Quick start
 
-On macOS or Linux with glibc 2.39+, run this in a new directory:
+On macOS or Linux, run this in a new directory:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/0x5457/thinpack.js/main/scripts/install.sh | sh
@@ -37,10 +37,12 @@ On Windows x86-64, extract the matching release archive and run these commands i
 
 The installer fetches the [latest published release](https://github.com/0x5457/thinpack.js/releases/latest), not a build of `main`. Check the release assets for your OS, architecture, and backend. Archives can be checked against `SHA256SUMS`. Set `THINPACK_INSTALL_DIR` to change the install directory or `THINPACK_VERSION` to pin a published release.
 
+`thinpack-release.toml` lists every archive with its backend, target and, for the glibc builds, the oldest glibc it needs. `cargo xtask dist` measures that floor from the binaries, and the installer reads the file to choose an archive this host can run.
+
 QuickJS is the default. For releases that contain matching archives:
 
 - **Static Linux (QuickJS):** `THINPACK_STATIC=1` selects the musl archive for older Linux distributions. Its resolver reads `/etc/hosts` and `/etc/resolv.conf`; no NSS or mDNS.
-- **V8:** `THINPACK_BACKEND=v8` selects a `-v8-` archive. V8 on Linux requires glibc 2.39+.
+- **V8:** `THINPACK_BACKEND=v8` selects a `-v8-` archive. There is no static V8 build, so V8 on Linux needs a glibc host.
 - **JavaScriptCore:** `THINPACK_BACKEND=jsc` selects a `-jsc-` archive on macOS. It uses the system framework and has [module compatibility limits](#known-limits).
 
 The prebuilt runtime carries all built-ins. To reproduce the smaller `--rebuild` artifacts in the benchmark, use a matching source checkout and a build toolchain:
@@ -62,7 +64,8 @@ cargo build --release -p thinpack-rt -p thinpack-cli
 ```
 
 `cargo xtask dist` builds the release archive for the host and verifies it by packing and running
-`examples/hello.js` from the staged pair.
+`examples/hello.js` from the staged pair. It writes the archive's `thinpack-release.toml` fragment
+next to it; the release workflow concatenates the fragments into the manifest the installer reads.
 
 ## Commands
 

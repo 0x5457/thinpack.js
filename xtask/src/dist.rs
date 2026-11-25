@@ -9,6 +9,11 @@
 //! The archive is reproducible for the same build: sorted entries, fixed uid/gid/mtime, explicit
 //! modes. The binaries themselves are not portable across checkouts — `templates.rs` compiles its
 //! own source directory in as the `--rebuild` default — so "same input" includes the source path.
+//!
+//! Each archive gets a `thinpack-<stem>.release.toml` fragment with one `[[asset]]` table: the
+//! archive name, backend, target and, for a glibc Linux target, the oldest glibc the pair needs.
+//! The fragments are the release manifest once concatenated, and `scripts/install.sh` reads it
+//! instead of taking the archive layout and the glibc floor apart a second time.
 
 use std::env;
 use std::fs::{self, File};
@@ -17,6 +22,7 @@ use std::process::{Command, ExitCode};
 
 use flate2::Compression;
 use flate2::write::GzEncoder;
+use serde::Serialize;
 
 use crate::build;
 use crate::capabilities;
@@ -129,6 +135,7 @@ fn dist(config: &Config) -> Result<(), String> {
     // in the release matrix, not a reason to skip the check.
     verify(config, &stage, &table)?;
     let archive = archive(config, &stage)?;
+    let release = release_metadata(config, &stage, &archive)?;
 
     let bytes = fs::metadata(&archive)
         .map_err(|error| format!("{}: {error}", archive.display()))?
@@ -140,6 +147,7 @@ fn dist(config: &Config) -> Result<(), String> {
         bytes / 1_048_576,
         build::sha256_file(&archive)?
     );
+    println!("metadata {}", release.display());
     Ok(())
 }
 
@@ -319,6 +327,100 @@ fn archive(config: &Config, stage: &Path) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// One `[[asset]]` table, the unit the release job concatenates into the release manifest.
+#[derive(Serialize)]
+struct Release {
+    asset: [Asset; 1],
+}
+
+/// What the installer would otherwise have to re-derive: the archive's name and backend, the
+/// target it was built for, and the glibc floor only the builder can measure.
+#[derive(Serialize)]
+struct Asset {
+    archive: String,
+    backend: &'static str,
+    target: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    min_glibc: Option<String>,
+}
+
+fn release_metadata(config: &Config, stage: &Path, archive: &Path) -> Result<PathBuf, String> {
+    let name = archive
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("{}: the archive name is not UTF-8", archive.display()))?
+        .to_owned();
+    let min_glibc = if config.target.ends_with("-linux-gnu") {
+        Some(glibc_floor(config, stage)?)
+    } else {
+        None
+    };
+    let body = toml::to_string(&Release {
+        asset: [Asset {
+            archive: name,
+            backend: config.backend.name(),
+            target: config.target.clone(),
+            min_glibc,
+        }],
+    })
+    .map_err(|error| format!("cannot encode the release metadata: {error}"))?;
+
+    let path = config.out.join(format!("{}.release.toml", config.stem()));
+    fs::write(&path, body).map_err(|error| format!("{}: {error}", path.display()))?;
+    Ok(path)
+}
+
+/// The oldest glibc both staged binaries run on, read from the version requirements the linker
+/// recorded in them. The builder's own glibc is not the answer: a runner one release newer links
+/// most symbols against the versions it always did, and a floor that moved with the image is what
+/// let `install.sh` claim an archive ran where it did not.
+fn glibc_floor(config: &Config, stage: &Path) -> Result<String, String> {
+    let mut floor = (0, 0, 0);
+    for name in BINARIES {
+        let binary = stage.join(config.file_name(name, true));
+        let mut readelf = Command::new("readelf");
+        readelf.arg("--version-info").arg(&binary);
+        let dump = output(&mut readelf)
+            .map_err(|error| format!("cannot measure the glibc floor: {error}"))?;
+        let required = glibc_requirements(&dump).ok_or_else(|| {
+            format!(
+                "{}: readelf reports no GLIBC_ version requirement; the glibc floor is unknown",
+                binary.display()
+            )
+        })?;
+        floor = floor.max(required);
+    }
+    Ok(version_text(floor))
+}
+
+/// The highest `GLIBC_<major>.<minor>[.<patch>]` a `readelf --version-info` dump names. Every
+/// version a binary needs appears as `Name: GLIBC_2.34` in the version needs section, behind an
+/// offset column; `GLIBC_PRIVATE` and `GLIBCXX_*` do not parse as versions.
+fn glibc_requirements(dump: &str) -> Option<(u32, u32, u32)> {
+    dump.lines()
+        .filter_map(|line| line.split_once("Name: GLIBC_").map(|(_, rest)| rest))
+        .filter_map(|rest| rest.split_whitespace().next())
+        .filter_map(parse_version)
+        .max()
+}
+
+fn parse_version(text: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = text.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next().map_or(Some(0), |patch| patch.parse().ok())?;
+    parts.next().is_none().then_some((major, minor, patch))
+}
+
+/// `2.39` for a release, `2.2.5` for the components glibc still names that way.
+fn version_text((major, minor, patch): (u32, u32, u32)) -> String {
+    if patch == 0 {
+        format!("{major}.{minor}")
+    } else {
+        format!("{major}.{minor}.{patch}")
+    }
+}
+
 impl Config {
     /// The same name for the staging directory, archive stem and archive contents.
     fn stem(&self) -> String {
@@ -360,4 +462,55 @@ fn output(command: &mut Command) -> Result<String, String> {
         ));
     }
     String::from_utf8(output.stdout).map_err(|_| format!("{program}: output is not UTF-8"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{glibc_requirements, parse_version, version_text};
+
+    /// Abridged `readelf --version-info` output of a Rust binary: version symbols, then the
+    /// version needs section whose `Name:` lines carry the requirements.
+    const DUMP: &str = "\
+Version symbols section '.gnu.version' contains 3 entries:
+ Addr: 0x00000000000016fe  Offset: 0x000016fe  Link: 4 (.dynsym)
+  000:   0 (*local*)       2 (GLIBC_2.3)     3 (GLIBC_2.34)
+  004:   3 (GLIBC_2.34)    4 (GLIBCXX_3.4.30) 6 (GLIBC_2.38)
+
+Version needs section '.gnu.version_r' contains 3 entries:
+  0x0000: Version: 1  File: libgcc_s.so.1  Cnt: 1
+  0x0010:   Name: GCC_3.0  Flags: none  Version: 3
+  0x0020: Version: 1  File: libc.so.6  Cnt: 4
+  0x0030:   Name: GLIBC_2.3  Flags: none  Version: 2
+  0x0040:   Name: GLIBC_2.2.5  Flags: none  Version: 3
+  0x0050:   Name: GLIBC_2.34  Flags: none  Version: 5
+  0x0060:   Name: GLIBC_2.38  Flags: none  Version: 6
+  0x0070:   Name: GLIBC_PRIVATE  Flags: none  Version: 7
+";
+
+    #[test]
+    fn reads_the_highest_glibc_requirement() {
+        assert_eq!(glibc_requirements(DUMP), Some((2, 38, 0)));
+        assert_eq!(version_text((2, 38, 0)), "2.38");
+    }
+
+    #[test]
+    fn ignores_libstdcxx_and_unnumbered_versions() {
+        // `GLIBCXX_3.4.30` and `GLIBC_PRIVATE` are not libc floors.
+        assert_eq!(
+            glibc_requirements("   Name: GLIBC_PRIVATE  Flags: none"),
+            None
+        );
+        assert_eq!(
+            glibc_requirements("   Name: GLIBCXX_3.4.30  Flags: none"),
+            None
+        );
+    }
+
+    #[test]
+    fn compares_glibc_versions_by_component() {
+        assert_eq!(parse_version("2.2.5"), Some((2, 2, 5)));
+        assert!(parse_version("2.40").unwrap() > parse_version("2.9").unwrap());
+        assert_eq!(version_text((2, 2, 5)), "2.2.5");
+        assert_eq!(parse_version("2"), None);
+    }
 }

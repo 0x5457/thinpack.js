@@ -51,15 +51,14 @@ platform() {
     esac
 }
 
-# Linux ships two archives, in order of preference: the glibc build is the smaller one and comes
-# first when the host's libc can run it, and the static musl build follows so a host that cannot,
-# can. `THINPACK_STATIC=1` narrows that to the static build alone, with no glibc fallback: it is
-# what makes the artifacts you pack run on older distributions, at about 1 MiB per artifact.
+# Linux ships two archives: the smaller glibc build, and the static musl build that runs where
+# the host glibc is too old or is not glibc at all. `THINPACK_STATIC=1` narrows that to the
+# static build alone: it is what makes the artifacts you pack run on older distributions, at
+# about 1 MiB per artifact. Which archives a release has, and the glibc floor the glibc ones
+# need, is release data: `thinpack-release.toml` states it.
 backend=${THINPACK_BACKEND:-quickjs}
 case "${backend}" in
-    quickjs) suffix="" ;;
-    v8) suffix="-v8" ;;
-    jsc) suffix="-jsc" ;;
+    quickjs | v8 | jsc) ;;
     *) fail "unknown THINPACK_BACKEND '${backend}'; expected quickjs, v8 or jsc" ;;
 esac
 platform=$(platform)
@@ -69,34 +68,122 @@ if [ "${backend}" = jsc ]; then
         *) fail "the JSC pair uses the macOS system JavaScriptCore framework; it is available on macOS only" ;;
     esac
 fi
-case "${platform}" in
-    *-unknown-linux)
-        if [ "${backend}" = v8 ]; then
-            [ "${THINPACK_STATIC:-}" != 1 ] || fail "V8 release archives on Linux require glibc 2.39 or newer"
-            targets="${platform}-gnu"
-        elif [ "${THINPACK_STATIC:-}" = "1" ]; then
-            targets="${platform}-musl"
-        else
-            targets="${platform}-gnu ${platform}-musl"
-        fi
-        ;;
-    *) targets="${platform}" ;;
-esac
 
-# The glibc archive carries the runner's floor (Ubuntu 24.04 → 2.39). A host below it skips that
-# candidate instead of being told to go away, because the static archive is right there.
-runs_glibc() {
+# The host's glibc version, or nothing when it has none: Alpine's musl reports itself, and a
+# host without `ldd` reports nothing. A floor an archive needs is not this: it is release data.
+host_glibc() {
     [ "$(uname -s)" = Linux ] || return 0
-    banner=$(ldd --version 2>&1 | head -n 1)
+    banner=$(ldd --version 2>/dev/null | head -n 1)
     case "${banner}" in
-        *musl*) return 1 ;;
+        "" | *musl*) return 0 ;;
     esac
-    # A distinct name: a shell function has no scope, and `${version}` is the release above.
-    glibc=$(printf '%s\n' "${banner}" | sed -n 's/.*[^0-9]\([0-9][0-9]*\)\.\([0-9][0-9]*\)$/\1 \2/p')
+    printf '%s\n' "${banner}" | sed -n 's/.*[^0-9]\([0-9][0-9]*\)\.\([0-9][0-9]*\)$/\1.\2/p'
+}
+glibc=$(host_glibc)
+
+# The glibc archive is built on Ubuntu 24.04, so 2.39 is its floor. The manifest states the
+# measured floor; only a release published before it needs this constant.
+needs_glibc_2_39() {
     [ -n "${glibc}" ] || return 1
-    major=${glibc%% *}
-    minor=${glibc#* }
-    [ "${major}" -gt 2 ] || { [ "${major}" -eq 2 ] && [ "${minor}" -ge 39 ]; }
+    host_major=${glibc%%.*}
+    host_minor=${glibc#*.}
+    [ "${host_major}" -gt 2 ] || { [ "${host_major}" -eq 2 ] && [ "${host_minor}" -ge 39 ]; }
+}
+
+# Prints one record per archive: `asset <name>` for each archive to try, in the order to try
+# them, and `skip <name> <reason>` for an archive the release has but this host cannot run.
+select_assets() {
+    if [ -n "${manifest}" ]; then
+        printf '%s\n' "${manifest}" | awk -v backend="${backend}" -v platform="${platform}" \
+            -v glibc="${glibc}" -v static="${THINPACK_STATIC:-}" '
+            function value(line) {
+                sub(/^[^=]*=[[:space:]]*"/, "", line)
+                sub(/"[[:space:]]*$/, "", line)
+                return line
+            }
+            function at_least(have, need,   h, n, i) {
+                split(have, h, ".")
+                split(need, n, ".")
+                for (i = 1; i <= 3; i++) {
+                    h[i] += 0
+                    n[i] += 0
+                    if (h[i] != n[i]) return h[i] > n[i]
+                }
+                return 1
+            }
+            # The static build is the fallback, so runnable glibc archives come first. Every
+            # table is one archive: the keys are reset so a missing `min_glibc` cannot inherit
+            # the floor of the table above it.
+            function finish() {
+                if (archive == "") return
+                if (backend_name == backend &&
+                    (target == platform || index(target, platform "-") == 1)) {
+                    if (min_glibc == "") {
+                        if (static != "1") static_pair[++pairs] = archive
+                    } else if (static == "1") {
+                        skipped[++skips] = archive " THINPACK_STATIC=1 asks for the static build"
+                    } else if (glibc == "") {
+                        skipped[++skips] = archive " the host has no glibc, and it needs " min_glibc
+                    } else if (!at_least(glibc, min_glibc)) {
+                        skipped[++skips] = archive " the host glibc " glibc " is older than " min_glibc
+                    } else {
+                        ready[++readied] = archive
+                    }
+                }
+                archive = ""
+                backend_name = ""
+                target = ""
+                min_glibc = ""
+            }
+            /^\[\[asset\]\]/ { finish(); next }
+            /^archive[[:space:]]*=/ { archive = value($0); next }
+            /^backend[[:space:]]*=/ { backend_name = value($0); next }
+            /^target[[:space:]]*=/ { target = value($0); next }
+            /^min_glibc[[:space:]]*=/ { min_glibc = value($0); next }
+            END {
+                finish()
+                for (i = 1; i <= readied; i++) print "asset " ready[i]
+                for (i = 1; i <= pairs; i++) print "asset " static_pair[i]
+                for (i = 1; i <= skips; i++) print "skip " skipped[i]
+            }'
+        return
+    fi
+
+    # Releases published before the manifest existed: their archive names carry a backend
+    # suffix, and this script still knows their layout. Say which facts are being used, since
+    # the floor is a constant here rather than a measurement.
+    printf 'install: no thinpack-release.toml in this release; using the layout and glibc floor it implies\n' >&2
+    case "${backend}" in
+        quickjs) suffix="" ;;
+        v8) suffix="-v8" ;;
+        jsc) suffix="-jsc" ;;
+    esac
+    case "${platform}" in
+        *-unknown-linux)
+            if [ "${backend}" = v8 ]; then
+                [ "${THINPACK_STATIC:-}" != 1 ] ||
+                    fail "V8 release archives on Linux need glibc, and there is no static V8 build"
+                candidates="${platform}-gnu"
+            elif [ "${THINPACK_STATIC:-}" = "1" ]; then
+                candidates="${platform}-musl"
+            else
+                candidates="${platform}-gnu ${platform}-musl"
+            fi
+            ;;
+        *) candidates="${platform}" ;;
+    esac
+    for candidate in ${candidates}; do
+        archive="thinpack-${version}${suffix}-${candidate}.tar.gz"
+        case "${candidate}" in
+            *-gnu)
+                needs_glibc_2_39 || {
+                    printf 'skip %s the host glibc %s is older than 2.39\n' "${archive}" "${glibc:-none}"
+                    continue
+                }
+                ;;
+        esac
+        printf 'asset %s\n' "${archive}"
+    done
 }
 
 # The release tag behind `/releases/latest`, read from the redirect rather than the API: the
@@ -147,32 +234,40 @@ work=$(mktemp -d)
 trap 'rm -rf "${work}"' EXIT
 
 say "installing thinpack ${version}"
-tried=""
-for candidate in ${targets}; do
-    case "${candidate}" in
-        *-gnu) runs_glibc || continue ;;
-    esac
-    tried="${tried} ${candidate}"
-    # No `2>/dev/null`: the fetcher's own message is the difference between a network failure
-    # and a release that has no archive for this target.
-    if download "${base}/thinpack-${version}${suffix}-${candidate}.tar.gz" \
-        "${work}/thinpack-${version}${suffix}-${candidate}.tar.gz"; then
-        target="${candidate}"
-        break
-    fi
-done
-[ -n "${target:-}" ] ||
-    fail "no archive this host can run at ${base} (tried${tried:- nothing}); build from source"
-staging="thinpack-${version}${suffix}-${target}"
-asset="${staging}.tar.gz"
-say "downloaded ${asset}"
+# An older release has no manifest, and that is not a failure: `select_assets` describes its
+# layout itself.
+manifest=$(fetch "${base}/thinpack-release.toml" 2>/dev/null) || manifest=""
 
-expected=$(fetch "${base}/SHA256SUMS" | grep -F "  ${asset}" | cut -d' ' -f1)
-[ -n "${expected}" ] || fail "SHA256SUMS has no entry for ${asset}"
-actual=$(digest "${work}/${asset}")
+selection="${work}/assets"
+select_assets > "${selection}"
+tried=""
+skipped=""
+downloaded=""
+while read -r action name reason; do
+    case "${action}" in
+        asset)
+            tried="${tried} ${name}"
+            # No `2>/dev/null`: the fetcher's own message is the difference between a network
+            # failure and a release that has no archive for this target.
+            if download "${base}/${name}" "${work}/${name}"; then
+                downloaded="${name}"
+                break
+            fi
+            ;;
+        skip) skipped="${skipped} ${name} (${reason})" ;;
+    esac
+done < "${selection}"
+[ -n "${downloaded}" ] ||
+    fail "no archive this host can run in ${base} (backend ${backend}; tried${tried:- nothing}${skipped:+; skipped:${skipped}}); build from source"
+staging="${downloaded%.tar.gz}"
+say "downloaded ${downloaded}"
+
+expected=$(fetch "${base}/SHA256SUMS" | grep -F "  ${downloaded}" | cut -d' ' -f1)
+[ -n "${expected}" ] || fail "SHA256SUMS has no entry for ${downloaded}"
+actual=$(digest "${work}/${downloaded}")
 [ "${expected}" = "${actual}" ] || fail "checksum mismatch: expected ${expected}, got ${actual}"
 
-tar -xzf "${work}/${asset}" -C "${work}"
+tar -xzf "${work}/${downloaded}" -C "${work}"
 mkdir -p "${INSTALL_DIR}"
 INSTALL_DIR=$(cd "${INSTALL_DIR}" && pwd -P)
 for binary in thinpack thinpack-rt; do
