@@ -3,9 +3,11 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+use thinpack_resolve::Format;
+
 pub const MAGIC: u64 = u64::from_le_bytes(*b"THINPACK");
 
-pub const FORMAT_VERSION: u32 = 4;
+pub const FORMAT_VERSION: u32 = 5;
 
 /// Runtime API level used when selecting templates with the same package version.
 pub const TEMPLATE_API: &str = "1";
@@ -92,6 +94,14 @@ pub struct AssetRecord {
     pub length: u32,
 }
 
+/// A file whose module format packing detected instead of deriving it from its
+/// extension and package scope (a typeless `.js` written as an ES module).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FormatRecord {
+    pub path: String,
+    pub format: Format,
+}
+
 /// The template's JavaScript engine. One definition for the payload header, the
 /// CLI, xtask and the generated build wiring.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -172,6 +182,7 @@ pub struct Manifest {
     pub capabilities: Vec<String>,
     pub template: Template,
     pub files: Vec<FileRecord>,
+    pub formats: Vec<FormatRecord>,
     pub assets: Vec<AssetRecord>,
 }
 
@@ -195,6 +206,11 @@ impl Manifest {
             push_string(&mut bytes, &file.path)?;
             bytes.extend_from_slice(&file.offset.to_le_bytes());
             bytes.extend_from_slice(&file.length.to_le_bytes());
+        }
+        push_count(&mut bytes, self.formats.len(), "formats")?;
+        for format in &self.formats {
+            push_string(&mut bytes, &format.path)?;
+            push_string(&mut bytes, format.format.name())?;
         }
         push_count(&mut bytes, self.assets.len(), "assets")?;
         for asset in &self.assets {
@@ -238,6 +254,16 @@ impl Manifest {
             });
         }
 
+        let format_count = reader.u32()? as usize;
+        let mut formats = Vec::with_capacity(format_count);
+        for _ in 0..format_count {
+            let path = reader.string()?;
+            let name = reader.string()?;
+            let format = Format::parse(&name)
+                .ok_or_else(|| Error::Invalid(format!("unknown format `{name}`")))?;
+            formats.push(FormatRecord { path, format });
+        }
+
         let asset_count = reader.u32()? as usize;
         let mut assets = Vec::with_capacity(asset_count);
         for _ in 0..asset_count {
@@ -256,6 +282,7 @@ impl Manifest {
             capabilities,
             template,
             files,
+            formats,
             assets,
         })
     }
@@ -526,6 +553,7 @@ mod tests {
                 backend: Backend::QuickJs,
                 capabilities_hash: 42,
             },
+            formats: Vec::new(),
             files: vec![
                 FileRecord {
                     path: "/app/main.js".to_owned(),

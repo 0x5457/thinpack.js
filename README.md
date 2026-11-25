@@ -94,12 +94,14 @@ about 29% faster (pi: 983 ms → 702 ms); `V82JSC_NO_BC_CACHE=1` disables it, an
 ### Module format
 
 Entry and dependency formats follow Node.js: `.mjs` is an ES module, `.cjs` is CommonJS, and a
-`.js` file is CommonJS unless the nearest `package.json` declares `"type": "module"`. Packing
-parses each JavaScript file in the format the loader will use, so a file containing the syntax of
-the other format fails at pack time: the error names the file and both remedies — rename it to
-`.mjs` or add `"type": "module"` to that package, and the mirror case points at `.cjs` and at
-removing the declaration. `.cjs` and `.mjs` fix their format by extension and keep the parser's
-own diagnostic. The runtime keeps the same check for modules that reach it another way.
+`.js` file is CommonJS unless the nearest `package.json` declares `"type": "module"`. A `.js`
+file in a package without a `type` that contains ESM syntax is detected as an ES module at pack
+time, with a warning that names the file and suggests `"type": "module"`; the detected format is
+recorded in the payload so the loader agrees. If the package explicitly declares
+`"type": "commonjs"`, the file still fails at pack time: the error names the file and both
+remedies — rename it to `.mjs` or add `"type": "module"` — and the mirror case points at `.cjs`
+and at removing the declaration. `.cjs` and `.mjs` fix their format by extension and keep the
+parser's own diagnostic. The runtime keeps the same check for modules that reach it another way.
 
 ## Size
 

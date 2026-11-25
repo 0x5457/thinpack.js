@@ -4221,6 +4221,7 @@ name = "thinpack-pack"
 version = "0.2.0"
 dependencies = [
  "brotli-decompressor 6.3.2",
+ "thinpack-resolve",
 ]
 
 [[package]]

@@ -3,12 +3,13 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use thinpack_core::{VirtualEntry, VirtualFiles, VirtualStat};
-use thinpack_resolve::FileSystem;
+use thinpack_resolve::{FileSystem, Format};
 
 #[derive(Debug)]
 pub struct Vfs {
     files: BTreeMap<PathBuf, Vec<u8>>,
     directories: BTreeSet<PathBuf>,
+    formats: BTreeMap<PathBuf, Format>,
 }
 
 const ROOT: &str = "/app";
@@ -46,7 +47,23 @@ impl Vfs {
             files.insert(path, contents.to_vec());
         }
 
-        Ok(Self { files, directories })
+        let mut formats = BTreeMap::new();
+        for record in &pack.manifest.formats {
+            let path = PathBuf::from(&record.path);
+            if !path.starts_with(ROOT) || !files.contains_key(&path) {
+                return Err(thinpack_pack::Error::Invalid(format!(
+                    "{}: format override does not name a packed file",
+                    record.path
+                )));
+            }
+            formats.insert(path, record.format);
+        }
+
+        Ok(Self {
+            files,
+            directories,
+            formats,
+        })
     }
 }
 
@@ -115,5 +132,9 @@ impl FileSystem for Vfs {
             .get(path)
             .cloned()
             .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
+    }
+
+    fn format_override(&self, path: &Path) -> Option<Format> {
+        self.formats.get(path).copied()
     }
 }

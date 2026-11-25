@@ -7,7 +7,7 @@ use crate::{Error, FileSystem};
 pub(crate) struct Manifest {
     pub name: Option<String>,
     pub main: Option<String>,
-    pub is_module: bool,
+    pub module_type: Option<bool>,
     pub exports: Option<Json>,
     pub imports: Option<Json>,
     optional: Vec<String>,
@@ -28,10 +28,10 @@ impl Manifest {
             message,
         })?;
 
-        let is_module = match value.get("type") {
-            None => false,
-            Some(Json::Str(kind)) if kind == "module" => true,
-            Some(Json::Str(kind)) if kind == "commonjs" => false,
+        let module_type = match value.get("type") {
+            None => None,
+            Some(Json::Str(kind)) if kind == "module" => Some(true),
+            Some(Json::Str(kind)) if kind == "commonjs" => Some(false),
             Some(other) => {
                 return Err(Error::InvalidPackage {
                     path: path.to_path_buf(),
@@ -43,14 +43,14 @@ impl Manifest {
         Ok(Self {
             name: value.get("name").and_then(Json::as_str).map(str::to_owned),
             main: value.get("main").and_then(Json::as_str).map(str::to_owned),
-            is_module,
+            module_type,
             exports: value.get("exports").cloned(),
             imports: value.get("imports").cloned(),
             optional: optional_names(&value),
         })
     }
-    pub(crate) const fn is_module(&self) -> bool {
-        self.is_module
+    pub(crate) fn is_module(&self) -> bool {
+        self.module_type == Some(true)
     }
 }
 
@@ -273,4 +273,25 @@ mod tests {
         let value = exports(r#""../outside.js""#);
         assert_eq!(resolve_subpath(&value, "", false), None);
     }
+}
+
+/// The `type` of the nearest package scope: `Some(true)` for `module`,
+/// `Some(false)` for `commonjs`, and `None` when the field is absent or there is no
+/// package.json. Node's syntax detection only applies to the `None` case.
+pub fn package_type(path: &Path, fs: &impl FileSystem) -> Result<Option<bool>, Error> {
+    let mut directory = path.parent();
+    while let Some(current) = directory {
+        if current
+            .file_name()
+            .is_some_and(|name| name == "node_modules")
+        {
+            return Ok(None);
+        }
+        let manifest_path = current.join("package.json");
+        if fs.is_file(&manifest_path) {
+            return Ok(Manifest::read(&manifest_path, fs)?.module_type);
+        }
+        directory = current.parent();
+    }
+    Ok(None)
 }

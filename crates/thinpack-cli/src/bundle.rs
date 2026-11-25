@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use thinpack_analyze::Analysis;
 use thinpack_caps::Module;
-use thinpack_pack::{AssetRecord, Compression, FileRecord, Manifest};
+use thinpack_pack::{AssetRecord, Compression, FileRecord, FormatRecord, Manifest};
 use thinpack_resolve::normalize;
 
 use crate::options::AssetInput;
@@ -53,7 +53,8 @@ pub(crate) fn build(
     files.extend(manifests);
     files.sort_by(|left, right| left.path.cmp(&right.path));
 
-    let (mut manifest, mut blob) = build_manifest(root, entry, capabilities, info, &files);
+    let (mut manifest, mut blob) =
+        build_manifest(root, entry, capabilities, info, &files, analysis);
     for asset in assets {
         let contents =
             fs::read(&asset.path).map_err(|error| format!("{}: {error}", asset.path.display()))?;
@@ -214,6 +215,7 @@ fn build_manifest(
     capabilities: &[&'static Module],
     info: &TemplateInfo,
     files: &[PackedFile],
+    analysis: &Analysis,
 ) -> (Manifest, Vec<u8>) {
     let mut blob = Vec::new();
     let mut records = Vec::with_capacity(files.len());
@@ -238,6 +240,16 @@ fn build_manifest(
             capabilities_hash: info.capabilities_hash,
         },
         files: records,
+        formats: analysis
+            .formats
+            .iter()
+            .filter_map(|(path, format)| {
+                virtual_path(root, path).map(|path| FormatRecord {
+                    path,
+                    format: *format,
+                })
+            })
+            .collect(),
         assets: Vec::new(),
     };
     (manifest, blob)

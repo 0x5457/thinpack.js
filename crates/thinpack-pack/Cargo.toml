@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 brotli-decompressor = "6"
+thinpack-resolve.workspace = true
 
 [lints]
 workspace = true
