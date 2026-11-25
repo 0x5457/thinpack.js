@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::json::{self, Json};
-use crate::{Error, FileSystem};
+use crate::{Conditions, Error, FileSystem};
 
 #[derive(Debug, Default)]
 pub(crate) struct Manifest {
@@ -120,7 +120,7 @@ pub fn package_name(specifier: &str) -> &str {
 pub(crate) fn resolve_subpath(
     exports: &Json,
     subpath: &str,
-    prefer_import: bool,
+    conditions: &Conditions,
 ) -> Option<String> {
     if let Some(map) = exports.subpath_map() {
         let key = if subpath.is_empty() {
@@ -129,15 +129,15 @@ pub(crate) fn resolve_subpath(
             format!("./{subpath}")
         };
         if let Some(target) = lookup_exact(map, &key) {
-            return resolve_target(target, prefer_import);
+            return resolve_target(target, conditions);
         }
-        return lookup_pattern(map, &key, prefer_import);
+        return lookup_pattern(map, &key, conditions);
     }
 
     if !subpath.is_empty() {
         return None;
     }
-    resolve_target(exports, prefer_import)
+    resolve_target(exports, conditions)
 }
 
 fn lookup_exact<'a>(map: &'a [(String, Json)], key: &str) -> Option<&'a Json> {
@@ -146,8 +146,8 @@ fn lookup_exact<'a>(map: &'a [(String, Json)], key: &str) -> Option<&'a Json> {
         .map(|(_, target)| target)
 }
 
-fn lookup_pattern(map: &[(String, Json)], key: &str, prefer_import: bool) -> Option<String> {
-    lookup_star(map, key, &|target| resolve_target(target, prefer_import))
+fn lookup_pattern(map: &[(String, Json)], key: &str, conditions: &Conditions) -> Option<String> {
+    lookup_star(map, key, &|target| resolve_target(target, conditions))
 }
 
 fn lookup_star(
@@ -175,52 +175,56 @@ fn lookup_star(
     resolve(target).map(|path| path.replace('*', star))
 }
 
-fn resolve_target(value: &Json, prefer_import: bool) -> Option<String> {
+fn resolve_target(value: &Json, conditions: &Conditions) -> Option<String> {
     match value {
         Json::Str(target) => strip_relative(target),
         Json::Array(targets) => targets
             .iter()
-            .find_map(|target| resolve_target(target, prefer_import)),
-        Json::Object(entries) => {
-            entries
-                .iter()
-                .find_map(|(condition, target)| match condition.as_str() {
-                    "node" | "default" => resolve_target(target, prefer_import),
-                    "require" if !prefer_import => resolve_target(target, prefer_import),
-                    "import" if prefer_import => resolve_target(target, prefer_import),
-                    _ => None,
-                })
-        }
+            .find_map(|target| resolve_target(target, conditions)),
+        Json::Object(entries) => entries.iter().find_map(|(condition, target)| {
+            conditions
+                .accepts(condition)
+                .then(|| resolve_target(target, conditions))
+                .flatten()
+        }),
         _ => None,
     }
 }
 
-pub(crate) fn resolve_import(imports: &Json, specifier: &str) -> Option<String> {
+pub(crate) fn resolve_import(
+    imports: &Json,
+    specifier: &str,
+    conditions: &Conditions,
+) -> Option<String> {
     let map = imports.object_map()?;
     if let Some(target) = lookup_exact(map, specifier) {
-        return import_target(target);
+        return import_target(target, conditions);
     }
-    lookup_import_pattern(map, specifier)
+    lookup_import_pattern(map, specifier, conditions)
 }
 
-fn import_target(value: &Json) -> Option<String> {
+fn import_target(value: &Json, conditions: &Conditions) -> Option<String> {
     match value {
         Json::Str(target) => Some(target.clone()),
-        Json::Array(targets) => targets.iter().find_map(import_target),
-        Json::Object(entries) => {
-            entries
-                .iter()
-                .find_map(|(condition, target)| match condition.as_str() {
-                    "node" | "import" | "require" | "default" => import_target(target),
-                    _ => None,
-                })
-        }
+        Json::Array(targets) => targets
+            .iter()
+            .find_map(|target| import_target(target, conditions)),
+        Json::Object(entries) => entries.iter().find_map(|(condition, target)| {
+            conditions
+                .accepts(condition)
+                .then(|| import_target(target, conditions))
+                .flatten()
+        }),
         _ => None,
     }
 }
 
-fn lookup_import_pattern(map: &[(String, Json)], key: &str) -> Option<String> {
-    lookup_star(map, key, &import_target)
+fn lookup_import_pattern(
+    map: &[(String, Json)],
+    key: &str,
+    conditions: &Conditions,
+) -> Option<String> {
+    lookup_star(map, key, &|target| import_target(target, conditions))
 }
 
 fn strip_relative(target: &str) -> Option<String> {
@@ -270,17 +274,17 @@ mod tests {
     fn resolves_root_string() {
         let value = exports(r#""./index.js""#);
         assert_eq!(
-            resolve_subpath(&value, "", false).as_deref(),
+            resolve_subpath(&value, "", &Conditions::require()).as_deref(),
             Some("index.js")
         );
-        assert_eq!(resolve_subpath(&value, "sub", false), None);
+        assert_eq!(resolve_subpath(&value, "sub", &Conditions::require()), None);
     }
 
     #[test]
     fn follows_condition_order() {
         let value = exports(r#"{"import": "./esm.js", "default": "./cjs.js"}"#);
         assert_eq!(
-            resolve_subpath(&value, "", false).as_deref(),
+            resolve_subpath(&value, "", &Conditions::require()).as_deref(),
             Some("cjs.js")
         );
     }
@@ -288,17 +292,23 @@ mod tests {
     #[test]
     fn resolves_subpath_map_and_patterns() {
         let value = exports(r#"{"./a": "./a.js", "./lib/*": "./src/*.js"}"#);
-        assert_eq!(resolve_subpath(&value, "a", false).as_deref(), Some("a.js"));
         assert_eq!(
-            resolve_subpath(&value, "lib/x", false).as_deref(),
+            resolve_subpath(&value, "a", &Conditions::require()).as_deref(),
+            Some("a.js")
+        );
+        assert_eq!(
+            resolve_subpath(&value, "lib/x", &Conditions::require()).as_deref(),
             Some("src/x.js")
         );
-        assert_eq!(resolve_subpath(&value, "other", false), None);
+        assert_eq!(
+            resolve_subpath(&value, "other", &Conditions::require()),
+            None
+        );
     }
 
     #[test]
     fn rejects_escaping_targets() {
         let value = exports(r#""../outside.js""#);
-        assert_eq!(resolve_subpath(&value, "", false), None);
+        assert_eq!(resolve_subpath(&value, "", &Conditions::require()), None);
     }
 }

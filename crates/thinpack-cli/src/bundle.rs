@@ -47,6 +47,7 @@ pub(crate) fn build(
     info: &TemplateInfo,
     analysis: &Analysis,
     assets: &[AssetInput],
+    conditions: &[String],
 ) -> Result<Bundle, Box<dyn Error>> {
     let mut files = collect_analysis_files(root, analysis)?;
     for path in &analysis.static_files {
@@ -70,8 +71,15 @@ pub(crate) fn build(
     files.extend(manifests);
     files.sort_by(|left, right| left.path.cmp(&right.path));
 
-    let (mut manifest, mut blob) =
-        build_manifest(root, entry, capabilities, info, &files, analysis);
+    let (mut manifest, mut blob) = build_manifest(
+        root,
+        entry,
+        capabilities,
+        info,
+        &files,
+        analysis,
+        conditions,
+    );
     for asset in assets {
         let contents =
             fs::read(&asset.path).map_err(|error| format!("{}: {error}", asset.path.display()))?;
@@ -233,6 +241,7 @@ fn build_manifest(
     info: &TemplateInfo,
     files: &[PackedFile],
     analysis: &Analysis,
+    conditions: &[String],
 ) -> (Manifest, Vec<u8>) {
     let mut blob = Vec::new();
     let mut records = Vec::with_capacity(files.len());
@@ -251,6 +260,7 @@ fn build_manifest(
             .iter()
             .map(|module| module.name.to_owned())
             .collect(),
+        conditions: conditions.to_vec(),
         template: thinpack_pack::Template {
             version: info.version.clone(),
             backend: info.backend,

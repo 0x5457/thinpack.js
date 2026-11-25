@@ -1267,6 +1267,7 @@ fn build_packed_payload(
     let manifest = Manifest {
         entry: entry.to_owned(),
         capabilities,
+        conditions: Vec::new(),
         template,
         files,
         formats: Vec::new(),

@@ -10,6 +10,7 @@ pub struct Vfs {
     files: BTreeMap<PathBuf, Vec<u8>>,
     directories: BTreeSet<PathBuf>,
     formats: BTreeMap<PathBuf, Format>,
+    conditions: Vec<String>,
 }
 
 const ROOT: &str = "/app";
@@ -63,6 +64,7 @@ impl Vfs {
             files,
             directories,
             formats,
+            conditions: pack.manifest.conditions.clone(),
         })
     }
 }
@@ -136,5 +138,9 @@ impl FileSystem for Vfs {
 
     fn format_override(&self, path: &Path) -> Option<Format> {
         self.formats.get(path).copied()
+    }
+
+    fn custom_conditions(&self) -> &[String] {
+        &self.conditions
     }
 }

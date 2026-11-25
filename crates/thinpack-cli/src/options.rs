@@ -18,6 +18,7 @@ pub(crate) struct Options {
     pub strict: bool,
     pub include: Vec<PathBuf>,
     pub allow_missing: Vec<String>,
+    pub conditions: Vec<String>,
     pub list_capabilities: bool,
 }
 
@@ -68,6 +69,9 @@ pub(crate) fn parse_options(args: Vec<String>, pack: bool) -> Result<Parsed, Usa
             "--allow-missing" => options
                 .allow_missing
                 .extend(module_list(&value(&mut args, &arg)?, &arg)?),
+            "--conditions" => options
+                .conditions
+                .extend(module_list(&value(&mut args, &arg)?, &arg)?),
             "--backend" => {
                 let backend = value(&mut args, &arg)?;
                 options.backend = Some(Backend::parse(&backend).ok_or_else(|| {
@@ -103,6 +107,8 @@ pub(crate) fn parse_options(args: Vec<String>, pack: bool) -> Result<Parsed, Usa
     if options.entry.is_none() {
         return Err(Usage("missing entry file".to_owned()));
     }
+    options.conditions.sort_unstable();
+    options.conditions.dedup();
     Ok(Parsed {
         options,
         rest,

@@ -26,8 +26,15 @@ pub(crate) fn analyze_entry(options: &Options, pack: bool) -> Result<Analyzed, B
     )?);
     let root = project_root(&entry)?;
     let allow_missing: BTreeSet<String> = options.allow_missing.iter().cloned().collect();
-    let mut analysis =
-        thinpack_analyze::analyze_with(&entry, &thinpack_resolve::HostFs, &allow_missing)?;
+    let mut conditions = options.conditions.clone();
+    conditions.sort_unstable();
+    conditions.dedup();
+    let mut analysis = thinpack_analyze::analyze_with(
+        &entry,
+        &thinpack_resolve::HostFs,
+        &allow_missing,
+        &conditions,
+    )?;
     let included = expand_includes(&root, &options.include)?;
     for file in &included {
         if is_javascript(file) {
@@ -35,6 +42,7 @@ pub(crate) fn analyze_entry(options: &Options, pack: bool) -> Result<Analyzed, B
                 file,
                 &thinpack_resolve::HostFs,
                 &allow_missing,
+                &conditions,
             )?);
         } else {
             if !analysis.files.contains(file) {

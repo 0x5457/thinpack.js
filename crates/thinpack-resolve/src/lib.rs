@@ -26,6 +26,11 @@ pub trait FileSystem {
     fn format_override(&self, _path: &Path) -> Option<Format> {
         None
     }
+
+    /// Custom `exports`/`imports` conditions recorded in the payload.
+    fn custom_conditions(&self) -> &[String] {
+        &[]
+    }
 }
 
 #[derive(Debug)]
@@ -50,6 +55,47 @@ pub enum Format {
     CommonJs,
     Json,
     Esm,
+}
+
+/// The conditions a package `exports`/`imports` object is resolved with: the
+/// caller kind (`import` or `require`) plus any `--conditions` names.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Conditions {
+    pub import: bool,
+    pub custom: Vec<String>,
+}
+
+impl Conditions {
+    #[must_use]
+    pub fn require() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn import() -> Self {
+        Self {
+            import: true,
+            ..Self::default()
+        }
+    }
+
+    #[must_use]
+    pub fn with_custom(mut self, custom: impl IntoIterator<Item = String>) -> Self {
+        self.custom = custom.into_iter().collect();
+        self.custom.sort_unstable();
+        self.custom.dedup();
+        self
+    }
+
+    #[must_use]
+    pub fn accepts(&self, condition: &str) -> bool {
+        match condition {
+            "node" | "default" => true,
+            "import" => self.import,
+            "require" => !self.import,
+            custom => self.custom.iter().any(|candidate| candidate == custom),
+        }
+    }
 }
 
 impl Format {
@@ -123,7 +169,21 @@ impl std::error::Error for Error {}
 /// parse, export-map and I/O errors reported by the walked `package.json`
 /// manifests.
 pub fn resolve(specifier: &str, parent: &Path, fs: &impl FileSystem) -> Result<Resolved, Error> {
-    let path = resolve_with(specifier, parent, fs, false)?;
+    resolve_with_conditions(specifier, parent, fs, &Conditions::require())
+}
+
+/// [`resolve`] with explicit package conditions.
+///
+/// # Errors
+///
+/// Returns the same errors as [`resolve`].
+pub fn resolve_with_conditions(
+    specifier: &str,
+    parent: &Path,
+    fs: &impl FileSystem,
+    conditions: &Conditions,
+) -> Result<Resolved, Error> {
+    let path = resolve_with(specifier, parent, fs, conditions)?;
     let format = format_of(&path, fs)?;
     Ok(Resolved { path, format })
 }
@@ -137,9 +197,7 @@ pub fn resolve_import(
     parent: &Path,
     fs: &impl FileSystem,
 ) -> Result<Resolved, Error> {
-    let path = resolve_with(specifier, parent, fs, true)?;
-    let format = format_of(&path, fs)?;
-    Ok(Resolved { path, format })
+    resolve_with_conditions(specifier, parent, fs, &Conditions::import())
 }
 
 /// # Errors
@@ -153,7 +211,21 @@ pub fn resolve_path(
     parent: &Path,
     fs: &impl FileSystem,
 ) -> Result<PathBuf, Error> {
-    let path = resolve_with(specifier, parent, fs, false)?;
+    resolve_path_with_conditions(specifier, parent, fs, &Conditions::require())
+}
+
+/// [`resolve_path`] with explicit package conditions.
+///
+/// # Errors
+///
+/// Returns the same errors as [`resolve_path`].
+pub fn resolve_path_with_conditions(
+    specifier: &str,
+    parent: &Path,
+    fs: &impl FileSystem,
+    conditions: &Conditions,
+) -> Result<PathBuf, Error> {
+    let path = resolve_with(specifier, parent, fs, conditions)?;
     reject_native_addon(&path)?;
     Ok(path)
 }
@@ -167,9 +239,7 @@ pub fn resolve_import_path(
     parent: &Path,
     fs: &impl FileSystem,
 ) -> Result<PathBuf, Error> {
-    let path = resolve_with(specifier, parent, fs, true)?;
-    reject_native_addon(&path)?;
-    Ok(path)
+    resolve_path_with_conditions(specifier, parent, fs, &Conditions::import())
 }
 
 fn reject_native_addon(path: &Path) -> Result<(), Error> {
@@ -188,10 +258,10 @@ fn resolve_with(
     specifier: &str,
     parent: &Path,
     fs: &impl FileSystem,
-    prefer_import: bool,
+    conditions: &Conditions,
 ) -> Result<PathBuf, Error> {
     if specifier.starts_with('#') {
-        return resolve_package_import(specifier, parent, fs, prefer_import);
+        return resolve_package_import(specifier, parent, fs, conditions);
     }
     // A leading `/` is rooted on Unix and virtual `/app` paths on Windows are
     // not host-absolute (they have no drive), but they are still absolute
@@ -206,14 +276,14 @@ fn resolve_with(
         let base = parent.parent().unwrap_or_else(|| Path::new("/"));
         return load_path(&normalize(&base.join(specifier)), fs);
     }
-    load_package(specifier, parent, fs, prefer_import)
+    load_package(specifier, parent, fs, conditions)
 }
 
 fn resolve_package_import(
     specifier: &str,
     parent: &Path,
     fs: &impl FileSystem,
-    prefer_import: bool,
+    conditions: &Conditions,
 ) -> Result<PathBuf, Error> {
     let mut directory = parent.parent().unwrap_or_else(|| Path::new("/"));
     loop {
@@ -223,14 +293,15 @@ fn resolve_package_import(
             let Some(imports) = manifest.imports else {
                 return Err(Error::NotFound);
             };
-            let target = package::resolve_import(&imports, specifier).ok_or(Error::NotFound)?;
+            let target =
+                package::resolve_import(&imports, specifier, conditions).ok_or(Error::NotFound)?;
             if target.starts_with("./") {
                 return load_path(&normalize(&directory.join(target)), fs);
             }
             if target.starts_with("../") {
                 return Err(Error::NotFound);
             }
-            return resolve_with(&target, &directory.join("index.js"), fs, prefer_import);
+            return resolve_with(&target, &directory.join("index.js"), fs, conditions);
         }
         match directory.parent() {
             Some(next) => directory = next,
@@ -243,17 +314,17 @@ fn load_package(
     specifier: &str,
     parent: &Path,
     fs: &impl FileSystem,
-    prefer_import: bool,
+    conditions: &Conditions,
 ) -> Result<PathBuf, Error> {
     let (name, subpath) = split_package(specifier);
     let base = parent.parent().unwrap_or_else(|| Path::new("/"));
     if let Some(directory) = package_self_reference(name, base, fs)? {
         let manifest = Manifest::read(&directory.join("package.json"), fs)?;
-        return resolve_package(&directory, &manifest, subpath, prefer_import, fs);
+        return resolve_package(&directory, &manifest, subpath, conditions, fs);
     }
     let directory = find_package(name, base, fs).ok_or(Error::NotFound)?;
     let manifest = Manifest::read(&directory.join("package.json"), fs)?;
-    resolve_package(&directory, &manifest, subpath, prefer_import, fs)
+    resolve_package(&directory, &manifest, subpath, conditions, fs)
 }
 
 /// Node's package self-reference: the nearest package scope may import its own
@@ -286,16 +357,15 @@ fn resolve_package(
     directory: &Path,
     manifest: &Manifest,
     subpath: &str,
-    prefer_import: bool,
+    conditions: &Conditions,
     fs: &impl FileSystem,
 ) -> Result<PathBuf, Error> {
     if let Some(exports) = &manifest.exports {
-        let target =
-            package::resolve_subpath(exports, subpath, prefer_import).ok_or_else(|| {
-                Error::NotExported {
-                    subpath: subpath.to_owned(),
-                }
-            })?;
+        let target = package::resolve_subpath(exports, subpath, conditions).ok_or_else(|| {
+            Error::NotExported {
+                subpath: subpath.to_owned(),
+            }
+        })?;
         let path = directory.join(target);
         return load_file(&path, fs).ok_or(Error::NotFound);
     }
@@ -595,6 +665,58 @@ mod tests {
         assert!(
             matches!(error, Error::InvalidPackage { .. }),
             "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn resolves_custom_export_conditions() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/node_modules/pkg/package.json",
+                r#"{"exports":{".":{"custom":"./custom.js","default":"./default.js"}}}"#,
+            ),
+            ("/app/node_modules/pkg/custom.js", ""),
+            ("/app/node_modules/pkg/default.js", ""),
+        ]);
+        let conditions = Conditions::require().with_custom(["custom".to_owned()]);
+        assert_eq!(
+            resolve_with_conditions("pkg", Path::new("/app/main.js"), &fs, &conditions)
+                .unwrap()
+                .path,
+            PathBuf::from("/app/node_modules/pkg/custom.js")
+        );
+        assert_eq!(
+            resolve("pkg", Path::new("/app/main.js"), &fs).unwrap().path,
+            PathBuf::from("/app/node_modules/pkg/default.js")
+        );
+    }
+
+    #[test]
+    fn package_imports_honour_the_caller_kind() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/package.json",
+                r##"{"imports":{"#x":{"import":"./esm.js","require":"./cjs.js"}}}"##,
+            ),
+            ("/app/esm.js", ""),
+            ("/app/cjs.js", ""),
+        ]);
+        assert_eq!(
+            resolve_with_conditions("#x", Path::new("/app/main.mjs"), &fs, &Conditions::import())
+                .unwrap()
+                .path,
+            PathBuf::from("/app/esm.js")
+        );
+        assert_eq!(
+            resolve_with_conditions(
+                "#x",
+                Path::new("/app/main.cjs"),
+                &fs,
+                &Conditions::require()
+            )
+            .unwrap()
+            .path,
+            PathBuf::from("/app/cjs.js")
         );
     }
 

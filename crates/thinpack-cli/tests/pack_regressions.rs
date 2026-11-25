@@ -454,6 +454,81 @@ mod unix {
     }
 
     #[test]
+    fn custom_conditions_select_the_export_target() {
+        let directory = TempDir::new("custom-conditions");
+        let project = directory.path().join("project");
+        fs::create_dir_all(project.join("node_modules/pkg")).expect("create package");
+        fs::write(project.join("package.json"), r#"{ "name": "app" }"#)
+            .expect("write project manifest");
+        let entry = project.join("main.js");
+        fs::write(&entry, "require('pkg');\n").expect("write entry");
+        fs::write(
+            project.join("node_modules/pkg/package.json"),
+            r#"{ "exports": { ".": { "custom": "./custom.js", "default": "./default.js" } } }"#,
+        )
+        .expect("write package exports");
+        fs::write(
+            project.join("node_modules/pkg/custom.js"),
+            "module.exports = 'custom';\n",
+        )
+        .expect("write custom target");
+        fs::write(
+            project.join("node_modules/pkg/default.js"),
+            "module.exports = 'default';\n",
+        )
+        .expect("write default target");
+
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let output = directory.path().join("packed-app");
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            directory.path(),
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+                "--conditions",
+                "custom",
+            ],
+        );
+        assert!(
+            result.status.success(),
+            "pack failed:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+
+        let pack = thinpack_pack::read_from_executable(&output)
+            .expect("read packed executable")
+            .expect("packed payload");
+        assert_eq!(pack.manifest.conditions, vec!["custom".to_owned()]);
+        assert!(
+            pack.manifest
+                .files
+                .iter()
+                .any(|file| file.path == "/app/node_modules/pkg/custom.js"),
+            "{:?}",
+            pack.manifest
+                .files
+                .iter()
+                .map(|file| &file.path)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !pack
+                .manifest
+                .files
+                .iter()
+                .any(|file| file.path == "/app/node_modules/pkg/default.js"),
+            "packed the default condition"
+        );
+    }
+
+    #[test]
     fn a_symlinked_package_manifest_is_packed() {
         let directory = TempDir::new("symlinked-package-manifest");
         let project = directory.path().join("project");
