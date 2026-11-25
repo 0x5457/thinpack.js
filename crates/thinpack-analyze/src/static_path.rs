@@ -21,12 +21,25 @@ pub(super) fn evaluate<'a>(
     base: &Path,
     semantic: &Semantic<'a>,
 ) -> Option<PathBuf> {
-    let path = path_value(expression, base, semantic, &mut BTreeSet::new())?;
-    Some(normalize(&if path.is_absolute() {
-        path
+    let value = path_value(expression, base, semantic, &mut BTreeSet::new())?;
+    Some(normalize(&if value.path.is_absolute() {
+        value.path
     } else {
-        base.join(path)
+        base.join(value.path)
     }))
+}
+
+/// Evaluate a path expression that is rooted in the file system rather than in
+/// the process working directory. Unlike [`evaluate`], a relative
+/// `path.resolve(...)` is rejected: Node would resolve it against `cwd`, which
+/// packing does not know.
+pub(super) fn evaluate_rooted<'a>(
+    expression: &'a Expression<'a>,
+    base: &Path,
+    semantic: &Semantic<'a>,
+) -> Option<PathBuf> {
+    let value = path_value(expression, base, semantic, &mut BTreeSet::new())?;
+    (value.rooted && value.path.has_root()).then(|| normalize(&value.path))
 }
 
 /// The directory a computed module path selects from, when its literal arguments
@@ -41,7 +54,29 @@ pub(super) fn module_directory<'a>(
     base: &Path,
     semantic: &Semantic<'a>,
 ) -> Option<(PathBuf, Option<&'a str>)> {
-    let Expression::CallExpression(call) = expression.without_parentheses() else {
+    let expression = expression.without_parentheses();
+    // ``require(`./commands/${command}.js`)`` names a directory next to the module
+    // and one literal extension without a `path.join`/`path.resolve` call.
+    if let Expression::TemplateLiteral(template) = expression {
+        if template.expressions.len() != 1 {
+            return None;
+        }
+        let prefix = template
+            .quasis
+            .first()?
+            .value
+            .cooked
+            .and_then(oxc_str::JSStr::as_str)?;
+        if !prefix.starts_with("./") || !prefix.ends_with('/') {
+            return None;
+        }
+        let directory = normalize(&base.join(prefix));
+        if directory == base || !directory.starts_with(base) {
+            return None;
+        }
+        return Some((directory, Some(extension(expression)?)));
+    }
+    let Expression::CallExpression(call) = expression else {
         return None;
     };
     let callee = match call.callee.without_parentheses() {
@@ -71,7 +106,7 @@ pub(super) fn module_directory<'a>(
     let dynamic = dynamic?;
     if !arguments
         .first()
-        .is_some_and(|first| first == base || first.starts_with(base))
+        .is_some_and(|first| first.path == base || first.path.starts_with(base))
     {
         return None;
     }
@@ -80,10 +115,10 @@ pub(super) fn module_directory<'a>(
     } else {
         resolve(&arguments, base)
     };
-    if path == base || base.starts_with(&path) {
+    if path.path == base || base.starts_with(&path.path) {
         return None;
     }
-    Some((path, extension(dynamic)))
+    Some((path.path, extension(dynamic)))
 }
 
 /// The literal extension a computed final path segment appends.
@@ -111,17 +146,25 @@ fn extension<'a>(expression: &'a Expression<'a>) -> Option<&'a str> {
     .then_some(extension)
 }
 
+/// The path an expression evaluates to, before a relative result is anchored,
+/// and whether its first segment is rooted away from the working directory.
+struct Value {
+    path: PathBuf,
+    rooted: bool,
+}
+
 /// The path an expression evaluates to, before a relative result is anchored.
 fn path_value<'a>(
     expression: &'a Expression<'a>,
     base: &Path,
     semantic: &Semantic<'a>,
     resolving: &mut BTreeSet<SymbolId>,
-) -> Option<PathBuf> {
+) -> Option<Value> {
     match expression.without_parentheses() {
-        Expression::Identifier(identifier) if identifier.name == "__dirname" => {
-            Some(base.to_path_buf())
-        }
+        Expression::Identifier(identifier) if identifier.name == "__dirname" => Some(Value {
+            path: base.to_path_buf(),
+            rooted: true,
+        }),
         // `const dir = __dirname + '/plugins'` is as predictable as the inline
         // expression, so follow a binding that is never reassigned.
         Expression::Identifier(identifier) => {
@@ -129,17 +172,27 @@ fn path_value<'a>(
             if !resolving.insert(symbol) {
                 return None;
             }
-            let path = require::initializer(symbol, semantic)
+            let value = require::initializer(symbol, semantic)
                 .and_then(|init| path_value(init, base, semantic, resolving));
             resolving.remove(&symbol);
-            path
+            value
         }
-        Expression::StringLiteral(literal) => literal.value.as_str().map(PathBuf::from),
+        Expression::StringLiteral(literal) => literal.value.as_str().map(|value| {
+            let path = PathBuf::from(value);
+            let rooted = path.has_root();
+            Value { path, rooted }
+        }),
         Expression::BinaryExpression(binary) if binary.operator == BinaryOperator::Addition => {
             // String concatenation, so an absolute right operand never resets.
-            let mut value = path_value(&binary.left, base, semantic, resolving)?.into_os_string();
-            value.push(path_value(&binary.right, base, semantic, resolving)?);
-            Some(PathBuf::from(value))
+            let left = path_value(&binary.left, base, semantic, resolving)?;
+            let right = path_value(&binary.right, base, semantic, resolving)?;
+            let rooted = left.rooted || (left.path.as_os_str().is_empty() && right.rooted);
+            let mut value = left.path.into_os_string();
+            value.push(right.path);
+            Some(Value {
+                path: PathBuf::from(value),
+                rooted,
+            })
         }
         Expression::CallExpression(call) => call_value(call, base, semantic, resolving),
         _ => None,
@@ -151,7 +204,7 @@ fn call_value<'a>(
     base: &Path,
     semantic: &Semantic<'a>,
     resolving: &mut BTreeSet<SymbolId>,
-) -> Option<PathBuf> {
+) -> Option<Value> {
     let callee = match call.callee.without_parentheses() {
         Expression::Identifier(identifier) => identifier.name.as_str(),
         Expression::StaticMemberExpression(member) => member.property.name.as_str(),
@@ -175,14 +228,18 @@ fn call_value<'a>(
 /// `path.join`: concatenate the arguments, then normalize. A leading separator on a
 /// later argument does not reset the path, so `join(__dirname, "/asset")` stays
 /// inside `__dirname`.
-fn join(arguments: &[PathBuf]) -> PathBuf {
+fn join(arguments: &[Value]) -> Value {
     let mut joined = PathBuf::new();
+    let mut rooted = false;
     let mut started = false;
     for argument in arguments
         .iter()
-        .filter(|argument| !argument.as_os_str().is_empty())
+        .filter(|argument| !argument.path.as_os_str().is_empty())
     {
-        for component in argument.components() {
+        if !started {
+            rooted = argument.rooted;
+        }
+        for component in argument.path.components() {
             if started && matches!(component, Component::Prefix(_) | Component::RootDir) {
                 continue;
             }
@@ -190,20 +247,27 @@ fn join(arguments: &[PathBuf]) -> PathBuf {
         }
         started = true;
     }
-    normalize(&joined)
+    Value {
+        path: normalize(&joined),
+        rooted,
+    }
 }
 
 /// `path.resolve`: a rooted argument resets the result, so
 /// `resolve(__dirname, "/asset")` leaves the module directory. `base` stands in for
-/// the process working directory.
-fn resolve(arguments: &[PathBuf], base: &Path) -> PathBuf {
+/// the process working directory; the result is rooted only when an argument
+/// overrides it.
+fn resolve(arguments: &[Value], base: &Path) -> Value {
     let mut resolved = base.to_path_buf();
     for argument in arguments {
-        if argument.has_root() {
-            resolved.clone_from(argument);
+        if argument.path.has_root() {
+            resolved.clone_from(&argument.path);
         } else {
-            resolved.push(argument);
+            resolved.push(&argument.path);
         }
     }
-    normalize(&resolved)
+    Value {
+        path: normalize(&resolved),
+        rooted: arguments.iter().any(|argument| argument.rooted),
+    }
 }
