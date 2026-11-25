@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
 use oxc_ast::AstKind;
 use oxc_ast::ast::{Argument, BinaryOperator, Expression, IdentifierReference, Statement};
-use oxc_semantic::{IsGlobalReference, Scoping, Semantic, SymbolId};
+use oxc_semantic::{IsGlobalReference, Reference, Scoping, Semantic, SymbolId};
+use oxc_span::Span;
 use oxc_str::JSStr;
 
 pub(super) fn bindings(semantic: &Semantic<'_>) -> BTreeSet<SymbolId> {
@@ -56,25 +57,70 @@ pub(super) fn late_import(
     })
 }
 
+/// A stable binding created by a `Function`-built import factory.
+pub(super) struct LateImport {
+    /// The argument index the factory body imports.
+    pub argument: usize,
+    /// The constructor expression, so its generic warning can be suppressed.
+    pub span: Span,
+}
+
 /// The stable bindings (`const load = new Function(...)`) that late-import their
 /// argument, with the argument index the body reads.
-pub(super) fn late_import_bindings(semantic: &Semantic<'_>) -> BTreeMap<SymbolId, usize> {
+pub(super) fn late_import_bindings(semantic: &Semantic<'_>) -> BTreeMap<SymbolId, LateImport> {
     semantic
         .scoping()
         .symbol_ids()
         .filter_map(|symbol| {
-            let index = match initializer(symbol, semantic)? {
-                Expression::NewExpression(expression) => {
-                    late_import(&expression.callee, &expression.arguments, semantic)
-                }
-                Expression::CallExpression(call) => {
-                    late_import(&call.callee, &call.arguments, semantic)
-                }
-                _ => None,
-            }?;
-            Some((symbol, index))
+            // An exported binding can be called from a module this walk cannot see,
+            // so keep its construction warning instead of treating it as handled. Only
+            // a directly exported declaration qualifies; a factory inside an exported
+            // function stays local to its own call graph.
+            let declaration = semantic.symbol_declaration(symbol);
+            let variable = semantic.nodes().parent_id(declaration.id());
+            if matches!(
+                semantic.nodes().kind(variable),
+                AstKind::VariableDeclaration(_)
+            ) && matches!(
+                semantic.nodes().parent_kind(variable),
+                AstKind::ExportDeclaration(_)
+            ) {
+                return None;
+            }
+            let (argument, span) = match initializer(symbol, semantic)? {
+                Expression::NewExpression(expression) => (
+                    late_import(&expression.callee, &expression.arguments, semantic)?,
+                    expression.span,
+                ),
+                Expression::CallExpression(call) => (
+                    late_import(&call.callee, &call.arguments, semantic)?,
+                    call.span,
+                ),
+                _ => return None,
+            };
+            if !semantic
+                .symbol_references(symbol)
+                .all(|reference| is_direct_call_callee(reference, semantic))
+            {
+                return None;
+            }
+            Some((symbol, LateImport { argument, span }))
         })
         .collect()
+}
+
+fn is_direct_call_callee(reference: &Reference, semantic: &Semantic<'_>) -> bool {
+    let AstKind::CallExpression(call) = semantic.nodes().parent_kind(reference.node_id()) else {
+        return false;
+    };
+    let AstKind::IdentifierReference(identifier) =
+        semantic.nodes().get_node(reference.node_id()).kind()
+    else {
+        return false;
+    };
+    call.callee
+        .get_identifier_reference()
+        .is_some_and(|callee| std::ptr::eq(callee, identifier))
 }
 
 fn is_function_constructor(expression: &Expression<'_>, semantic: &Semantic<'_>) -> bool {
