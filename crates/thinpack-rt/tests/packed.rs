@@ -575,6 +575,92 @@ assert.equal(globalThis.dependencyEvaluated, undefined);
         error: None,
     },
     PackedTest {
+        name: "packed::esm-hook-awaits-io",
+        directory: "esm-hook-awaits-io",
+        entry: "/app/main.mjs",
+        files: &[
+            (
+                "/app/main.mjs",
+                r#"
+import assert from 'node:assert/strict';
+import module from 'node:module';
+
+module.register('./hooks.mjs', import.meta.url);
+
+await assert.rejects(import('./lib.mjs'), {
+  name: 'Error',
+  code: 'ERR_ESM_HOOK_ASYNC',
+  message:
+    "the resolve hook for './lib.mjs' did not settle: ESM hooks run synchronously, " +
+    'so a hook that awaits I/O cannot finish. Use a synchronous API in the hook ' +
+    '(fs.readFileSync, for example).',
+});
+"#,
+            ),
+            (
+                "/app/hooks.mjs",
+                r"
+import fs from 'node:fs';
+
+export async function resolve(specifier, context, nextResolve) {
+  // `readFile` is a real asynchronous op, unlike the synchronous `stat` calls.
+  await fs.promises.readFile('/app/hooks.mjs', 'utf8');
+  return nextResolve(specifier, context);
+}
+",
+            ),
+            ("/app/lib.mjs", "export const value = 1;\n"),
+        ],
+        capabilities: &["assert", "fs", "module"],
+        error: None,
+    },
+    PackedTest {
+        name: "packed::esm-hook-error",
+        directory: "esm-hook-error",
+        entry: "/app/main.mjs",
+        files: &[
+            (
+                "/app/main.mjs",
+                r"
+import assert from 'node:assert/strict';
+import module from 'node:module';
+
+module.register('./hooks.mjs', import.meta.url);
+
+assert.equal((await import('./lib.mjs')).value, 'from the hook');
+
+await assert.rejects(import('./veto.mjs'), (error) => {
+  assert.ok(error instanceof SyntaxError);
+  assert.equal(error.code, undefined);
+  assert.equal(error.message, 'the hook refused ./veto.mjs');
+  assert.match(error.stack, /\/app\/hooks\.mjs/);
+  return true;
+});
+",
+            ),
+            (
+                "/app/hooks.mjs",
+                r#"
+export function load(url, context, nextLoad) {
+  if (url.endsWith('/lib.mjs')) {
+    return { format: 'module', source: "export const value = 'from the hook';\n" };
+  }
+  return nextLoad(url, context);
+}
+
+export function resolve(specifier, context, nextResolve) {
+  if (specifier === './veto.mjs') throw new SyntaxError('the hook refused ./veto.mjs');
+  return nextResolve(specifier, context);
+}
+"#,
+            ),
+            ("/app/lib.mjs", "export const value = 'from the payload';\n"),
+            ("/app/veto.mjs", "export const value = 2;\n"),
+        ],
+        capabilities: &["assert", "module"],
+        error: None,
+    },
+    PackedTest {
         name: "packed::crypto-keypair-diffie-hellman",
         directory: "crypto-keypair-diffie-hellman",
         entry: "/app/main.js",

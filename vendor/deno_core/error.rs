@@ -332,10 +332,13 @@ fn build_js_error_class_exception<'s, 'i>(
     // the same symbol `buildCustomError` uses, so the error round-trips back to
     // Rust via `JsError::from_v8_exception`.
     let mut added_keys = vec![];
-    for (key, value) in error.get_additional_properties() {
-        let key = v8::String::new(scope, &key).unwrap();
+    for (name, value) in error.get_additional_properties() {
+        let key = v8::String::new(scope, &name).unwrap();
         // Match `buildCustomError`: don't clobber a property the class defines.
-        if exception_obj.has(scope, key.into()) == Some(true) {
+        // `stack` is the exception: an error rebuilt from a failure that happened in
+        // another execution context (thinpack's ESM loader-hook bridge) keeps the
+        // stack it was thrown with instead of this rebuild site.
+        if name != "stack" && exception_obj.has(scope, key.into()) == Some(true) {
             continue;
         }
         let value = match value {
