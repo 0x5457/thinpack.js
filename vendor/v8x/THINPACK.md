@@ -96,7 +96,9 @@ slice.
 function and failed to parse. Before building the wrapper, run
 `JSCheckScriptSyntax` on the synchronous body; a module that does not parse
 synchronously is wrapped in an async function. This also removes the async
-method false positives the depth check was guarding against.
+method false positives the depth check was guarding against. The scanner now
+tracks expression-bodied arrows too, so `const f = async () => await x` is not
+mistaken for top-level await.
 
 ## 8. ESM link checks and import locations
 
@@ -106,10 +108,12 @@ The rewriter turns imports into destructuring, which silently yields
 named re-export; `InstantiateModule` checks those against the dependency's
 export list before evaluating it, and rejects with the V8 message and a real
 stack pointing at the importer's import line. `export *` dependencies are
-exempt because the rewriter cannot enumerate their names. The original line
-starts are also stored so `SourceOffsetToLocation` reports the offsets deno
-uses in import errors, and an `Errored` module can be re-instantiated (the
-dynamic-import loop imports the failing graph twice).
+exempt because the rewriter cannot enumerate their names. The reported line
+comes from the specifier token's own source offset, so a comment or an earlier
+identical import cannot move it. The original line starts are also stored so
+`SourceOffsetToLocation` reports the offsets deno uses in import errors, and an
+`Errored` module can be re-instantiated (the dynamic-import loop imports the
+failing graph twice).
 
 ## 9. Hoisted declarations after a statement
 
@@ -118,7 +122,43 @@ with a statement, so the line-oriented rewriter never recognized the export
 and left the keyword inside the generated function. Split at `;` when the
 remainder starts with `import`/`export`, then process the declaration normally.
 
-## 10. Evaluation errors become rejections once
+## 10. Token-aware module rewrite in a workspace crate
+
+The system-framework build has no module C API, so its rewriter lowers imports
+and exports into a function body. That rewriter used to be a set of hand-rolled
+scanners in `src/jsc/module.rs`, each deciding for itself what was code. It now
+lives in the workspace crate `thinpack-jsc-rewrite`; `src/jsc/module.rs` keeps
+only the JSC shim and calls it. The crate has no external dependencies, so the
+linked code is the same size class as the scanners it replaces, and it is
+unit-tested on every platform (`cargo test --workspace`).
+
+One lexer in that crate recognizes comments, strings, template literals with
+nested `${}` expressions, regular expressions, identifiers, numbers and
+punctuators. Every pass uses it, which fixes the defects that came from
+scanning raw text:
+
+- `import.meta` is replaced only when it is the three tokens `import . meta`,
+  not inside a string, template text, comment or regular expression (previously
+  a whole-body `str::replace`).
+- Regular-expression-vs-division uses the surrounding expression context. A
+  `/` after the `)` of `if`/`while`/`for`/`with` starts a regex; after an
+  ordinary parenthesized expression it is division.
+- Brace matching respects nesting, so `export const { a: { b } } = o` exports
+  every binding, including array patterns, defaults, computed keys and rest
+  elements.
+- Statement splitting at `;` looks at tokens, not characters, so a semicolon in
+  a string no longer creates a statement.
+- Dynamic-import rewriting only matches an `import` token followed by `(`, so
+  `"import(x)"`, comments, templates and `obj.import(...)` are left alone.
+- Import locations are recorded from specifier-token offsets instead of a
+  first-substring scan.
+
+This is still a text rewrite, not a parser. Statement recognition stays
+line-oriented, the asynchronous wrapper still relies on the synchronous parse
+check for `await` inside a top-level block, and import-attribute extraction
+remains a source scan.
+
+## 11. Evaluation errors become rejections once
 
 A throwing synthetic evaluation step (a CommonJS module with a TDZ error, for
 one) leaves a pending exception. `Evaluate` turns it into a rejected promise so
@@ -133,9 +173,10 @@ contract through `eval_module_source`.
 Changes 1 and 2 are covered by the differential runs below, comparing the stock
 quickjs-ng 0.15.1 source against this tree; change 4 is covered by
 `packed::esm-invalid-specifier-raw-nul`, change 5 by the Node `buffer`, `util`
-and `assert` suites, change 7 by the Node dynamic-import cases, and changes 8
-and 9 by `packed::esm-link-error`, `packed::esm-large-link-error` and
-`packed::esm-dynamic-link-error`:
+and `assert` suites, change 7 by the Node dynamic-import cases, changes 8 and
+9 by `packed::esm-link-error`, `packed::esm-large-link-error` and
+`packed::esm-dynamic-link-error`, and change 10 by the rewrite crate's unit
+tests:
 
 - quickjs-ng 0.15.1 and 0.18 test scripts: identical output and exit status.
 - 600 generated programs with nested blocks, shadowing, `with`, catch
@@ -143,13 +184,17 @@ and 9 by `packed::esm-link-error`, `packed::esm-large-link-error` and
   identical output and exit status.
 - The thinpack Node.js compatibility suite: 227 passed, 0 failed.
 - The packed suite (including both startup guards): 21 passed, 0 failed.
+- The rewrite crate's Linux unit tests: 16 passed (token-aware `import.meta`,
+  regex classification, nested destructuring, import locations, dynamic
+  imports, top-level await).
 
 ## Updating
 
 1. Replace this directory with the new published crate (without `Cargo.lock`
    or `.cargo-ok`; those are not part of the vendored source).
 2. Apply `THINPACK.patch`; resolve rejects by rebasing the changes onto the
-   new `quickjs.c` and JSC files.
+   new `quickjs.c`, JSC files and `Cargo.toml` (which carries the
+   `thinpack-jsc-rewrite` path dependency).
 3. Keep the upstream column fix if the new quickjs-ng already contains it;
    drop that hunk from the patch instead of reverting the vendored source.
 4. Rerun the startup tests and `cargo xtask lint`. On macOS that also compiles

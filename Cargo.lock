@@ -3793,6 +3793,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "thinpack-jsc-rewrite"
+version = "0.2.0"
+
+[[package]]
 name = "thinpack-loader"
 version = "0.2.0"
 dependencies = [
@@ -4617,6 +4621,7 @@ dependencies = [
  "paste",
  "temporal_capi",
  "temporal_rs",
+ "thinpack-jsc-rewrite",
  "timezone_provider",
 ]
 
