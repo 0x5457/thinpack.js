@@ -13,6 +13,8 @@
 #   deps           Hard dependencies: enabling this module enables them as well. Must be acyclic.
 #   optional_deps  Lazy dependencies: used by a single API only, excluded from the capability
 #                  closure; that API fails explicitly when the module is absent.
+#   globals        JavaScript globals whose unshadowed static references select this module;
+#                  unique repo-wide.
 #   layers         Shared layer crates (by package name) registered as one extension when any
 #                  module that lists them is enabled. A layer provides no builtin of its own;
 #                  it holds the runtime code several modules share, so linking one module does
@@ -132,6 +134,30 @@ deps = ["stream", "net", "events"]
 builtins = ["http"]
 deps = ["stream", "net"]
 optional_deps = ["https", "crypto", "buffer"]
+
+# The internal bundle is the capability marker; a reference to any global below selects it.
+[modules.fetch]
+builtins = ["thinpack/internal/undici"]
+deps = [
+    "assert",
+    "async_hooks",
+    "buffer",
+    "crypto",
+    "diagnostics_channel",
+    "events",
+    "http",
+    "net",
+    "perf_hooks",
+    "querystring",
+    "stream",
+    "tls",
+    "url",
+    "util",
+    "worker_threads",
+    "zlib",
+]
+globals = ["fetch", "Headers", "Request", "Response", "FormData", "WebSocket"]
+optional_deps = ["http2", "sqlite"]
 
 [modules.https]
 builtins = ["https"]

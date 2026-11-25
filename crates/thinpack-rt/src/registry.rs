@@ -90,6 +90,8 @@ pub(crate) fn extensions() -> Vec<deno_core::Extension> {
     extensions.push(thinpack_node_http::init());
     #[cfg(feature = "node-tls")]
     extensions.push(thinpack_node_tls::init());
+    #[cfg(feature = "node-fetch")]
+    extensions.push(thinpack_node_fetch::init());
     #[cfg(feature = "node-http2")]
     extensions.push(thinpack_node_http2::init());
     #[cfg(feature = "node-https")]
@@ -187,6 +189,8 @@ pub(crate) fn enabled() -> Vec<&'static str> {
     names.push("http");
     #[cfg(feature = "node-tls")]
     names.push("tls");
+    #[cfg(feature = "node-fetch")]
+    names.push("fetch");
     #[cfg(feature = "node-http2")]
     names.push("http2");
     #[cfg(feature = "node-https")]

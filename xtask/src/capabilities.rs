@@ -30,6 +30,7 @@ pub(crate) struct Module {
     pub builtins: Vec<String>,
     pub deps: Vec<String>,
     pub optional_deps: Vec<String>,
+    pub globals: Vec<String>,
     pub layers: Vec<String>,
     pub ambient: bool,
     pub optional: bool,
@@ -44,6 +45,7 @@ impl Module {
             builtins: entry.builtins,
             deps: entry.deps,
             optional_deps: entry.optional_deps,
+            globals: entry.globals,
             layers: entry.layers,
             ambient: entry.ambient,
             optional: entry.optional,
@@ -65,6 +67,8 @@ struct Entry {
     deps: Vec<String>,
     #[serde(default)]
     optional_deps: Vec<String>,
+    #[serde(default)]
+    globals: Vec<String>,
     #[serde(default)]
     layers: Vec<String>,
     #[serde(default)]
@@ -161,6 +165,7 @@ fn validate(modules: &[Module], runtime_manifest: &str) -> Result<(), String> {
         .map(|feature| (feature, "thinpack-rt backend"))
         .collect();
     let mut builtins = BTreeMap::new();
+    let mut globals = BTreeMap::new();
 
     for module in modules {
         if !is_module_name(&module.name) {
@@ -182,6 +187,14 @@ fn validate(modules: &[Module], runtime_manifest: &str) -> Result<(), String> {
             if let Some(other) = builtins.insert(builtin, &module.name) {
                 return Err(format!(
                     "builtin `{builtin}` is declared twice: by `{other}` and by `{}`",
+                    module.name
+                ));
+            }
+        }
+        for global in &module.globals {
+            if let Some(other) = globals.insert(global, &module.name) {
+                return Err(format!(
+                    "global `{global}` is declared twice: by `{other}` and by `{}`",
                     module.name
                 ));
             }
@@ -320,6 +333,7 @@ pub struct Module {
     pub feature: &'static str,
     pub builtins: &'static [&'static str],
     pub deps: &'static [&'static str],
+    pub globals: &'static [&'static str],
     pub ambient: bool,
     pub optional: bool,
 }
@@ -339,6 +353,11 @@ pub const MODULES: &[Module] = &[
             string_slice(&module.builtins)
         );
         let _ = writeln!(source, "        deps: &{},", string_slice(&module.deps));
+        let _ = writeln!(
+            source,
+            "        globals: &{},",
+            string_slice(&module.globals)
+        );
         let _ = writeln!(source, "        ambient: {},", module.ambient);
         let _ = writeln!(source, "        optional: {},", module.optional);
         source.push_str("    },\n");
