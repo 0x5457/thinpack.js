@@ -478,7 +478,8 @@ pub fn is_javascript(path: &Path) -> bool {
 
 /// `.d.ts`, `.d.mts` and `.d.cts` describe types for a caller; they are not
 /// executable modules even though their last extension says TypeScript.
-fn is_declaration(path: &Path) -> bool {
+#[must_use]
+pub fn is_declaration(path: &Path) -> bool {
     let name = path
         .file_name()
         .and_then(|name| name.to_str())

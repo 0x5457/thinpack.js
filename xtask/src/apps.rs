@@ -50,13 +50,13 @@ const APPS: &[App] = &[
         name: "tsc",
         package: "typescript",
         entry: None,
-        includes: &[Include::Declarations("node_modules/typescript/lib")],
+        includes: &[],
     },
     App {
         name: "prettier",
         package: "prettier",
         entry: None,
-        includes: &[Include::Path("node_modules/prettier/internal")],
+        includes: &["node_modules/prettier/internal"],
     },
     App {
         name: "eslint",
@@ -94,16 +94,7 @@ struct App {
     /// after the app.
     entry: Option<&'static str>,
     /// Paths under the fixture that hold data the analyzer cannot see.
-    includes: &'static [Include],
-}
-
-enum Include {
-    /// Passed to `--include` as is: a file, or a directory that is analyzed as JavaScript too.
-    Path(&'static str),
-    /// Only the `.d.ts` files of a directory. TypeScript's `lib/` also holds its compiler API
-    /// and the server entries, and analyzing those would put modules the CLI never loads into
-    /// the template.
-    Declarations(&'static str),
+    includes: &'static [&'static str],
 }
 
 struct Config {
@@ -247,7 +238,7 @@ fn measure(app: &'static App) -> Result<Record, String> {
             .map_err(|error| format!("{}: {error}", directory.display()))?;
     }
 
-    let includes = include_paths(app, &fixture)?;
+    let includes = include_paths(app, &fixture);
     pack(&fixture, &package.entry, &artifact, &includes)?;
     let summary = PackSummary::read(&artifact)?;
     let bytes = fs::metadata(&artifact)
@@ -344,36 +335,8 @@ fn bin_entry(app: &App, bin: Option<Bin>) -> Result<String, String> {
     }
 }
 
-fn include_paths(app: &App, fixture: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut paths = Vec::new();
-    for include in app.includes {
-        match include {
-            Include::Path(path) => paths.push(fixture.join(path)),
-            Include::Declarations(path) => {
-                let directory = fixture.join(path);
-                let mut declarations = Vec::new();
-                for entry in fs::read_dir(&directory)
-                    .map_err(|error| format!("{}: {error}", directory.display()))?
-                {
-                    let path = entry
-                        .map_err(|error| format!("{}: {error}", directory.display()))?
-                        .path();
-                    if path
-                        .file_name()
-                        .is_some_and(|name| name.to_string_lossy().ends_with(".d.ts"))
-                    {
-                        declarations.push(path);
-                    }
-                }
-                if declarations.is_empty() {
-                    return Err(format!("no `.d.ts` files in {}", directory.display()));
-                }
-                declarations.sort();
-                paths.extend(declarations);
-            }
-        }
-    }
-    Ok(paths)
+fn include_paths(app: &App, fixture: &Path) -> Vec<PathBuf> {
+    app.includes.iter().map(|path| fixture.join(path)).collect()
 }
 
 fn pack(
