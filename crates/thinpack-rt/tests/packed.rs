@@ -626,35 +626,100 @@ assert.equal(globalThis.dependencyEvaluated, undefined);
         files: &[
             (
                 "/app/main.mjs",
-                r#"
+                r"
 import assert from 'node:assert/strict';
 import module from 'node:module';
 
-module.register('./hooks.mjs', import.meta.url);
+module.register('./hooks.mjs', import.meta.url, { data: { label: 'packed' } });
+assert.equal((await import('./lib.mjs')).value, 'from async hook');
+console.log('async loader hooks ok');
+",
+            ),
+            (
+                "/app/hooks.mjs",
+                r#"
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
-await assert.rejects(import('./lib.mjs'), {
-  name: 'Error',
-  code: 'ERR_ESM_HOOK_ASYNC',
-  message:
-    "the resolve hook for './lib.mjs' did not settle: ESM hooks run synchronously, " +
-    'so a hook that awaits I/O cannot finish. Use a synchronous API in the hook ' +
-    '(fs.readFileSync, for example).',
-});
+// Reading the running executable is genuine pending disk I/O, unlike a virtual
+// `/app` read or an already-settled promise.
+const readHostFile = async () => {
+  const handle = await fs.promises.open(process.execPath, 'r');
+  try {
+    const { bytesRead } = await handle.read(new Uint8Array(1), 0, 1, 0);
+    assert.equal(bytesRead, 1);
+  } finally {
+    await handle.close();
+  }
+};
+
+export async function initialize(data) {
+  assert.deepEqual(data, { label: 'packed' });
+  await readHostFile();
+}
+
+export async function resolve(specifier, context, nextResolve) {
+  await readHostFile();
+  return nextResolve(specifier, context);
+}
+
+export async function load(url, context, nextLoad) {
+  await readHostFile();
+  const result = await nextLoad(url, context);
+  if (url.endsWith('/lib.mjs')) {
+    return {
+      format: 'module',
+      source: "export const value = 'from async hook';",
+      shortCircuit: true,
+    };
+  }
+  return result;
+}
 "#,
+            ),
+            ("/app/lib.mjs", "export const value = 'from the payload';\n"),
+        ],
+        capabilities: &["assert", "fs", "module"],
+        error: None,
+    },
+    PackedTest {
+        name: "packed::esm-register-require-stays-sync",
+        directory: "esm-register-require-stays-sync",
+        entry: "/app/main.js",
+        files: &[
+            (
+                "/app/main.js",
+                r"
+const assert = require('node:assert/strict');
+const nodeModule = require('node:module');
+const { pathToFileURL } = require('node:url');
+
+nodeModule.register('./hooks.mjs', pathToFileURL(__filename).href);
+const lib = require('./lib.mjs');
+assert.equal(lib.value, 'plain');
+console.log('require bypass ok');
+",
             ),
             (
                 "/app/hooks.mjs",
                 r"
 import fs from 'node:fs';
 
-export async function resolve(specifier, context, nextResolve) {
-  // `readFile` is a real asynchronous op, unlike the synchronous `stat` calls.
-  await fs.promises.readFile('/app/hooks.mjs', 'utf8');
-  return nextResolve(specifier, context);
+const refuse = async (hook) => {
+  await fs.promises.open(process.execPath, 'r');
+  throw new Error(`the asynchronous ${hook} hook ran during require()`);
+};
+
+export async function resolve() {
+  await refuse('resolve');
+}
+
+export async function load() {
+  await refuse('load');
 }
 ",
             ),
-            ("/app/lib.mjs", "export const value = 1;\n"),
+            ("/app/lib.mjs", "export const value = 'plain';\n"),
         ],
         capabilities: &["assert", "fs", "module"],
         error: None,

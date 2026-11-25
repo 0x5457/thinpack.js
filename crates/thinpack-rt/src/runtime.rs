@@ -118,7 +118,8 @@ pub(crate) fn warm(pack: &Pack) -> Result<usize, Box<dyn std::error::Error>> {
         .enable_io()
         .build()?
         .block_on(async move {
-            let mut runtime = Runtime::new(extensions, builtins, loader)?;
+            let mut runtime = Runtime::new(extensions, builtins, loader.clone())?;
+            runtime.put_state(loader);
             for (name, source) in scripts {
                 runtime.execute_script(&name, source)?;
             }
@@ -157,7 +158,8 @@ pub(crate) fn run(
         .enable_io()
         .build()?
         .block_on(async move {
-            let mut runtime = Runtime::new(extensions, builtins, loader)?;
+            let mut runtime = Runtime::new(extensions, builtins, loader.clone())?;
+            runtime.put_state(loader);
             if let Some(packed) = packed {
                 runtime.install_invocation(&thinpack_core::Invocation(packed.invocation))?;
             }
@@ -190,24 +192,64 @@ async fn execute(
 type RuntimeParts = (
     Vec<deno_core::Extension>,
     BuiltinSources,
-    Rc<dyn deno_core::ModuleLoader>,
+    Rc<thinpack_loader::EsmLoader>,
 );
+
+fn base_extensions(main: Main, fs: ModuleFs, isolate: &IsolateInputs) -> Vec<deno_core::Extension> {
+    let mut extensions = vec![
+        thinpack_loader::init(main, fs),
+        thinpack_io::init(),
+        thinpack_node_internals::init(),
+        bootstrap::init(),
+    ];
+    extensions.extend(registry::extensions(isolate));
+    extensions
+}
 
 fn extensions(
     main: Main,
     fs: ModuleFs,
     isolate: &IsolateInputs,
 ) -> Result<RuntimeParts, Box<dyn std::error::Error>> {
-    let mut extensions = vec![
-        thinpack_loader::init(main, fs.clone()),
-        thinpack_io::init(),
-        thinpack_node_internals::init(),
-        bootstrap::init(),
-    ];
-    extensions.extend(registry::extensions(isolate));
+    let mut extensions = base_extensions(main, fs.clone(), isolate);
     let builtins = BuiltinSources::collect(&mut extensions)?;
+    #[cfg(feature = "node-module")]
+    let loader = {
+        let packed = matches!(fs, ModuleFs::Packed(_));
+        thinpack_loader::esm_loader_with_hooks(
+            fs,
+            builtins.clone(),
+            Box::new(move || hook_parts(packed)),
+        )
+    };
+    #[cfg(not(feature = "node-module"))]
     let loader = thinpack_loader::esm_loader(fs, builtins.clone());
     Ok((extensions, builtins, loader))
+}
+
+/// Builds the isolate that runs `module.register` hooks. It is created on the hook
+/// thread from the same payload and capability set as the app's isolate.
+#[cfg(feature = "node-module")]
+fn hook_parts(packed: bool) -> Result<thinpack_loader::HookRuntimeParts, String> {
+    let (fs, assets, isolate) = if packed {
+        let pack = PACK
+            .get()
+            .ok_or_else(|| "the packed payload is not installed".to_owned())?;
+        let (vfs, assets) = packed_parts(pack).map_err(|error| error.to_string())?;
+        let isolate = IsolateInputs::new(Some(vfs.clone()));
+        (ModuleFs::Packed(vfs), assets, isolate)
+    } else {
+        (ModuleFs::Host, Assets::host(), IsolateInputs::new(None))
+    };
+    let mut extensions = base_extensions(Main::Eval(String::new()), fs.clone(), &isolate);
+    let builtins = BuiltinSources::collect(&mut extensions).map_err(|error| error.to_string())?;
+    let loader: Rc<dyn deno_core::ModuleLoader> = thinpack_loader::esm_loader(fs, builtins.clone());
+    Ok(thinpack_loader::HookRuntimeParts {
+        extensions,
+        builtins,
+        assets,
+        loader,
+    })
 }
 
 fn run_worker(spec: thinpack_core::worker::WorkerSpec) -> Result<(), thinpack_core::Error> {
@@ -230,7 +272,8 @@ fn run_worker(spec: thinpack_core::worker::WorkerSpec) -> Result<(), thinpack_co
         .build()
         .map_err(thinpack_core::Error::from)?
         .block_on(async move {
-            let mut runtime = Runtime::new(extensions, builtins, loader)?;
+            let mut runtime = Runtime::new(extensions, builtins, loader.clone())?;
+            runtime.put_state(loader);
             runtime.install_worker_context(spec.context());
             runtime.install_assets(assets);
             execute(&mut runtime, Some((entry, esm))).await

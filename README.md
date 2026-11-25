@@ -269,9 +269,11 @@ for adding a module.
 - WebAssembly is always available and cannot be trimmed (WAMR on QuickJS, about 217 KB).
 - The analyzer does not run ESM loader hooks. It determines formats from the file extension,
   package scope and syntax on disk. A hook cannot make a module analyzable or add it to the
-  payload. To include a hook file inside the project, use `pack --include`. At runtime, hooks
-  run within a synchronous checkpoint. A hook that needs the event loop, such as one awaiting
-  `fs.promises.readFile`, fails with `ERR_ESM_HOOK_ASYNC`.
+  payload. To include a hook file inside the project, use `pack --include`. At runtime,
+  `module.register` hooks run in their own loader isolate, as Node's loader thread does, so
+  they may await I/O; the isolate has the app's capabilities and payload but its own globals.
+  `module.registerHooks` stays synchronous on the app's isolate, and `require()` (including
+  `require(esm)`) does not use the asynchronous hooks.
 - `/app/**` comes from the payload: `fs` reads it, writes return `EROFS`, and modules under
   it are the bundled ones; anything outside `/app` goes to the host file system, including a
   module the app computes at run time (a project ESLint config, say), as it does under Node.

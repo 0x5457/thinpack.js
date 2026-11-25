@@ -5,6 +5,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# `module.register` hooks need a second isolate; apps without node:module skip it.
+esm-hooks = ["dep:tokio"]
+
 [dependencies]
 thinpack-js.workspace = true
 thinpack-cjs-lexer.workspace = true
@@ -15,6 +19,7 @@ thinpack-caps.workspace = true
 deno_error = "0.7"
 thinpack-vfs.workspace = true
 url = "2"
+tokio = { workspace = true, optional = true }
 
 
 [dev-dependencies]

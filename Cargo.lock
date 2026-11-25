@@ -4422,6 +4422,7 @@ dependencies = [
  "thinpack-js",
  "thinpack-resolve",
  "thinpack-vfs",
+ "tokio",
  "url",
 ]
 

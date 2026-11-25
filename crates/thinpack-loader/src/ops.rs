@@ -16,8 +16,10 @@ use thinpack_core::{BuiltinSources, file_url};
 use thinpack_resolve::{FileSystem, Format, Resolved};
 use url::Url;
 
+#[cfg(feature = "esm-hooks")]
+use crate::error::HookError;
 use crate::error::LoaderError;
-use crate::{Main, ModuleFs, missing_builtin_message};
+use crate::{EsmLoader, Main, ModuleFs, missing_builtin_message};
 
 pub(crate) const OPS: &[OpDecl] = &[
     op_require(),
@@ -27,6 +29,14 @@ pub(crate) const OPS: &[OpDecl] = &[
     op_require_resolve(),
     op_esm_resolve_default(),
     op_esm_load_default(),
+    op_esm_format(),
+    op_esm_async_active(),
+    #[cfg(feature = "esm-hooks")]
+    op_esm_async_resolve(),
+    #[cfg(feature = "esm-hooks")]
+    op_esm_async_load(),
+    #[cfg(feature = "esm-hooks")]
+    op_esm_register(),
 ];
 
 #[op2]
@@ -114,6 +124,20 @@ fn op_esm_load_default(
 
 #[op2]
 #[string]
+fn op_esm_format(state: Rc<RefCell<OpState>>, #[string] url: &str) -> String {
+    let Ok(specifier) = ModuleSpecifier::parse(url) else {
+        return String::new();
+    };
+    let op_state = state.borrow();
+    let fs = op_state.borrow::<ModuleFs>();
+    let builtins = op_state.borrow::<BuiltinSources>();
+    crate::esm::default_format(fs, builtins, &specifier)
+        .unwrap_or_default()
+        .to_owned()
+}
+
+#[op2]
+#[string]
 fn op_builtin_modules(state: Rc<RefCell<OpState>>) -> String {
     let state = state.borrow();
     let builtins = state.borrow::<BuiltinSources>();
@@ -153,12 +177,86 @@ fn op_require(
     }
 }
 
+#[op2(fast)]
+fn op_esm_async_active(state: Rc<RefCell<OpState>>) -> bool {
+    state
+        .borrow()
+        .try_borrow::<Rc<EsmLoader>>()
+        .is_some_and(|loader| loader.async_active())
+}
+
+#[cfg(feature = "esm-hooks")]
+#[op2]
+#[string]
+fn op_esm_async_resolve(
+    state: Rc<RefCell<OpState>>,
+    #[string] specifier: &str,
+    #[string] parent: &str,
+    #[string] attributes: &str,
+    #[string] conditions: &str,
+) -> String {
+    match loader(&state)
+        .and_then(|loader| loader.async_resolve(specifier, parent, attributes, conditions))
+    {
+        Ok(url) => format!("ok\0{url}"),
+        Err(error) => error.encode(),
+    }
+}
+
+#[op2]
+#[string]
+#[cfg(feature = "esm-hooks")]
+fn op_esm_async_load(
+    state: Rc<RefCell<OpState>>,
+    #[string] url: &str,
+    #[string] format: &str,
+    #[string] attributes: &str,
+    #[string] conditions: &str,
+) -> String {
+    match loader(&state).and_then(|loader| loader.async_load(url, format, attributes, conditions)) {
+        Ok((format, source)) => format!("ok\0{format}\0{source}"),
+        Err(error) => error.encode(),
+    }
+}
+
+#[op2]
+#[string]
+#[cfg(feature = "esm-hooks")]
+fn op_esm_register(
+    state: Rc<RefCell<OpState>>,
+    #[string] url: &str,
+    #[buffer(copy)] data: Vec<u8>,
+) -> String {
+    match loader(&state).and_then(|loader| loader.register(url, data)) {
+        Ok(()) => "ok".to_owned(),
+        Err(error) => error.encode(),
+    }
+}
+
+#[cfg(feature = "esm-hooks")]
+fn loader(state: &Rc<RefCell<OpState>>) -> Result<Rc<EsmLoader>, HookError> {
+    state
+        .borrow()
+        .try_borrow::<Rc<EsmLoader>>()
+        .cloned()
+        .ok_or_else(|| HookError::new("Error", "the ESM loader hook host is not installed"))
+}
+
 #[op2(reentrant)]
 fn op_require_esm<'s>(
     scope: &mut v8::PinScope<'s, '_>,
+    state: Rc<RefCell<OpState>>,
     #[string] specifier: &str,
 ) -> Result<v8::Local<'s, v8::Value>, JsErrorBox> {
-    deno_core::require_esm(scope, specifier)
+    let loader = state.borrow().try_borrow::<Rc<EsmLoader>>().cloned();
+    if let Some(loader) = &loader {
+        loader.enter_require();
+    }
+    let result = deno_core::require_esm(scope, specifier);
+    if let Some(loader) = &loader {
+        loader.leave_require();
+    }
+    result
         .map(|namespace| v8::Local::<v8::Object>::new(scope, namespace).into())
         .map_err(|error| {
             // The engine reports top-level await as a plain generic error with

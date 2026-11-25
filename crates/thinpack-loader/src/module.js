@@ -260,96 +260,53 @@
     if (code !== undefined) error.code = code;
     return error;
   };
-  const sleep = (milliseconds) => {
-    if (milliseconds > 0) {
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
-    }
+  const asyncActive = () => ops.op_esm_async_active();
+  const errorClasses = {
+    Error,
+    EvalError,
+    RangeError,
+    ReferenceError,
+    SyntaxError,
+    TypeError,
+    URIError,
   };
 
-  // Node runs module.register hooks on a loader thread, so a hook may await I/O. Here a
-  // hook runs in a synchronous checkpoint: its microtasks and the timers it schedules run,
-  // and a hook that needs the event loop (fs, net, ...) is reported as ERR_ESM_HOOK_ASYNC
-  // instead of blocking the process.
-  const runHook = (name, target, invoke) => {
-    const previousSetTimeout = globalThis.setTimeout;
-    const previousClearTimeout = globalThis.clearTimeout;
-    const previousSetImmediate = globalThis.setImmediate;
-    const previousClearImmediate = globalThis.clearImmediate;
-    const timers = [];
-    let nextTimer = 1;
-    const setHookTimeout = (callback, delay = 0, ...args) => {
-      if (typeof callback !== "function") {
-        return previousSetTimeout(callback, delay, ...args);
+  // `module.register` failures cross the isolate bridge as text; rebuild the thrown
+  // error with the class, message, code and stack the hook isolate recorded.
+  const throwHookError = (reply) => {
+    let rest = reply.startsWith("err\0") ? reply.slice(4) : reply;
+    const fields = [];
+    for (let index = 0; index < 3; index++) {
+      const end = rest.indexOf("\0");
+      if (end === -1) {
+        fields.push(rest);
+        rest = "";
+      } else {
+        fields.push(rest.slice(0, end));
+        rest = rest.slice(end + 1);
       }
-      const timer = {
-        id: nextTimer++,
-        callback,
-        args,
-        due: Date.now() + Math.max(0, Number(delay) || 0),
-      };
-      timers.push(timer);
-      return timer;
-    };
-    const clearHookTimeout = (timer) => {
-      const index = timers.indexOf(timer);
-      if (index !== -1) timers.splice(index, 1);
-    };
-    globalThis.setTimeout = setHookTimeout;
-    globalThis.clearTimeout = clearHookTimeout;
-    globalThis.setImmediate = (callback, ...args) => setHookTimeout(callback, 0, ...args);
-    globalThis.clearImmediate = clearHookTimeout;
-    const restore = () => {
-      globalThis.setTimeout = previousSetTimeout;
-      globalThis.clearTimeout = previousClearTimeout;
-      globalThis.setImmediate = previousSetImmediate;
-      globalThis.clearImmediate = previousClearImmediate;
-    };
-    let result;
-    try {
-      result = invoke();
-    } catch (error) {
-      restore();
-      throw error;
     }
-    if (result === null || typeof result !== "object" || typeof result.then !== "function") {
-      restore();
-      return result;
+    fields.push(rest);
+    const [className, message, code, stack] = fields;
+    const ErrorClass = errorClasses[className];
+    const error = ErrorClass === undefined ? new Error(message) : new ErrorClass(message);
+    if (error.name !== className) {
+      Object.defineProperty(error, "name", { value: className, configurable: true });
     }
-    let settled = 0;
-    let value;
-    let failure;
-    result.then(
-      (resolved) => { settled = 1; value = resolved; },
-      (rejected) => { settled = 2; failure = rejected; },
-    );
-    try {
-      while (settled === 0) {
-        Deno.core.runMicrotasks();
-        if (settled !== 0) break;
-        timers.sort((left, right) => left.due - right.due);
-        const timer = timers.shift();
-        if (timer === undefined) break;
-        sleep(timer.due - Date.now());
-        try {
-          timer.callback(...timer.args);
-        } finally {
-          Deno.core.runMicrotasks();
-        }
-      }
-    } finally {
-      restore();
-    }
-    if (settled === 0) {
-      const error = new Error(
-        "the " + name + " hook for '" + target + "' did not settle: " +
-          "ESM hooks run synchronously, so a hook that awaits I/O cannot finish. " +
-          "Use a synchronous API in the hook (fs.readFileSync, for example).",
-      );
-      error.code = "ERR_ESM_HOOK_ASYNC";
-      throw error;
-    }
-    if (settled === 2) throw failure;
-    return value;
+    if (code !== "") error.code = code;
+    if (stack !== "") error.stack = stack;
+    throw error;
+  };
+
+  const okReply = (reply) => {
+    if (reply.startsWith("err\0")) throwHookError(reply);
+    return reply.startsWith("ok\0") ? reply.slice(3) : reply;
+  };
+
+  const encodeAttributes = (attributes) => {
+    const parts = [];
+    for (const key of Object.keys(attributes)) parts.push(key, attributes[key]);
+    return parts.join("\0");
   };
 
   const parseAttributes = (raw) => {
@@ -368,6 +325,11 @@
       parentURL === undefined || parentURL === null ? "" : String(parentURL),
     );
 
+  const formatOf = (url) => {
+    const format = ops.op_esm_format(String(url));
+    return format === "" ? undefined : format;
+  };
+
   const defaultLoad = (url) => {
     const raw = ops.op_esm_load_default(String(url));
     const separator = raw.indexOf("\0");
@@ -376,7 +338,19 @@
 
   const hasLoadHook = () => esmHookSets.some((hooks) => hooks.load !== undefined);
   const runResolveHooks = (index, specifier, context) => {
-    if (index < 0) return { url: defaultResolve(specifier, context.parentURL) };
+    if (index < 0) {
+      if (asyncActive()) {
+        return {
+          url: okReply(ops.op_esm_async_resolve(
+            String(specifier),
+            context.parentURL ?? "",
+            encodeAttributes(context.importAttributes),
+            context.conditions.join("\0"),
+          )),
+        };
+      }
+      return { url: defaultResolve(specifier, context.parentURL) };
+    }
     const hooks = esmHookSets[index];
     if (hooks.resolve === undefined) {
       return runResolveHooks(index - 1, specifier, context);
@@ -392,11 +366,7 @@
       nextResult = runResolveHooks(index - 1, String(nextSpecifier), { ...context, parentURL });
       return nextResult;
     };
-    let result = runHook(
-      "resolve",
-      specifier,
-      () => hooks.resolve(specifier, { ...context, data: hooks.data }, nextResolve),
-    );
+    let result = hooks.resolve(specifier, { ...context, data: hooks.data }, nextResolve);
     if (result === undefined || result === null) {
       if (!nextCalled) {
         throw hookFailure("the resolve hook must return a value or call nextResolve");
@@ -410,7 +380,19 @@
   };
 
   const runLoadHooks = (index, url, format, attributes) => {
-    if (index < 0) return defaultLoad(url);
+    if (index < 0) {
+      if (asyncActive()) {
+        const raw = okReply(ops.op_esm_async_load(
+          String(url),
+          format ?? "",
+          encodeAttributes(attributes),
+          importConditions.join("\0"),
+        ));
+        const separator = raw.indexOf("\0");
+        return { format: raw.slice(0, separator), source: raw.slice(separator + 1) };
+      }
+      return defaultLoad(url);
+    }
     const hooks = esmHookSets[index];
     if (hooks.load === undefined) return runLoadHooks(index - 1, url, format, attributes);
     let nextResult;
@@ -422,14 +404,10 @@
       nextResult = runLoadHooks(index - 1, String(nextUrl), nextFormat, attributes);
       return nextResult;
     };
-    const result = runHook(
-      "load",
+    const result = hooks.load(
       url,
-      () => hooks.load(
-        url,
-        { format, importAttributes: attributes, conditions: importConditions, data: hooks.data },
-        nextLoad,
-      ),
+      { format, importAttributes: attributes, conditions: importConditions, data: hooks.data },
+      nextLoad,
     );
     if (result === null || typeof result !== "object") {
       throw hookFailure("the load hook must return an object");
@@ -451,8 +429,16 @@
   };
 
   const resolveBridge = (specifier, referrer, rawAttributes) => {
-    if (esmHookSets.length === 0) return "";
     const parentURL = referrer === "" || referrer === "." ? undefined : String(referrer);
+    if (esmHookSets.length === 0) {
+      if (!asyncActive()) return "";
+      return okReply(ops.op_esm_async_resolve(
+        String(specifier),
+        parentURL ?? "",
+        rawAttributes,
+        importConditions.join("\0"),
+      ));
+    }
     const attributes = parseAttributes(rawAttributes);
     const result = runResolveHooks(esmHookSets.length - 1, String(specifier), {
       conditions: importConditions,
@@ -464,7 +450,8 @@
     }
     if (!hasLoadHook() || esmHookLoads.has(result.url)) return result.url;
     esmHookLoads.add(result.url);
-    const loaded = runLoadHooks(esmHookSets.length - 1, result.url, result.format, attributes);
+    const format = result.format ?? formatOf(result.url);
+    const loaded = runLoadHooks(esmHookSets.length - 1, result.url, format, attributes);
     return result.url + "\0" + loaded.format + "\0" + loaded.source;
   };
 
@@ -493,14 +480,12 @@
       parent = String(opts.parentURL);
     }
     const url = defaultResolve(String(specifier), parent);
-    const namespace = ops.op_require_esm(url);
-    const exported = namespace ?? {};
-    const fallback = exported.default ?? {};
-    registerHooks({
-      resolve: exported.resolve ?? fallback.resolve,
-      load: exported.load ?? fallback.load,
-      data: opts === undefined || opts === null ? undefined : opts.data,
-    });
+    const data = Deno.core.serialize(
+      opts === undefined || opts === null ? undefined : opts.data,
+      { transferredArrayBuffers: opts?.transferList },
+    );
+    const reply = ops.op_esm_register(url, data);
+    if (reply !== "ok") throwHookError(reply);
   };
 
   Object.defineProperty(globalThis, "__thinpack_esm_hooks__", {
