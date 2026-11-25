@@ -3749,6 +3749,13 @@ name = "thinpack-caps"
 version = "0.2.0"
 
 [[package]]
+name = "thinpack-cjs-lexer"
+version = "0.2.0"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "thinpack-cli"
 version = "0.2.0"
 dependencies = [
@@ -3792,6 +3799,7 @@ dependencies = [
  "deno_core",
  "deno_error",
  "thinpack-caps",
+ "thinpack-cjs-lexer",
  "thinpack-core",
  "thinpack-js",
  "thinpack-resolve",

@@ -14,7 +14,6 @@ use thinpack_core::{BuiltinSources, file_url, path_from_url};
 use thinpack_resolve::{FileSystem, Format};
 
 use crate::ModuleFs;
-use crate::cjs_exports;
 use crate::error::LoaderError;
 
 #[derive(Debug)]
@@ -279,7 +278,7 @@ fn collect_reexports(
 ) {
     visited.insert(path.to_path_buf());
 
-    for specifier in cjs_exports::reexport_specifiers(source) {
+    for specifier in thinpack_cjs_lexer::analyze(source).reexports {
         let Ok(resolved) = thinpack_resolve::resolve(&specifier, path, fs) else {
             continue;
         };
@@ -295,7 +294,7 @@ fn collect_reexports(
         let Ok(text) = String::from_utf8(contents) else {
             continue;
         };
-        names.extend(cjs_exports::export_names(&text));
+        names.extend(thinpack_cjs_lexer::analyze(&text).exports);
         collect_reexports(fs, &resolved.path, &text, names, visited);
     }
 }
@@ -305,8 +304,8 @@ fn builtin_export_names(
     source: &str,
     visited: &mut BTreeSet<String>,
 ) -> BTreeSet<String> {
-    let mut names = cjs_exports::export_names(source);
-    for specifier in cjs_exports::reexport_specifiers(source) {
+    let mut names = thinpack_cjs_lexer::analyze(source).exports;
+    for specifier in thinpack_cjs_lexer::analyze(source).reexports {
         if !visited.insert(specifier.clone()) {
             continue;
         }
@@ -383,7 +382,7 @@ fn module_from_format(
         "json" => Ok(module_source(specifier, ModuleType::Json, source)),
         "commonjs" => {
             let path = path_from_url(specifier);
-            let mut names = cjs_exports::export_names(&source);
+            let mut names = thinpack_cjs_lexer::analyze(&source).exports;
             if let Some(path) = path.as_deref() {
                 collect_reexports(fs, path, &source, &mut names, &mut BTreeSet::new());
             }

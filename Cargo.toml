@@ -7,6 +7,7 @@ members = [
     "crates/thinpack-js",
     "crates/thinpack-resolve",
     "crates/thinpack-loader",
+    "crates/thinpack-cjs-lexer",
     "crates/thinpack-io",
     "crates/thinpack-analyze",
     "crates/thinpack-pack",
@@ -83,6 +84,7 @@ thinpack-caps = { path = "crates/thinpack-caps" }
 thinpack-js = { path = "crates/thinpack-js" }
 thinpack-resolve = { path = "crates/thinpack-resolve" }
 thinpack-loader = { path = "crates/thinpack-loader" }
+thinpack-cjs-lexer = { path = "crates/thinpack-cjs-lexer" }
 thinpack-io = { path = "crates/thinpack-io" }
 thinpack-node-internals = { path = "crates/thinpack-node-internals" }
 thinpack-pack = { path = "crates/thinpack-pack" }

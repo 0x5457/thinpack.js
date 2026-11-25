@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 thinpack-js.workspace = true
+thinpack-cjs-lexer.workspace = true
 deno_core.workspace = true
 thinpack-core.workspace = true
 thinpack-resolve.workspace = true

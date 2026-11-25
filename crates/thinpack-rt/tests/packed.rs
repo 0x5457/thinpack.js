@@ -949,6 +949,23 @@ console.log('module.parent ok');
             "/app/main.mjs",
             "import { env, pid } from 'node:process';\nif (env !== process.env) throw new Error('env mismatch');\nif (pid !== process.pid) throw new Error('pid mismatch');\nconsole.log('process exports ok');\n",
         )],
+        error: None,
+    },
+    PackedTest {
+        name: "packed::cjs-named-exports",
+        directory: "cjs-named-exports",
+        entry: "/app/main.mjs",
+        files: &[
+            (
+                "/app/main.mjs",
+                "import { a, b, c } from './lib.cjs';\nif (a !== 1 || b !== 2 || c !== 3) throw new Error('named exports');\nconsole.log('cjs named exports ok');\n",
+            ),
+            ("/app/lib.cjs", "module.exports = require('./inner.cjs');\n"),
+            (
+                "/app/inner.cjs",
+                "exports.a = 1;\nexports.b = 2;\nexports.c = 3;\n",
+            ),
+        ],
         capabilities: &[],
         error: None,
     },

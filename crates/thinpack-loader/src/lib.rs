@@ -1,6 +1,5 @@
 mod ops;
 
-mod cjs_exports;
 mod error;
 
 mod esm;
