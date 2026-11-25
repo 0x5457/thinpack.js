@@ -963,6 +963,12 @@ impl SpecifierCollector<'_, '_> {
         let expression = argument.as_expression();
         let mut resolved = Vec::new();
         let complete = expression.is_some_and(|argument| {
+            if resolve_only && let Some(specifier) = require::static_string(argument, self.semantic)
+            {
+                resolved.push(specifier.clone());
+                self.add(specifier, is_import, optional || self.try_depth > 0, true);
+                return true;
+            }
             require::specifiers(argument, self.semantic, |specifier| {
                 resolved.push(specifier.clone());
                 self.add(
@@ -2195,6 +2201,47 @@ mod tests {
                 .any(|path| path == Path::new("/app/tool"))
         );
         assert_eq!(fs.reads.borrow().get(Path::new("/app/tool")), None);
+    }
+
+    #[test]
+    fn static_manifest_names_need_plain_data_and_direct_calls() {
+        let load = "const load = (options) => require.resolve(`${options.package}/package.json`);";
+        let cases = [
+            ("plain", format!("const cli = {{ package: 'tool' }};\n{load}\nload(cli);\n"), false),
+            ("object literal argument", format!("{load}\nload({{ package: 'tool' }});\n"), false),
+            ("spread", format!("const cli = {{ ...{{ package: 'tool' }} }};\n{load}\nload(cli);\n"), true),
+            ("computed key", format!("const cli = {{ ['package']: 'tool' }};\n{load}\nload(cli);\n"), true),
+            ("duplicate key", format!("const cli = {{ package: 'old', package: 'tool' }};\n{load}\nload(cli);\n"), true),
+            ("getter", format!("const cli = {{ get package() {{ return 'tool'; }} }};\n{load}\nload(cli);\n"), true),
+            ("alias write", format!("const cli = {{ package: 'tool' }};\nconst alias = cli;\nalias.package = 'old';\n{load}\nload(cli);\n"), true),
+            ("escape", format!("const cli = {{ package: 'tool' }};\nmutate(cli);\n{load}\nload(cli);\n"), true),
+            ("parameter reassignment", "const load = (options) => { options = { package: 'tool' }; return require.resolve(`${options.package}/package.json`); };\nload({ package: 'tool' });\n".to_owned(), true),
+            ("parameter destructuring", "const load = ({ package: name }) => require.resolve(`${name}/package.json`);\nload({ package: 'tool' });\n".to_owned(), true),
+            ("conflicting calls", format!("const cli = {{ package: 'tool' }};\nconst other = {{ package: 'other' }};\n{load}\nload(cli);\nload(other);\n"), true),
+            ("escaped function", format!("const cli = {{ package: 'tool' }};\n{load}\nmodule.exports.load = load;\nload(cli);\n"), true),
+        ];
+        for (name, source, rejected) in cases {
+            let fs = MemoryFs::new(&[
+                ("/app/package.json", r#"{"type":"commonjs"}"#),
+                ("/app/main.cjs", &source),
+                (
+                    "/app/node_modules/tool/package.json",
+                    r#"{"name":"tool","version":"1.0.0"}"#,
+                ),
+                (
+                    "/app/node_modules/other/package.json",
+                    r#"{"name":"other","version":"1.0.0"}"#,
+                ),
+            ]);
+            let analysis = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+            let strict = analysis.warnings.iter().any(|warning| warning.strict);
+            assert_eq!(strict, rejected, "{name}: {:?}", analysis.warnings);
+            let resolved = analysis
+                .data_files
+                .iter()
+                .any(|path| path.ends_with("tool/package.json"));
+            assert_eq!(resolved, !rejected, "{name}: {:?}", analysis.data_files);
+        }
     }
 
     #[test]

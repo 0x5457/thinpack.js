@@ -403,6 +403,60 @@ mod unix {
     }
 
     #[test]
+    fn a_strict_pack_refuses_an_unproven_object_require_target() {
+        for (name, source) in [
+            (
+                "constant-provenance-duplicate",
+                "const paths = { entry: './old.cjs', entry: './needed.cjs' };\nconsole.log(require(paths.entry));\n",
+            ),
+            (
+                "constant-provenance-alias",
+                "const paths = { entry: './old.cjs' };\nconst alias = paths;\nalias.entry = './needed.cjs';\nconsole.log(require(paths.entry));\n",
+            ),
+        ] {
+            let directory = TempDir::new(name);
+            fs::write(
+                directory.path().join("package.json"),
+                r#"{ "name": "app", "type": "commonjs" }"#,
+            )
+            .expect("write package manifest");
+            let entry = directory.path().join("main.cjs");
+            fs::write(&entry, source).expect("write entry");
+            fs::write(
+                directory.path().join("old.cjs"),
+                "module.exports = 'old';\n",
+            )
+            .expect("write old target");
+            fs::write(
+                directory.path().join("needed.cjs"),
+                "module.exports = 'needed';\n",
+            )
+            .expect("write needed target");
+            let template = fake_template(
+                &directory.path().join("thinpack-rt"),
+                env!("CARGO_PKG_VERSION"),
+            );
+            let output = directory.path().join("packed-app");
+            let result = run_pack(
+                Path::new(env!("CARGO_BIN_EXE_thinpack")),
+                directory.path(),
+                &entry,
+                &[
+                    "--strict",
+                    "--template",
+                    template.to_str().expect("template path is UTF-8"),
+                    "--output",
+                    output.to_str().expect("output path is UTF-8"),
+                ],
+            );
+            let error = String::from_utf8_lossy(&result.stderr);
+            assert!(!result.status.success(), "{name} packed: {error}");
+            assert!(error.contains("non-literal argument"), "{name}: {error}");
+            assert!(!output.exists(), "{name} wrote an unprovable pack");
+        }
+    }
+
+    #[test]
     fn a_resolved_package_manifest_packs_its_declared_bin() {
         let directory = TempDir::new("package-bin");
         fs::write(
