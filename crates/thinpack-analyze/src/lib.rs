@@ -42,10 +42,11 @@ pub struct Analysis {
     /// Files whose module format packing detected (a typeless `.js` written as an ES
     /// module); the payload records them so the loader reads the same format.
     pub formats: BTreeMap<PathBuf, Format>,
-    /// Non-JavaScript files read through `fs.readFileSync`/`readFile`/
-    /// `createReadStream` with a path built from `__dirname`. The payload carries
-    /// them but the analyzer does not parse them.
-    pub static_files: BTreeSet<PathBuf>,
+    /// Files the payload carries as data instead of parsing: paths read through
+    /// `fs.readFileSync`/`readFile`/`createReadStream` and targets named only by
+    /// `require.resolve`/`import.meta.resolve`. Resolving a path does not make it a
+    /// module, so the analyzer keeps its bytes and parses nothing.
+    pub data_files: BTreeSet<PathBuf>,
     /// TypeScript files replaced by the JavaScript packing stripped them to. The
     /// payload stores this text under the original path, so neither the loader nor
     /// the packed app ever evaluates TypeScript.
@@ -66,7 +67,7 @@ impl Analysis {
             self.builtins.entry(builtin).or_default().extend(files);
         }
         self.formats.extend(other.formats);
-        self.static_files.extend(other.static_files);
+        self.data_files.extend(other.data_files);
         self.stripped.extend(other.stripped);
         self.warnings.extend(other.warnings);
         self.warnings.sort();
@@ -214,7 +215,7 @@ pub fn analyze_roots_with(
     let mut required = BTreeSet::new();
     let mut builtins: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
     let mut formats = BTreeMap::new();
-    let mut static_files = BTreeSet::new();
+    let mut data_files = BTreeSet::new();
     let mut stripped = BTreeMap::new();
     let mut warnings = Vec::new();
 
@@ -234,15 +235,15 @@ pub fn analyze_roots_with(
 
         let optional_dependencies = thinpack_resolve::optional_dependencies(&path, &fs);
         let (specifiers, detected) =
-            load_module(&path, &fs, &mut stripped, &mut warnings, &mut static_files)?;
+            load_module(&path, &fs, &mut stripped, &mut warnings, &mut data_files)?;
         if let Some(format) = detected {
             formats.insert(path.clone(), format);
         }
-        for ((specifier, is_import), guarded) in specifiers {
+        for ((specifier, is_import), usage) in specifiers {
             // A dependency listed in `optionalDependencies` is optional even when the
             // request is unguarded, so a hoisted install the payload cannot reach is
             // omitted with a warning instead of failing the pack.
-            let optional = guarded
+            let optional = usage.optional
                 || thinpack_resolve::is_optional_dependency(&specifier, &optional_dependencies);
             if record_builtin(&specifier, optional, &path, &mut builtins, &mut warnings)? {
                 continue;
@@ -251,43 +252,25 @@ pub fn analyze_roots_with(
                 import: is_import,
                 custom: custom_conditions.to_vec(),
             };
-            let resolved =
-                thinpack_resolve::resolve_path_with_conditions(&specifier, &path, &fs, &conditions);
-            let resolved = match resolved {
-                Ok(resolved) => resolved,
-                Err(error) if optional => {
-                    warnings.push(Warning {
-                        message: format!(
-                            "{}: optional dependency `{specifier}` is missing ({error}); the app must handle the error",
-                            path.display()
-                        ),
-                        strict: false,
-                    });
-                    continue;
-                }
-                Err(error)
-                    if allow_missing.contains(thinpack_resolve::package_name(&specifier)) =>
-                {
-                    warnings.push(Warning {
-                        message: format!(
-                            "{}: dependency `{specifier}` is missing ({error}); excluded by --allow-missing",
-                            path.display()
-                        ),
-                        strict: false,
-                    });
-                    continue;
-                }
-                Err(error) => {
-                    return Err(Error::Resolve {
-                        specifier,
-                        from: path.clone(),
-                        message: error.to_string(),
-                    });
-                }
+            let Some(resolved) = resolve_dependency(
+                &specifier,
+                optional,
+                &path,
+                &fs,
+                &conditions,
+                allow_missing,
+                &mut warnings,
+            )?
+            else {
+                continue;
             };
-            // Every file under an optional edge is optional, however the file
-            // itself reaches its dependencies.
-            if optional_subtree || optional {
+            // A resolve-only reference only locates the target, so its bytes join
+            // the payload without being parsed.
+            if usage.resolve_only {
+                data_files.insert(resolved);
+            } else if optional_subtree || optional {
+                // Every file under an optional edge is optional, however the file
+                // itself reaches its dependencies.
                 pending.push_back((resolved, true));
             } else {
                 pending.push_front((resolved, false));
@@ -307,10 +290,52 @@ pub fn analyze_roots_with(
         manifests: fs.into_manifests(),
         builtins,
         formats,
-        static_files,
+        data_files,
         stripped,
         warnings,
     })
+}
+
+/// Resolves one dependency edge. `None` means an optional or `--allow-missing`
+/// target is absent: both warn because the app owns the failure. Any other
+/// resolution error fails the pack.
+fn resolve_dependency(
+    specifier: &str,
+    optional: bool,
+    from: &Path,
+    fs: &impl FileSystem,
+    conditions: &Conditions,
+    allow_missing: &BTreeSet<String>,
+    warnings: &mut Vec<Warning>,
+) -> Result<Option<PathBuf>, Error> {
+    match thinpack_resolve::resolve_path_with_conditions(specifier, from, fs, conditions) {
+        Ok(resolved) => Ok(Some(resolved)),
+        Err(error) if optional => {
+            warnings.push(Warning {
+                message: format!(
+                    "{}: optional dependency `{specifier}` is missing ({error}); the app must handle the error",
+                    from.display()
+                ),
+                strict: false,
+            });
+            Ok(None)
+        }
+        Err(error) if allow_missing.contains(thinpack_resolve::package_name(specifier)) => {
+            warnings.push(Warning {
+                message: format!(
+                    "{}: dependency `{specifier}` is missing ({error}); excluded by --allow-missing",
+                    from.display()
+                ),
+                strict: false,
+            });
+            Ok(None)
+        }
+        Err(error) => Err(Error::Resolve {
+            specifier: specifier.to_owned(),
+            from: from.to_path_buf(),
+            message: error.to_string(),
+        }),
+    }
 }
 
 /// A [`FileSystem`] that remembers every `package.json` it reads. The resolver and
@@ -352,7 +377,18 @@ impl<F: FileSystem> FileSystem for ManifestRecorder<'_, F> {
     }
 }
 
-type SpecifierEntry = ((String, bool), bool);
+/// How the module graph uses a specifier.
+#[derive(Clone, Copy, Debug)]
+struct Usage {
+    /// Every reference is guarded (a `try` block or `process.getBuiltinModule`), so a
+    /// failed lookup is the app's to handle.
+    optional: bool,
+    /// Every reference only locates the target, so it joins the payload as data
+    /// instead of being parsed as a module.
+    resolve_only: bool,
+}
+
+type SpecifierEntry = ((String, bool), Usage);
 
 /// Records `specifier` when it names a builtin and reports whether it did. A
 /// guarded reference to a builtin that may be absent only warns; an unguarded
@@ -495,7 +531,7 @@ fn load_module(
     fs: &impl FileSystem,
     stripped: &mut BTreeMap<PathBuf, String>,
     warnings: &mut Vec<Warning>,
-    static_files: &mut BTreeSet<PathBuf>,
+    data_files: &mut BTreeSet<PathBuf>,
 ) -> Result<(Vec<SpecifierEntry>, Option<Format>), Error> {
     let bytes = fs.read(path).map_err(|error| Error::Read {
         path: path.to_path_buf(),
@@ -506,7 +542,7 @@ fn load_module(
         message: "module is not valid UTF-8".to_owned(),
     })?;
     let source = typescript::strip(path, source, stripped)?;
-    parse_specifiers(&source, path, fs, warnings, static_files)
+    parse_specifiers(&source, path, fs, warnings, data_files)
 }
 
 fn parse_specifiers(
@@ -514,7 +550,7 @@ fn parse_specifiers(
     path: &Path,
     fs: &impl FileSystem,
     warnings: &mut Vec<Warning>,
-    static_files: &mut BTreeSet<PathBuf>,
+    data_files: &mut BTreeSet<PathBuf>,
 ) -> Result<(Vec<SpecifierEntry>, Option<Format>), Error> {
     let allocator = Allocator::default();
     let (source_type, format) = parser_dialect(path, fs)?;
@@ -572,7 +608,7 @@ fn parse_specifiers(
         semantic: &semantic,
         require_bindings: require::bindings(&semantic),
         warnings,
-        static_files,
+        data_files,
         fs,
     };
     collector.visit_program(&parsed.program);
@@ -601,25 +637,33 @@ fn global_name<'a>(expression: &'a Expression<'_>) -> Option<&'a str> {
 
 struct SpecifierCollector<'a, 's> {
     path: &'s Path,
-    specifiers: BTreeMap<(String, bool), bool>,
+    specifiers: BTreeMap<(String, bool), Usage>,
     try_depth: usize,
     semantic: &'s Semantic<'a>,
     require_bindings: BTreeSet<SymbolId>,
     warnings: &'s mut Vec<Warning>,
-    static_files: &'s mut BTreeSet<PathBuf>,
+    data_files: &'s mut BTreeSet<PathBuf>,
     fs: &'s dyn FileSystem,
 }
 
 impl SpecifierCollector<'_, '_> {
     fn add_specifier(&mut self, specifier: String, is_import: bool) {
-        self.add(specifier, is_import, self.try_depth > 0);
+        self.add(specifier, is_import, self.try_depth > 0, false);
     }
 
-    fn add(&mut self, specifier: String, is_import: bool, optional: bool) {
+    fn add(&mut self, specifier: String, is_import: bool, optional: bool, resolve_only: bool) {
         self.specifiers
             .entry((specifier, is_import))
-            .and_modify(|existing| *existing &= optional)
-            .or_insert(optional);
+            .and_modify(|existing| {
+                // A load in any reference makes the file a module; an unguarded
+                // reference makes the edge required.
+                existing.optional &= optional;
+                existing.resolve_only &= resolve_only;
+            })
+            .or_insert(Usage {
+                optional,
+                resolve_only,
+            });
     }
 
     fn add_builtins(&mut self, builtins: &[&str]) {
@@ -651,26 +695,27 @@ impl SpecifierCollector<'_, '_> {
     }
 
     fn require_call(&mut self, call: &CallExpression<'_>) {
-        // (receiver or callee, member suffix, resolves as import, never throws in Node)
+        // (receiver or callee, member suffix, resolves as import, never throws in
+        // Node, only locates the target)
         let target = match call.callee.without_parentheses() {
             Expression::Identifier(identifier) if self.is_require_binding(identifier) => {
-                Some((identifier.name.as_str(), "", false, false))
+                Some((identifier.name.as_str(), "", false, false, false))
             }
             Expression::StaticMemberExpression(member) => match &member.object {
                 Expression::ImportMeta(_) if member.property.name == "resolve" => {
-                    Some(("import.meta", ".resolve", true, false))
+                    Some(("import.meta", ".resolve", true, false, true))
                 }
                 Expression::Identifier(object) => {
                     match (object.name.as_str(), member.property.name.as_str()) {
                         (name, "resolve") if self.is_require_binding(object) => {
-                            Some((name, ".resolve", false, false))
+                            Some((name, ".resolve", false, false, true))
                         }
-                        ("module", "require") => Some(("module", ".require", false, false)),
+                        ("module", "require") => Some(("module", ".require", false, false, false)),
                         // `getBuiltinModule` returns `null` for a missing module
                         // instead of throwing; a failed lookup is a warning,
                         // not a pack error.
                         ("process", "getBuiltinModule") => {
-                            Some(("process", ".getBuiltinModule", false, true))
+                            Some(("process", ".getBuiltinModule", false, true, false))
                         }
                         _ => None,
                     }
@@ -679,7 +724,7 @@ impl SpecifierCollector<'_, '_> {
             },
             _ => None,
         };
-        let Some((target, member, is_import, optional)) = target else {
+        let Some((target, member, is_import, optional, resolve_only)) = target else {
             return;
         };
 
@@ -692,6 +737,7 @@ impl SpecifierCollector<'_, '_> {
                     js_string(specifier),
                     is_import,
                     optional || self.try_depth > 0,
+                    resolve_only,
                 );
             })
         });
@@ -759,7 +805,7 @@ impl SpecifierCollector<'_, '_> {
             return;
         };
         if self.fs.is_file(&path) {
-            self.static_files.insert(path);
+            self.data_files.insert(path);
         } else {
             self.warnings.push(Warning {
                 message: format!(
@@ -1490,9 +1536,66 @@ mod tests {
         ]);
         let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
         assert!(
-            analysis.static_files.contains(Path::new("/app/data.css")),
+            analysis.data_files.contains(Path::new("/app/data.css")),
             "{:?}",
-            analysis.static_files
+            analysis.data_files
+        );
+    }
+
+    #[test]
+    fn a_resolve_only_target_is_payload_data_not_a_module() {
+        let fs = MemoryFs::new(&[
+            ("/app/package.json", r#"{"type":"commonjs"}"#),
+            (
+                "/app/main.cjs",
+                "const tool = require.resolve('./tool');\nconsole.log(tool.endsWith('/tool'));\n",
+            ),
+            ("/app/tool", "#!/bin/sh\nset -e\necho never-run\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+        assert!(
+            analysis.data_files.contains(Path::new("/app/tool")),
+            "{:?}",
+            analysis.data_files
+        );
+        assert!(
+            !analysis
+                .files
+                .iter()
+                .any(|path| path == Path::new("/app/tool"))
+        );
+        assert_eq!(fs.reads.borrow().get(Path::new("/app/tool")), None);
+    }
+
+    #[test]
+    fn a_resolve_only_target_is_still_parsed_when_also_loaded() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.cjs",
+                "console.log(require.resolve('./tool'));\nrequire('./tool');\n",
+            ),
+            ("/app/tool", "#!/bin/sh\nset -e\necho never-run\n"),
+        ]);
+        assert!(matches!(
+            analyze(Path::new("/app/main.cjs"), &fs),
+            Err(Error::Parse { .. })
+        ));
+    }
+
+    #[test]
+    fn an_extensionless_javascript_module_still_loads() {
+        let fs = MemoryFs::new(&[
+            ("/app/main.cjs", "console.log(require('./tool'));\n"),
+            ("/app/tool", "#!/usr/bin/env node\nmodule.exports = 42;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+        assert!(
+            analysis
+                .files
+                .iter()
+                .any(|path| path == Path::new("/app/tool")),
+            "{:?}",
+            analysis.files
         );
     }
 
@@ -1507,7 +1610,7 @@ mod tests {
         ]);
         let analysis = analyze(Path::new("/app/nested/main.cjs"), &fs).unwrap();
         assert_eq!(
-            analysis.static_files,
+            analysis.data_files,
             BTreeSet::from([PathBuf::from("/app/nested/public/style.css")])
         );
         assert!(analysis.warnings.is_empty(), "{:?}", analysis.warnings);
@@ -1525,7 +1628,7 @@ mod tests {
         ]);
         let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
         assert_eq!(
-            analysis.static_files,
+            analysis.data_files,
             BTreeSet::from([PathBuf::from("/public/style.css")])
         );
         assert!(analysis.warnings.is_empty(), "{:?}", analysis.warnings);
@@ -1542,7 +1645,7 @@ mod tests {
         ]);
         let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
         assert_eq!(
-            analysis.static_files,
+            analysis.data_files,
             BTreeSet::from([PathBuf::from("/app/data.css")])
         );
         assert!(analysis.warnings.is_empty(), "{:?}", analysis.warnings);
@@ -1558,7 +1661,7 @@ mod tests {
             ("/app/data.css", "body {}\n"),
         ]);
         let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
-        assert!(analysis.static_files.is_empty());
+        assert!(analysis.data_files.is_empty());
         assert!(analysis.warnings.is_empty(), "{:?}", analysis.warnings);
     }
 

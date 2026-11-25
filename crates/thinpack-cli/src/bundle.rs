@@ -47,10 +47,10 @@ pub(crate) fn build(
     conditions: &[String],
 ) -> Result<Bundle, Box<dyn Error>> {
     let mut files = collect_analysis_files(root, analysis)?;
-    for path in &analysis.static_files {
+    for path in &analysis.data_files {
         let Some(virtual_path) = virtual_path(root, path) else {
             eprintln!(
-                "warning: static asset {} is outside the project root {}; it is left out of the payload",
+                "warning: data file {} is outside the project root {}; it is left out of the payload",
                 path.display(),
                 root.display()
             );
