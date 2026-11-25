@@ -36,17 +36,31 @@ Measured with a C harness on the 1.9 MB bundle: 6070 ms before, 58 ms after.
 
 ## 2. Hash-table lookups for large scopes
 
-Custom change, not in upstream quickjs-ng at the time of writing.
+Custom change, now matching the quickjs-ng follow-up to issue #1954
+(`ce30d9133105729377cd7a70b861ddfb8fcfe2e3`, "Key variable lookups by name and
+scope").
+
 `find_var_in_child_scope`, `find_lexical_decl`, and the local-scope loop in
 `resolve_scope_var` scanned the variable and scope chains repeatedly while
 parsing. Functions with tens of thousands of declarations therefore took
 quadratic time even when every line was short. The change reuses the existing
-`vars_htab` (normally only used by `find_var`) for these lookups. `with`
-scopes and argument scopes keep the chain walk, because their shadowing rules
-depend on declaration order and on the argument-scope sentinel.
+`vars_htab` for these lookups and keys each entry by name and scope level
+(`hash32(name ^ hash32(scope_level))`), so equal names in different scopes land
+in different probe chains. `find_scoped_var_htab` walks the parent links, uses
+each scope's `first` link to skip empty scopes and to jump to the scope that
+owns the chain head, and compares both the name and the scope level. Declaration
+helpers set `scope_level` before the entry is inserted. `with` scopes and
+argument scopes keep the chain walk, because their shadowing rules depend on
+declaration order and on the argument-scope sentinel.
 
-`packed::large-lexical-scope-startup` parses 50,000 declarations in one
-function; it drops from about 9.95 s to 11 ms inside the packed runtime.
+The previous version hashed only the name, so repeated declarations filled one
+probe chain and every lookup walked it; it also visited every parent scope even
+when a scope had no declarations of its own. Both effects are gone.
+`packed::large-lexical-scope-startup` still parses 50,000 declarations in about
+11 ms instead of 9.95 s. Repeated names no longer degenerate: 16,000 sibling
+blocks each declaring `let x` compile in 19 ms instead of 5.75 s, and 16,000
+catch bindings in 19 ms instead of 750 ms. Ordinary minified bundles are
+unchanged (930 KB lucide: 20 ms; 3.5 MB tabler: 82 ms before, 79 ms after).
 
 ## 3. Warning-free JSC shim
 
@@ -179,6 +193,9 @@ and `assert` suites, change 7 by the Node dynamic-import cases, changes 8 and
 tests:
 
 - quickjs-ng 0.15.1 and 0.18 test scripts: identical output and exit status.
+- 703 focused test262 files (`let`, `const`, `block-scope`,
+  `identifier-resolution`, `arguments-object`): identical results, including
+  all 145 `let` tests.
 - 600 generated programs with nested blocks, shadowing, `with`, catch
   bindings, default parameters, eval, and synchronous function redeclaration:
   identical output and exit status.
@@ -193,7 +210,7 @@ tests:
 1. Replace this directory with the new published crate (without `Cargo.lock`
    or `.cargo-ok`; those are not part of the vendored source).
 2. Apply `THINPACK.patch`; resolve rejects by rebasing the changes onto the
-   new `quickjs.c`, JSC files and `Cargo.toml` (which carries the
+   new `quickjs.c`, JSC files and the `Cargo.toml` manifests (which carry the
    `thinpack-jsc-rewrite` path dependency).
 3. Keep the upstream column fix if the new quickjs-ng already contains it;
    drop that hunk from the patch instead of reverting the vendored source.

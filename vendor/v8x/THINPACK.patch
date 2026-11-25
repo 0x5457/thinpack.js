@@ -101,7 +101,72 @@
          s->mark = p;
          goto redo;
      case '\f':
-@@ -25874,14 +25880,28 @@
+@@ -25743,6 +25749,11 @@
+     return 0;
+ }
+ 
++static uint32_t hash_var(JSAtom name, int scope_level)
++{
++    return hash32(name ^ hash32(scope_level));
++}
++
+ // caveat emptor: the table size must be a power of two in order for
+ // masking to work, and the load factor constant must be an odd number (5)
+ //
+@@ -25772,7 +25783,7 @@
+ insert:
+     m = UINT32_MAX >> clz32(m);
+     do {
+-        i = hash32(fd->vars[k].var_name);
++        i = hash_var(fd->vars[k].var_name, fd->vars[k].scope_level);
+         j = 1;
+         for (;;) {
+             p = &fd->vars_htab[i & m];
+@@ -25790,7 +25801,7 @@
+ {
+     uint32_t i, j, m, *p;
+ 
+-    i = hash32(var_name);
++    i = hash_var(var_name, 0);
+     j = 1;
+     m = fd->var_count + fd->var_count/5;
+     m = UINT32_MAX >> clz32(m);
+@@ -25798,7 +25809,7 @@
+         p = &fd->vars_htab[i & m];
+         if (*p == UINT32_MAX)
+             return -1;
+-        if (fd->vars[*p].var_name == var_name)
++        if (fd->vars[*p].var_name == var_name && fd->vars[*p].scope_level == 0)
+             return *p;
+         i += j;
+         j += 1; // quadratic probing
+@@ -25825,19 +25836,15 @@
+ 
+     if (fd->vars_htab) {
+         i = find_var_htab(fd, name);
+-        if (i == -1)
+-            goto not_found;
+-        vd = &fd->vars[i];
+-        if (vd->scope_level == 0)
++        if (i >= 0)
+             return i;
+-    }
+-    for(i = fd->var_count; i-- > 0;) {
+-        vd = &fd->vars[i];
+-        if (vd->var_name == name)
+-            if (vd->scope_level == 0)
++    } else {
++        for (i = fd->var_count; i-- > 0;) {
++            vd = &fd->vars[i];
++            if (vd->var_name == name && vd->scope_level == 0)
+                 return i;
++        }
+     }
+-not_found:
+     return find_arg(ctx, fd, name);
+ }
+ 
+@@ -25874,14 +25881,28 @@
                                     JSAtom name, int scope_level)
  {
      int i;
@@ -112,7 +177,7 @@
 -                               scope_level))
 -                return i;
 +    if (fd->vars_htab) {
-+        uint32_t hash = hash32(name);
++        uint32_t hash = hash_var(name, 0);
 +        uint32_t step = 1;
 +        uint32_t mask = fd->var_count + fd->var_count / 5;
 +        mask = UINT32_MAX >> clz32(mask);
@@ -136,9 +201,51 @@
      return -1;
  }
  
-@@ -25910,13 +25930,37 @@
- static int find_lexical_decl(JSContext *ctx, JSFunctionDef *fd, JSAtom name,
-                              int scope_idx, bool check_catch_var)
+@@ -25907,16 +25928,59 @@
+         return NULL;
+ }
+ 
+-static int find_lexical_decl(JSContext *ctx, JSFunctionDef *fd, JSAtom name,
+-                             int scope_idx, bool check_catch_var)
++typedef enum {
++    VAR_LOOKUP_LOCAL,
++    VAR_LOOKUP_LEXICAL,
++    VAR_LOOKUP_LEXICAL_OR_CATCH,
++} VarLookupKind;
++
++/* The table is populated in declaration order; the scope chain is reversed. */
++static int find_scoped_var_htab(JSFunctionDef *fd, JSAtom name,
++                                int scope, VarLookupKind kind)
++{
++    uint32_t mask = fd->var_count + fd->var_count/5;
++    mask = UINT32_MAX >> clz32(mask);
++    for (; scope >= 0; scope = fd->scopes[scope].parent) {
++        int first = fd->scopes[scope].first;
++        if (first < 0)
++            break;
++        /* Empty scopes inherit the head of the enclosing variable chain. */
++        scope = fd->vars[first].scope_level;
++        uint32_t hash = hash_var(name, scope);
++        uint32_t step = 1;
++        int found = -1;
++        for (;;) {
++            uint32_t index = fd->vars_htab[hash & mask];
++            if (index == UINT32_MAX)
++                break;
++            JSVarDef *vd = &fd->vars[index];
++            if (vd->var_name == name && vd->scope_level == scope &&
++                (kind == VAR_LOOKUP_LOCAL || vd->is_lexical ||
++                 (kind == VAR_LOOKUP_LEXICAL_OR_CATCH && vd->var_kind == JS_VAR_CATCH)))
++                found = index;
++            hash += step++;
++        }
++        if (found >= 0)
++            return found;
++    }
++    return -1;
++}
++
++static int find_lexical_decl(JSFunctionDef *fd, JSAtom name, bool check_catch_var)
  {
 -    while (scope_idx >= 0) {
 -        JSVarDef *vd = &fd->vars[scope_idx];
@@ -147,41 +254,93 @@
 -                                check_catch_var)))
 -            return scope_idx;
 -        scope_idx = vd->scope_next;
-+    if (fd->vars_htab && scope_idx == fd->scope_first) {
-+        uint32_t mask = fd->var_count + fd->var_count / 5;
-+        mask = UINT32_MAX >> clz32(mask);
-+        for (int scope = fd->scope_level; scope >= 0;
-+             scope = fd->scopes[scope].parent) {
-+            uint32_t hash = hash32(name);
-+            uint32_t step = 1;
-+            int found = -1;
-+            for (;;) {
-+                uint32_t index = fd->vars_htab[hash & mask];
-+                if (index == UINT32_MAX)
-+                    break;
-+                JSVarDef *vd = &fd->vars[index];
-+                if (vd->var_name == name && vd->scope_level == scope &&
-+                    (vd->is_lexical || (vd->var_kind == JS_VAR_CATCH &&
-+                                        check_catch_var)))
-+                    found = index;
-+                hash += step++;
-+            }
-+            if (found >= 0)
-+                return found;
-+        }
++    if (fd->vars_htab) {
++        int idx = find_scoped_var_htab(fd, name, fd->scope_level,
++                                      check_catch_var ? VAR_LOOKUP_LEXICAL_OR_CATCH
++                                                      : VAR_LOOKUP_LEXICAL);
++        if (idx >= 0)
++            return idx;
 +    } else {
-+        while (scope_idx >= 0) {
-+            JSVarDef *vd = &fd->vars[scope_idx];
++        for (int idx = fd->scope_first; idx >= 0; idx = fd->vars[idx].scope_next) {
++            JSVarDef *vd = &fd->vars[idx];
 +            if (vd->var_name == name &&
-+                (vd->is_lexical || (vd->var_kind == JS_VAR_CATCH &&
-+                                    check_catch_var)))
-+                return scope_idx;
-+            scope_idx = vd->scope_next;
++                (vd->is_lexical || (check_catch_var && vd->var_kind == JS_VAR_CATCH)))
++                return idx;
 +        }
      }
  
      if (fd->is_eval && fd->eval_type == JS_EVAL_TYPE_GLOBAL) {
-@@ -26583,6 +26627,7 @@
+@@ -25998,7 +26062,7 @@
+ }
+ 
+ /* return the variable index or -1 if error */
+-static int add_var(JSContext *ctx, JSFunctionDef *fd, JSAtom name)
++static int add_scoped_var(JSContext *ctx, JSFunctionDef *fd, JSAtom name, int scope)
+ {
+     JSVarDef *vd;
+ 
+@@ -26015,20 +26079,25 @@
+     vd = &fd->vars[fd->var_count++];
+     memset(vd, 0, sizeof(*vd));
+     vd->var_name = JS_DupAtom(ctx, name);
++    vd->scope_level = scope;
+     vd->func_pool_idx = -1;
+     if (update_var_htab(ctx, fd))
+         return -1;
+     return fd->var_count - 1;
+ }
+ 
++static int add_var(JSContext *ctx, JSFunctionDef *fd, JSAtom name)
++{
++    return add_scoped_var(ctx, fd, name, 0);
++}
++
+ static int add_scope_var(JSContext *ctx, JSFunctionDef *fd, JSAtom name,
+                          JSVarKindEnum var_kind)
+ {
+-    int idx = add_var(ctx, fd, name);
++    int idx = add_scoped_var(ctx, fd, name, fd->scope_level);
+     if (idx >= 0) {
+         JSVarDef *vd = &fd->vars[idx];
+         vd->var_kind = var_kind;
+-        vd->scope_level = fd->scope_level;
+         vd->scope_next = fd->scope_first;
+         fd->scopes[fd->scope_level].first = idx;
+         fd->scope_first = idx;
+@@ -26068,12 +26137,11 @@
+             /* XXX: the scope links are not fully updated. May be an
+                issue if there are child scopes of the argument
+                scope */
+-            idx = add_var(ctx, fd, JS_ATOM_arguments);
++            idx = add_scoped_var(ctx, fd, JS_ATOM_arguments, ARG_SCOPE_INDEX);
+             if (idx < 0)
+                 return -1;
+             fd->vars[idx].scope_next = fd->scopes[ARG_SCOPE_INDEX].first;
+             fd->scopes[ARG_SCOPE_INDEX].first = idx;
+-            fd->vars[idx].scope_level = ARG_SCOPE_INDEX;
+             fd->vars[idx].is_lexical = true;
+ 
+             fd->arguments_arg_idx = idx;
+@@ -26151,7 +26219,7 @@
+     case JS_VAR_DEF_USING:
+     case JS_VAR_DEF_FUNCTION_DECL:
+     case JS_VAR_DEF_NEW_FUNCTION_DECL:
+-        idx = find_lexical_decl(ctx, fd, name, fd->scope_first, true);
++        idx = find_lexical_decl(fd, name, true);
+         if (idx >= 0) {
+             if (idx < GLOBAL_VAR_OFFSET) {
+                 if (fd->vars[idx].scope_level == fd->scope_level) {
+@@ -26231,8 +26299,7 @@
+         break;
+ 
+     case JS_VAR_DEF_VAR:
+-        if (find_lexical_decl(ctx, fd, name, fd->scope_first,
+-                              false) >= 0) {
++        if (find_lexical_decl(fd, name, false) >= 0) {
+        invalid_lexical_redefinition:
+             /* error to redefine a var that inside a lexical scope */
+             return js_parse_error(s, "invalid redefinition of lexical identifier");
+@@ -26583,6 +26650,7 @@
      int col_num;
      bool got_lf;
      const uint8_t *ptr;
@@ -189,7 +348,7 @@
      const uint8_t *eol;
      const uint8_t *mark;
  } JSParsePos;
-@@ -26594,6 +26639,7 @@
+@@ -26594,6 +26662,7 @@
      sp->line_num = s->token.line_num;
      sp->col_num = s->token.col_num;
      sp->ptr = s->token.ptr;
@@ -197,7 +356,7 @@
      sp->eol = s->eol;
      sp->mark = s->mark;
      sp->got_lf = s->got_lf;
-@@ -26607,6 +26653,7 @@
+@@ -26607,6 +26676,7 @@
      s->line_num = sp->line_num;
      s->col_num = sp->col_num;
      s->buf_ptr = sp->ptr;
@@ -205,7 +364,7 @@
      s->eol = sp->eol;
      s->mark = sp->mark;
      s->got_lf = sp->got_lf;
-@@ -28781,13 +28828,8 @@
+@@ -28781,13 +28851,8 @@
          {
              JSAtom name;
              int identifier_line_num = s->token.line_num;
@@ -220,7 +379,7 @@
              call_line_num = identifier_line_num;
              call_col_num = identifier_col_num;
              if (s->token.u.ident.is_reserved) {
-@@ -29285,17 +29327,12 @@
+@@ -29285,17 +29350,12 @@
                  emit_atom(s, s->token.u.ident.atom);
                  emit_u16(s, s->cur_func->scope_level);
              } else {
@@ -239,7 +398,7 @@
                  if (get_prev_opcode(fd) == OP_get_super) {
                      JSValue val;
                      int ret;
-@@ -31832,6 +31869,7 @@
+@@ -31832,6 +31892,7 @@
                                    JS_VAR_DEF_WITH);
              if (with_idx < 0)
                  goto fail;
@@ -247,7 +406,7 @@
              emit_op(s, OP_to_object);
              emit_op(s, OP_put_loc);
              emit_u16(s, with_idx);
-@@ -34692,6 +34730,7 @@
+@@ -34692,6 +34753,7 @@
          list_add_tail(&fd->link, &parent->child_list);
          fd->is_strict_mode = parent->is_strict_mode;
          fd->parent_scope_level = parent->scope_level;
@@ -255,48 +414,7 @@
      }
  
      fd->is_eval = is_eval;
-@@ -35584,6 +35623,40 @@
-     }
- }
- 
-+static int find_local_scope_var(JSFunctionDef *s, JSAtom var_name,
-+                                int scope_level)
-+{
-+    int idx;
-+    if (!s->vars_htab) {
-+        for (idx = s->scopes[scope_level].first; idx >= 0;
-+             idx = s->vars[idx].scope_next) {
-+            if (s->vars[idx].var_name == var_name)
-+                return idx;
-+        }
-+        return -1;
-+    }
-+
-+    uint32_t mask = s->var_count + s->var_count / 5;
-+    mask = UINT32_MAX >> clz32(mask);
-+    for (int scope = scope_level; scope >= 0; scope = s->scopes[scope].parent) {
-+        uint32_t hash = hash32(var_name);
-+        uint32_t step = 1;
-+        int found = -1;
-+        for (;;) {
-+            uint32_t index = s->vars_htab[hash & mask];
-+            if (index == UINT32_MAX)
-+                break;
-+            JSVarDef *vd = &s->vars[index];
-+            if (vd->var_name == var_name && vd->scope_level == scope)
-+                found = index;
-+            hash += step++;
-+        }
-+        if (found >= 0)
-+            return found;
-+    }
-+    return -1;
-+}
-+
- /* return the position of the next opcode */
- static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
-                              JSAtom var_name, int scope_level, int op,
-@@ -35607,28 +35680,33 @@
+@@ -35607,28 +35669,33 @@
  
      /* resolve local scoped variables */
      var_idx = -1;
@@ -309,8 +427,8 @@
 -                    dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
 -                    dbuf_putc(bc, JS_THROW_VAR_RO);
 -                    goto done;
-+    if (!s->has_with && !s->has_parameter_expressions) {
-+        var_idx = find_local_scope_var(s, var_name, scope_level);
++    if (s->vars_htab && !s->has_with && !s->has_parameter_expressions) {
++        var_idx = find_scoped_var_htab(s, var_name, scope_level, VAR_LOOKUP_LOCAL);
 +        is_arg_scope = false;
 +    } else {
 +        for (idx = s->scopes[scope_level].first; idx >= 0;) {
@@ -348,7 +466,16 @@
      if (var_idx < 0) {
          /* argument scope: variables are not visible but pseudo
             variables are visible */
-@@ -39838,6 +39916,7 @@
+@@ -39200,7 +39267,7 @@
+     if (func_type == JS_PARSE_FUNC_VAR) {
+         if (!fd->is_strict_mode
+         && func_kind == JS_FUNC_NORMAL
+-        &&  find_lexical_decl(ctx, fd, func_name, fd->scope_first, false) < 0
++        &&  find_lexical_decl(fd, func_name, false) < 0
+         &&  !((func_idx = find_var(ctx, fd, func_name)) >= 0 && (func_idx & ARGUMENT_VAR_OFFSET))
+         &&  !(func_name == JS_ATOM_arguments && fd->has_arguments_binding)) {
+             create_func_var = true;
+@@ -39838,6 +39905,7 @@
      s->col_num = 1;
      s->buf_start = s->buf_ptr = (const uint8_t *)input;
      s->buf_end = s->buf_ptr + input_len;
@@ -356,7 +483,6 @@
      s->mark = s->buf_ptr + min_int(1, input_len);
      s->eol = s->buf_ptr;
      s->token.val = ' ';
-
 --- a/src/jsc/mod.rs
 +++ b/src/jsc/mod.rs
 @@ -1,5 +1,9 @@
@@ -370,7 +496,6 @@
  
  pub(crate) mod arraybuffer;
  pub(crate) mod cli_extra;
-
 --- a/src/jsc/init.rs
 +++ b/src/jsc/init.rs
 @@ -38,6 +38,8 @@
@@ -382,7 +507,6 @@
    let mut opts: Vec<(&str, &str)> = vec![("JSC_useSharedArrayBuffer", "1")];
    #[cfg(feature = "vendor_jsc")]
    {
-
 --- a/src/jsc/module.rs
 +++ b/src/jsc/module.rs
 @@ -33,6 +33,10 @@
@@ -1577,7 +1701,6 @@
      intern_ctx::<V8String>(ctx, v)
    }
  }
-
 --- a/src/jsc/object.rs
 +++ b/src/jsc/object.rs
 @@ -357,10 +357,11 @@
@@ -1952,7 +2075,6 @@
  #[unsafe(no_mangle)]
  pub extern "C" fn v8__Object__GetPrivate(
    this: *const Object,
-
 --- a/src/jsc/string.rs
 +++ b/src/jsc/string.rs
 @@ -214,12 +214,12 @@
@@ -2132,7 +2254,6 @@
    }
  }
  
-
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -161,6 +161,9 @@
@@ -2145,3 +2266,13 @@
  [dev-dependencies.align-data]
  version = "0.1.0"
  
+--- a/Cargo.toml.orig
++++ b/Cargo.toml.orig
+@@ -103,6 +103,7 @@
+ temporal_capi = { version = "0.2.3", features = ["zoneinfo64"] }
+ temporal_rs = { version = "0.2.3", default-features = false }
+ timezone_provider = { version = "0.2.3", features = ["zoneinfo64"] }
++thinpack-jsc-rewrite = { path = "../../crates/thinpack-jsc-rewrite" }
+ 
+ [build-dependencies]
+ cc = "1.0"
