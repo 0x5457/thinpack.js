@@ -2,7 +2,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use oxc_ast::ast::{Argument, BinaryOperator, CallExpression, Expression};
+use oxc_ast::ast::{BinaryOperator, CallExpression, Expression};
 use thinpack_resolve::normalize;
 
 /// Evaluate a path expression rooted at `__dirname` (`path.join`, `path.resolve`,
