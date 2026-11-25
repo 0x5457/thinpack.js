@@ -1110,6 +1110,46 @@ fs.writeFileSync(path.join(dir, 'sub', 'file.txt'), 'x');
         error: None,
     },
     PackedTest {
+        name: "packed::vm-context",
+        directory: "vm-context",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r#"const assert = require('node:assert/strict');
+const vm = require('node:vm');
+
+// The options webpack's magic-comment parser passes when it creates its context.
+const context = vm.createContext(undefined, {
+  name: 'Webpack Magic Comment Parser',
+  codeGeneration: { strings: false, wasm: false },
+});
+assert.equal(vm.isContext(context), true);
+
+const parsed = vm.runInContext(
+  '(function(){return {chunkName: "lazy", regexp: /^x/};})()',
+  context,
+);
+assert.equal(parsed.chunkName, 'lazy');
+assert.equal(parsed.regexp.constructor.name, 'RegExp');
+assert.equal(JSON.parse(JSON.stringify(parsed)).chunkName, 'lazy');
+
+assert.equal(vm.runInContext('var isolated = 1; isolated', context), 1);
+assert.equal(context.isolated, 1);
+assert.equal(globalThis.isolated, undefined);
+assert.equal(vm.runInContext('typeof require + typeof process', context), 'undefinedundefined');
+
+assert.throws(() => vm.runInContext('1', {}), { code: 'ERR_INVALID_ARG_TYPE' });
+assert.throws(() => vm.createContext({}), { code: 'ERR_NOT_IMPLEMENTED' });
+assert.equal(vm.runInNewContext('6 * 7'), 42);
+const script = new vm.Script('40 + 2', { filename: 'unit.js' });
+assert.equal(script.runInContext(context), 42);
+console.log('vm context ok');
+"#,
+        )],
+        capabilities: &["assert", "vm"],
+        error: None,
+    },
+    PackedTest {
         name: "packed::require-extensions",
         directory: "require-extensions",
         entry: "/app/main.js",
