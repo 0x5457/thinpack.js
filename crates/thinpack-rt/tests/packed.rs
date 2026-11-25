@@ -901,6 +901,25 @@ console.log('require.resolve errors ok');
         capabilities: &["assert"],
         error: None,
     },
+    PackedTest {
+        name: "packed::node-test-only",
+        directory: "node-test-only",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r"
+const test = require('node:test');
+
+test.only('runs', () => {});
+// If `only` is ignored this throws and the packed process exits 1.
+test('skipped sibling', () => {
+  throw new Error('sibling ran');
+});
+",
+        )],
+        capabilities: &["test"],
+        error: None,
+    },
 ];
 
 /// Packed startup cases whose source is generated because the payload is large.
