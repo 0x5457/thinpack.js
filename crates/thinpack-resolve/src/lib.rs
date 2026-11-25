@@ -277,7 +277,7 @@ fn resolve_package(
         {
             return Ok(resolved);
         }
-        return load_index(&directory, fs).ok_or(Error::NotFound);
+        return load_index(directory, fs).ok_or(Error::NotFound);
     }
 
     load_path(&directory.join(subpath), fs)
