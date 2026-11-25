@@ -63,12 +63,26 @@ comes before the cache so an app always packs against its own closure and uses Q
 For ordinary packing, `--backend` takes precedence over the backend of an installed template.
 When no matching installed template is available and the cache has both backends, pass `--backend`.
 
-The analyzer follows conditional `require` calls when both branches name modules. A `require` of a
-constant path built from `__dirname` with `path.join`/`path.resolve` is followed through its
-binding, and a computed `require` bounded by a literal directory and suffix
-(``require(`./commands/${command}.js`)``) packs the matching files directly in that directory. For
-module names supplied at runtime, use `--with` to include the required built-ins explicitly.
-`--strict` makes unresolved dynamic requests an error during packing.
+The analyzer follows conditional `require` calls when both branches name modules. For module names
+supplied at runtime, use `--with` to include the required built-ins explicitly. `--strict` makes
+unresolved dynamic requests an error during packing.
+
+A path built from `__dirname` can name files the module never imports: files read through
+`fs.readFileSync`, `readFile`, or `createReadStream` are packed as data, and so is every file under
+a directory listed with `fs.readdir` or `readdirSync`. Enumeration counts only on the `fs` module,
+and a scanned directory is expanded like `--include` only when it is below the project root and is
+neither a package root nor `node_modules`; anything broader still needs `--include`. `path.join`,
+`path.resolve`, string concatenation, and single-assignment bindings of them are evaluated. A
+`require` of one constant path built that way packs the named file. A computed `require`/`import`
+whose loaded binding has a `path.join`/`path.resolve` call with a literal `__dirname` directory and
+one final computed segment, or whose argument is a template literal naming
+``./commands/${command}.js``, packs that directory's files matching the segment's literal suffix,
+or JavaScript modules when it has none; other computed module paths still need `--include`.
+
+The optionality of a guarded `require`/`import()` or an `optionalDependencies` entry extends
+through the static dependencies it reaches: a missing module there becomes a warning, and the
+handled import fails at run time as it does under Node. A file also reached by a required edge
+is still required, so its missing dependencies fail the pack.
 
 Compiled module bytecode is cached under `<cache-root>/bytecode`, which makes a warm start
 about 29% faster (pi: 983 ms → 702 ms); `V82JSC_NO_BC_CACHE=1` disables it, and
@@ -101,7 +115,7 @@ run time.
 Ambient (every template): `console`, `process`, `timers`, `buffer`, `url`, plus `util` because
 `console` formats through it.
 
-On demand: `assert`, `async_hooks`, `child_process`, `constants`, `crypto`,
+On demand: `assert`, `async_hooks`, `child_process`, `constants`, `crypto`, `dgram`,
 `diagnostics_channel`, `dns`, `events`, `fetch`, `ffi`, `fs`, `http`, `http2`, `https`,
 `inspector`, `module`, `net`, `os`, `path`, `perf_hooks`, `querystring`, `readline`, `sea`,
 `sqlite`, `stream`, `string_decoder`, `test`, `tls`, `tty`, `util`, `v8`, `vm`, `worker_threads`,

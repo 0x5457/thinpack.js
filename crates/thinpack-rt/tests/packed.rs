@@ -1582,6 +1582,43 @@ console.log('domain ok');
         error: None,
     },
     PackedTest {
+        name: "packed::dgram-roundtrip",
+        directory: "dgram-roundtrip",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r"const assert = require('node:assert/strict');
+// The bare name is what aws-sdk and Node-RED use.
+const dgram = require('dgram');
+const server = dgram.createSocket('udp4');
+server.on('message', (message, rinfo) => {
+  assert.equal(message.toString(), 'thinpack-dgram');
+  assert.equal(rinfo.address, '127.0.0.1');
+  assert.equal(rinfo.family, 'IPv4');
+  server.send('pong', rinfo.port, rinfo.address, (error, bytes) => {
+    assert.ifError(error);
+    assert.equal(bytes, 4);
+    server.close(() => console.log('dgram ok'));
+  });
+});
+server.bind(0, '127.0.0.1', () => {
+  const client = dgram.createSocket('udp4');
+  client.on('message', (message, rinfo) => {
+    assert.equal(message.toString(), 'pong');
+    assert.equal(rinfo.address, '127.0.0.1');
+    client.close();
+  });
+  client.send('thinpack-dgram', server.address().port, '127.0.0.1', (error, bytes) => {
+    assert.ifError(error);
+    assert.equal(bytes, 14);
+  });
+});
+",
+        )],
+        capabilities: &["assert", "dgram"],
+        error: None,
+    },
+    PackedTest {
         name: "packed::fs-watch",
         directory: "fs-watch",
         entry: "/app/main.js",

@@ -4535,6 +4535,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "thinpack-node-dgram"
+version = "0.2.0"
+dependencies = [
+ "deno_core",
+ "deno_error",
+ "libc",
+ "socket2 0.5.10",
+ "thinpack-js",
+ "tokio",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "thinpack-node-diagnostics-channel"
 version = "0.2.0"
 dependencies = [
@@ -4903,6 +4916,7 @@ dependencies = [
  "thinpack-node-console",
  "thinpack-node-constants",
  "thinpack-node-crypto",
+ "thinpack-node-dgram",
  "thinpack-node-diagnostics-channel",
  "thinpack-node-dns",
  "thinpack-node-domain",
