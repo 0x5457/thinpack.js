@@ -6,7 +6,7 @@ use crate::{Error, FileSystem};
 #[derive(Debug, Default)]
 pub(crate) struct Manifest {
     pub main: Option<String>,
-    pub module_type: Option<String>,
+    pub is_module: bool,
     pub exports: Option<Json>,
     pub imports: Option<Json>,
     optional: Vec<String>,
@@ -27,16 +27,28 @@ impl Manifest {
             message,
         })?;
 
+        let is_module = match value.get("type") {
+            None => false,
+            Some(Json::Str(kind)) if kind == "module" => true,
+            Some(Json::Str(kind)) if kind == "commonjs" => false,
+            Some(other) => {
+                return Err(Error::InvalidPackage {
+                    path: path.to_path_buf(),
+                    message: format!("`type` must be \"module\" or \"commonjs\", got {other:?}"),
+                });
+            }
+        };
+
         Ok(Self {
             main: value.get("main").and_then(Json::as_str).map(str::to_owned),
-            module_type: value.get("type").and_then(Json::as_str).map(str::to_owned),
+            is_module,
             exports: value.get("exports").cloned(),
             imports: value.get("imports").cloned(),
             optional: optional_names(&value),
         })
     }
-    pub(crate) fn is_module(&self) -> bool {
-        self.module_type.as_deref() == Some("module")
+    pub(crate) const fn is_module(&self) -> bool {
+        self.is_module
     }
 }
 

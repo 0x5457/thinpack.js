@@ -492,6 +492,19 @@ mod tests {
     }
 
     #[test]
+    fn rejects_an_invalid_package_type() {
+        let fs = MemoryFs::new(&[
+            ("/app/package.json", r#"{"type":"modules"}"#),
+            ("/app/main.js", ""),
+        ]);
+        let error = resolve_from(&fs, "./main.js", "/app/other.js").unwrap_err();
+        assert!(
+            matches!(error, Error::InvalidPackage { .. }),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn resolves_package_imports() {
         let fs = MemoryFs::new(&[
             ("/app/main.mjs", ""),
