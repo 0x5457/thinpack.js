@@ -68,7 +68,7 @@ pub(crate) fn run_packed(pack: Pack) -> ExitCode {
     let virtual_files: thinpack_core::VirtualFilesRef = vfs.clone();
     match run(
         input,
-        ModuleFs::Virtual(vfs),
+        ModuleFs::Packed(vfs),
         assets,
         Some(Packed {
             invocation: std::env::args_os()
@@ -90,7 +90,7 @@ pub(crate) fn run_packed(pack: Pack) -> ExitCode {
 pub(crate) fn warm(pack: &Pack) -> Result<usize, Box<dyn std::error::Error>> {
     crate::cache::prepare_bytecode_cache();
     let input = Main::File(PathBuf::from(&pack.manifest.entry));
-    let fs = ModuleFs::Virtual(Rc::new(Vfs::from_pack(pack)?));
+    let fs = ModuleFs::Packed(Rc::new(Vfs::from_pack(pack)?));
     let mut scripts = Vec::new();
     let mut modules = Vec::new();
     for file in &pack.manifest.files {
@@ -216,7 +216,7 @@ fn run_worker(spec: thinpack_core::worker::WorkerSpec) -> Result<(), thinpack_co
     let (fs, assets, files) = match PACK.get().map(|pack| packed_parts(pack)) {
         Some(Ok((vfs, assets))) => {
             let files: thinpack_core::VirtualFilesRef = vfs.clone();
-            (ModuleFs::Virtual(vfs), assets, Some(files))
+            (ModuleFs::Packed(vfs), assets, Some(files))
         }
         Some(Err(error)) => return Err(thinpack_core::Error::new(error.to_string())),
         None => (ModuleFs::Host, Assets::host(), None),

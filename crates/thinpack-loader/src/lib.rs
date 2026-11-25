@@ -35,50 +35,54 @@ pub enum Main {
     Eval(String),
 }
 
+/// Where the module system finds the files it loads.
+///
+/// `Host` is the unpacked runtime, and every path is the machine's. `Packed`
+/// mounts the executable's payload at `/app` and keeps the host file system for
+/// everything else, the split the `fs` module already exposes. A packed app
+/// therefore loads its own modules from the payload and files that exist on the
+/// machine (a project `ESLint` config, say) from their real paths, as Node would.
 #[derive(Clone, Debug)]
 pub enum ModuleFs {
     Host,
-    Virtual(Rc<Vfs>),
+    Packed(Rc<Vfs>),
 }
 
 impl FileSystem for ModuleFs {
-    fn is_file(&self, path: &std::path::Path) -> bool {
-        match self {
-            Self::Host => HostFs.is_file(path),
-            Self::Virtual(vfs) => vfs.is_file(path),
-        }
+    fn is_file(&self, path: &Path) -> bool {
+        self.files(path).is_file(path)
     }
 
-    fn is_dir(&self, path: &std::path::Path) -> bool {
-        match self {
-            Self::Host => HostFs.is_dir(path),
-            Self::Virtual(vfs) => vfs.is_dir(path),
-        }
+    fn is_dir(&self, path: &Path) -> bool {
+        self.files(path).is_dir(path)
     }
 
-    fn read(&self, path: &std::path::Path) -> std::io::Result<Vec<u8>> {
-        match self {
-            Self::Host => HostFs.read(path),
-            Self::Virtual(vfs) => vfs.read(path),
-        }
+    fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        self.files(path).read(path)
     }
 
-    fn format_override(&self, path: &std::path::Path) -> Option<thinpack_resolve::Format> {
-        match self {
-            Self::Host => None,
-            Self::Virtual(vfs) => vfs.format_override(path),
-        }
+    fn format_override(&self, path: &Path) -> Option<thinpack_resolve::Format> {
+        self.files(path).format_override(path)
     }
 
     fn custom_conditions(&self) -> &[String] {
         match self {
             Self::Host => &[],
-            Self::Virtual(vfs) => vfs.custom_conditions(),
+            Self::Packed(vfs) => vfs.custom_conditions(),
         }
     }
 }
 
 impl ModuleFs {
+    /// The file system that owns `path`: the payload below its root, the host
+    /// elsewhere.
+    fn files(&self, path: &Path) -> &dyn FileSystem {
+        match self {
+            Self::Packed(vfs) if path.starts_with(thinpack_vfs::ROOT) => vfs.as_ref(),
+            Self::Host | Self::Packed(_) => &HostFs,
+        }
+    }
+
     pub(crate) fn conditions(&self, import: bool) -> thinpack_resolve::Conditions {
         thinpack_resolve::Conditions {
             import,
@@ -91,12 +95,13 @@ impl ModuleFs {
     /// Payload paths are POSIX paths rooted at `/app` on every platform, and JS
     /// receives them as module ids. Windows would print the native separators a
     /// payload never records, so a packed module would report a filename the
-    /// manifest does not contain and lose the `/app` root in `__dirname`.
+    /// manifest does not contain and lose the `/app` root in `__dirname`. Host
+    /// paths keep the platform's rendering, as they do in an unpacked runtime.
     pub(crate) fn js_path(&self, path: &Path) -> String {
         let rendered = path.display().to_string();
         match self {
-            Self::Host => rendered,
-            Self::Virtual(_) => posix_separators(rendered),
+            Self::Packed(_) if path.starts_with(thinpack_vfs::ROOT) => posix_separators(rendered),
+            Self::Host | Self::Packed(_) => rendered,
         }
     }
 }
