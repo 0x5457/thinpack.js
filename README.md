@@ -33,6 +33,8 @@ Both print `Hello from Thinpack!`. Replace `hello.js` with your app's entry poin
 
 ## Size and compatibility
 
+A single-line `console.log("hello")` packs to **5.36 MiB** (5,615,289 bytes) on [Linux x64 CI](https://github.com/thinpack-js/thinpack.js/actions/runs/45674940548) with QuickJS and `--rebuild`. This is the standalone executable, including the runtime.
+
 In a [Linux x64 benchmark](docs/benchmarks.md), `tsc` packed to **9.0 MiB** with Thinpack and **109.6 MiB** with Bun `--compile`. Thinpack used QuickJS with `--rebuild` to link only the needed built-ins. The prebuilt template is larger, and QuickJS can trade startup speed for size.
 
 Thinpack supports many Node.js APIs, but it is not a drop-in replacement for Node.js. It does not load native Node addons. Use `--include <path>` to package extra files or computed local imports; paths are relative to the project root. Verify important commands on every platform you ship.
