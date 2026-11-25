@@ -226,6 +226,8 @@ vendor/              patched copies of upstream crates (deno_core, deno_ffi, den
 The engine appears only in `thinpack-core`; module crates declare their own
 `deno_core::Extension` and never depend on a backend; `capabilities.toml` is the single source
 of module metadata, and `cargo xtask gen` generates the module table and the feature blocks.
+A capability that needs per-isolate state receives `thinpack_core::IsolateInputs` in its
+initializer; the packed FS mount and the FFI engine use that path.
 
 ## Development
 
