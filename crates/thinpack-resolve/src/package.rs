@@ -5,6 +5,7 @@ use crate::{Error, FileSystem};
 
 #[derive(Debug, Default)]
 pub(crate) struct Manifest {
+    pub name: Option<String>,
     pub main: Option<String>,
     pub is_module: bool,
     pub exports: Option<Json>,
@@ -40,6 +41,7 @@ impl Manifest {
         };
 
         Ok(Self {
+            name: value.get("name").and_then(Json::as_str).map(str::to_owned),
             main: value.get("main").and_then(Json::as_str).map(str::to_owned),
             is_module,
             exports: value.get("exports").cloned(),
