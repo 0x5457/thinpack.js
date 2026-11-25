@@ -483,6 +483,59 @@
      s->mark = s->buf_ptr + min_int(1, input_len);
      s->eol = s->buf_ptr;
      s->token.val = ' ';
+--- a/src/jsc/exception.rs
++++ b/src/jsc/exception.rs
+@@ -490,6 +490,50 @@
+   unsafe { track_promise(ctx, promise) }
+ }
+ 
++/// Record a settlement `track_promise` cannot observe yet.
++///
++/// The system-JavaScriptCore fallback in `introspect.rs` reads these properties
++/// because the public C API cannot inspect a promise, and `track_promise` only
++/// learns the settlement from a reaction that runs at a microtask checkpoint. A
++/// nested `require(esm)` skips that checkpoint, so a promise the caller settled
++/// itself has to say so here. `state` is the state the promise is actually in:
++/// a pending promise stays `Pending`, and `result` is its fulfilment value or
++/// rejection reason. Call it after `track_promise`, and for a rejection only
++/// once that rejection actually happened — JSC reports unhandled rejections at
++/// rejection time, so the promise has to exist pending first.
++pub(crate) fn settle_tracked_promise(
++  ctx: JSContextRef,
++  promise: JSObjectRef,
++  state: PromiseState,
++  result: JSValueRef,
++) {
++  let state = match state {
++    PromiseState::Fulfilled => 1,
++    PromiseState::Rejected => 2,
++    PromiseState::Pending => return,
++  };
++  if ctx.is_null() || promise.is_null() {
++    return;
++  }
++  let attrs = 1 << 1;
++  let set = |name: &[u8], value: JSValueRef| {
++    let key = unsafe {
++      JSStringCreateWithUTF8CString(name.as_ptr() as *const c_char)
++    };
++    unsafe {
++      JSObjectSetProperty(ctx, promise, key, value, attrs, ptr::null_mut())
++    };
++    unsafe { JSStringRelease(key) };
++  };
++  set(
++    b"__v8jsc_state\0",
++    unsafe { JSValueMakeNumber(ctx, f64::from(state)) },
++  );
++  if !result.is_null() {
++    set(b"__v8jsc_result\0", result);
++  }
++}
++
+ #[unsafe(no_mangle)]
+ pub extern "C" fn v8__Promise__State(this: *const Promise) -> PromiseState {
+   let ctx = current_ctx();
 --- a/src/jsc/mod.rs
 +++ b/src/jsc/mod.rs
 @@ -1,5 +1,9 @@
@@ -509,6 +562,17 @@
    {
 --- a/src/jsc/module.rs
 +++ b/src/jsc/module.rs
+@@ -18,8 +18,8 @@
+ use crate::jsc::jsc_sys::*;
+ use crate::{
+   Context, Data, FixedArray, Function, Message, Module, ModuleRequest, Object,
+-  Primitive, RealIsolate, Script, String as V8String, UnboundModuleScript,
+-  UnboundScript, Value,
++  Primitive, PromiseState, RealIsolate, Script, String as V8String,
++  UnboundModuleScript, UnboundScript, Value,
+ };
+ 
+ use crate::isolate::ModuleImportPhase;
 @@ -33,6 +33,10 @@
    CachedData, CompileOptions, NoCacheReason, Source,
  };
@@ -1381,7 +1445,7 @@
      .map(|m| m.import_offsets.clone())
      .unwrap_or_default();
    let attributes: Vec<Vec<(std::string::String, std::string::String)>> =
-@@ -2653,13 +1940,41 @@
+@@ -2653,15 +1940,43 @@
  
  #[unsafe(no_mangle)]
  pub extern "C" fn v8__Module__SourceOffsetToLocation(
@@ -1413,20 +1477,22 @@
 +  unsafe {
 +    (*location)[0] = line as i32;
 +    (*location)[1] = column as i32;
-+  }
-+}
-+
+   }
+ }
+ 
 +fn line_starts(source: &str) -> Vec<usize> {
 +  let mut starts = vec![0usize];
 +  for (index, byte) in source.bytes().enumerate() {
 +    if byte == b'\n' {
 +      starts.push(index + 1);
 +    }
-   }
++  }
 +  starts
- }
- 
++}
++
  #[unsafe(no_mangle)]
+ pub extern "C" fn v8__Module__GetModuleNamespace(
+   this: *const Module,
 @@ -2727,7 +2042,12 @@
    let Some(m) = module_state(this) else {
      return MaybeBool::JustFalse;
@@ -1570,10 +1636,51 @@
      if let Some(m) = module_state(this) {
        m.status = ModuleStatus::Evaluated;
      }
-@@ -3133,6 +2546,23 @@
-   intern_ctx::<Value>(ctx, p)
- }
+@@ -3115,22 +2528,50 @@
+   if ctx.is_null() {
+     return ptr::null();
+   }
+-  let src = b"Promise.resolve(undefined)\0";
++  // An intrinsic already-fulfilled promise: `Promise.resolve()` would go through
++  // the replaceable global, and the state recorded below has to be a fact about
++  // this promise rather than an assumption about it.
++  let mut resolve: JSObjectRef = ptr::null_mut();
++  let mut reject: JSObjectRef = ptr::null_mut();
+   let mut exc: JSValueRef = ptr::null();
+-  let js = unsafe {
+-    JSStringCreateWithUTF8CString(src.as_ptr() as *const std::os::raw::c_char)
+-  };
+-  let p = unsafe {
+-    JSEvaluateScript(ctx, js, ptr::null_mut(), ptr::null_mut(), 1, &mut exc)
++  let promise = unsafe {
++    JSObjectMakeDeferredPromise(ctx, &mut resolve, &mut reject, &mut exc)
+   };
+-  unsafe { JSStringRelease(js) };
+-  if p.is_null() {
+-    let v = unsafe { JSValueMakeUndefined(ctx) };
+-    return intern_ctx::<Value>(ctx, v);
++  if !promise.is_null() && exc.is_null() && !resolve.is_null() {
++    let undefined = unsafe { JSValueMakeUndefined(ctx) };
++    let args = [undefined];
++    unsafe {
++      JSObjectCallAsFunction(ctx, resolve, promise, 1, args.as_ptr(), &mut exc)
++    };
++    if exc.is_null() {
++      crate::jsc::exception::track_promise_pub(ctx, promise);
++      crate::jsc::exception::settle_tracked_promise(
++        ctx,
++        promise,
++        PromiseState::Fulfilled,
++        undefined,
++      );
++      return intern_ctx::<Value>(ctx, promise as JSValueRef);
++    }
+   }
++  intern_ctx::<Value>(ctx, unsafe { JSValueMakeUndefined(ctx) })
++}
  
+-  crate::jsc::exception::track_promise_pub(ctx, p as JSObjectRef);
+-  intern_ctx::<Value>(ctx, p)
 +/// Whether the synchronous wrapper parses. A module with top-level await only parses as the
 +/// body of an async function; JSC reports the syntax error without evaluating anything.
 +fn sync_wrapper_parses(ctx: JSContextRef, body: &str) -> bool {
@@ -1589,12 +1696,10 @@
 +    JSStringRelease(js);
 +    ok
 +  }
-+}
-+
+ }
+ 
  unsafe fn eval_module_source(
-   ctx: JSContextRef,
-   rewritten: &str,
-@@ -3144,8 +2574,9 @@
+@@ -3144,8 +2585,9 @@
  ) -> Result<JSValueRef, JSValueRef> {
    let fail =
      |ctx: JSContextRef, exc: JSValueRef| -> Result<JSValueRef, JSValueRef> {
@@ -1606,7 +1711,7 @@
        let e = if exc.is_null() {
          make_generic_error(ctx, "module evaluation failed")
        } else {
-@@ -3264,37 +2695,30 @@
+@@ -3264,37 +2706,38 @@
      exc
    };
  
@@ -1657,11 +1762,19 @@
    }
 -  crate::jsc::exception::track_promise_pub(ctx, p as JSObjectRef);
 -  intern_ctx::<Value>(ctx, p)
++  if e.is_null() {
++    crate::jsc::exception::settle_tracked_promise(
++      ctx,
++      promise,
++      PromiseState::Rejected,
++      exc,
++    );
++  }
 +  intern_ctx::<Value>(ctx, promise as JSValueRef)
  }
  
  /// Install live re-export getters on `namespace`: for each `export { local as
-@@ -3422,13 +2846,6 @@
+@@ -3422,13 +2865,6 @@
    meta as JSValueRef
  }
  
@@ -1675,7 +1788,7 @@
  #[unsafe(no_mangle)]
  pub extern "C" fn v8__Module__IsGraphAsync(this: *const Module) -> bool {
    fn graph_async(this: *const Module, seen: &mut Vec<*const Module>) -> bool {
-@@ -3551,7 +2968,10 @@
+@@ -3551,7 +2987,10 @@
      source_map_url: None,
      import_offsets: Vec::new(),
      import_attributes: Vec::new(),
@@ -1686,7 +1799,7 @@
      namespace,
      specifier,
      dependencies: Vec::new(),
-@@ -3637,9 +3057,13 @@
+@@ -3637,9 +3076,13 @@
      let mut exc: JSValueRef = ptr::null();
      let v = JSObjectGetProperty(ctx, obj, key, &mut exc);
      JSStringRelease(key);
