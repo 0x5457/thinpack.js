@@ -557,9 +557,10 @@ fn append_extension(path: &Path, extension: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// Node's `Module._nodeModulePaths`: the `node_modules` directories searched
-/// from a module directory to the file-system root, nearest first. A directory
-/// already named `node_modules` does not gain a nested `node_modules` entry.
+/// Returns the `node_modules` lookup directories, nearest first.
+///
+/// A directory already named `node_modules` does not gain a nested entry,
+/// matching Node's `Module._nodeModulePaths`.
 #[must_use]
 pub fn node_module_paths(from: &Path) -> Vec<PathBuf> {
     let from = normalize(from);

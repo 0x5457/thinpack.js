@@ -19,7 +19,7 @@ use url::Url;
 #[cfg(feature = "esm-hooks")]
 use crate::error::HookError;
 use crate::error::LoaderError;
-use crate::{EsmLoader, Main, ModuleFs, missing_builtin_message};
+use crate::{EsmLoader, Main, ModuleFs, missing_builtin_message, posix_separators};
 
 pub(crate) const OPS: &[OpDecl] = &[
     op_require(),
@@ -124,9 +124,15 @@ fn op_module_lookup_paths(
         let mut paths = if parent.is_empty() {
             Vec::new()
         } else {
-            thinpack_resolve::node_module_paths(parent_directory(parent))
+            let directory = parent_directory(parent);
+            let packed = fs.is_packed(directory);
+            thinpack_resolve::node_module_paths(directory)
                 .into_iter()
-                .map(|path| fs.js_path(&path))
+                .map(|path| {
+                    let path = path.display().to_string();
+                    // The lookup includes /node_modules above the /app mount.
+                    if packed { posix_separators(path) } else { path }
+                })
                 .collect()
         };
         paths.extend(
