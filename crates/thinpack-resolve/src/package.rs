@@ -230,6 +230,33 @@ fn strip_relative(target: &str) -> Option<String> {
     Some(relative.to_owned())
 }
 
+/// The `type` of the nearest package scope.
+///
+/// `Some(true)` is `module`, `Some(false)` is `commonjs`, and `None` means the field
+/// is absent or there is no package.json. Node's syntax detection only applies to the
+/// `None` case.
+///
+/// # Errors
+///
+/// Returns the manifest read and parse errors from the package scope walk.
+pub fn package_type(path: &Path, fs: &impl FileSystem) -> Result<Option<bool>, Error> {
+    let mut directory = path.parent();
+    while let Some(current) = directory {
+        if current
+            .file_name()
+            .is_some_and(|name| name == "node_modules")
+        {
+            return Ok(None);
+        }
+        let manifest_path = current.join("package.json");
+        if fs.is_file(&manifest_path) {
+            return Ok(Manifest::read(&manifest_path, fs)?.module_type);
+        }
+        directory = current.parent();
+    }
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,31 +300,4 @@ mod tests {
         let value = exports(r#""../outside.js""#);
         assert_eq!(resolve_subpath(&value, "", false), None);
     }
-}
-
-/// The `type` of the nearest package scope.
-///
-/// `Some(true)` is `module`, `Some(false)` is `commonjs`, and `None` means the field
-/// is absent or there is no package.json. Node's syntax detection only applies to the
-/// `None` case.
-///
-/// # Errors
-///
-/// Returns the manifest read and parse errors from the package scope walk.
-pub fn package_type(path: &Path, fs: &impl FileSystem) -> Result<Option<bool>, Error> {
-    let mut directory = path.parent();
-    while let Some(current) = directory {
-        if current
-            .file_name()
-            .is_some_and(|name| name == "node_modules")
-        {
-            return Ok(None);
-        }
-        let manifest_path = current.join("package.json");
-        if fs.is_file(&manifest_path) {
-            return Ok(Manifest::read(&manifest_path, fs)?.module_type);
-        }
-        directory = current.parent();
-    }
-    Ok(None)
 }
