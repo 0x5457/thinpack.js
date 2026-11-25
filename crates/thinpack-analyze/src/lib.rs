@@ -46,6 +46,10 @@ pub struct Analysis {
     /// `createReadStream` with a path built from `__dirname`. The payload carries
     /// them but the analyzer does not parse them.
     pub static_files: BTreeSet<PathBuf>,
+    /// Directories enumerated through `fs.readdir`/`readdirSync` with a path built
+    /// from `__dirname`. The CLI expands them like `--include` roots, so every file
+    /// the application can name is packed and its imports are analyzed.
+    pub static_dirs: BTreeSet<PathBuf>,
     /// TypeScript files replaced by the JavaScript packing stripped them to. The
     /// payload stores this text under the original path, so neither the loader nor
     /// the packed app ever evaluates TypeScript.
@@ -67,6 +71,7 @@ impl Analysis {
         }
         self.formats.extend(other.formats);
         self.static_files.extend(other.static_files);
+        self.static_dirs.extend(other.static_dirs);
         self.stripped.extend(other.stripped);
         self.warnings.extend(other.warnings);
         self.warnings.sort();
@@ -214,9 +219,7 @@ pub fn analyze_roots_with(
     let mut required = BTreeSet::new();
     let mut builtins: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
     let mut formats = BTreeMap::new();
-    let mut static_files = BTreeSet::new();
-    let mut stripped = BTreeMap::new();
-    let mut warnings = Vec::new();
+    let mut output = WalkOutput::default();
 
     while let Some((path, optional_subtree)) = pending.pop_front() {
         if !files.insert(path.clone()) {
@@ -233,8 +236,7 @@ pub fn analyze_roots_with(
         }
 
         let optional_dependencies = thinpack_resolve::optional_dependencies(&path, &fs);
-        let (specifiers, detected) =
-            load_module(&path, &fs, &mut stripped, &mut warnings, &mut static_files)?;
+        let (specifiers, detected) = load_module(&path, &fs, &mut output)?;
         if let Some(format) = detected {
             formats.insert(path.clone(), format);
         }
@@ -244,7 +246,7 @@ pub fn analyze_roots_with(
             // omitted with a warning instead of failing the pack.
             let optional = guarded
                 || thinpack_resolve::is_optional_dependency(&specifier, &optional_dependencies);
-            if record_builtin(&specifier, optional, &path, &mut builtins, &mut warnings)? {
+            if record_builtin(&specifier, optional, &path, &mut builtins, &mut output)? {
                 continue;
             }
             let conditions = Conditions {
@@ -256,7 +258,7 @@ pub fn analyze_roots_with(
             let resolved = match resolved {
                 Ok(resolved) => resolved,
                 Err(error) if optional => {
-                    warnings.push(Warning {
+                    output.warnings.push(Warning {
                         message: format!(
                             "{}: optional dependency `{specifier}` is missing ({error}); the app must handle the error",
                             path.display()
@@ -268,7 +270,7 @@ pub fn analyze_roots_with(
                 Err(error)
                     if allow_missing.contains(thinpack_resolve::package_name(&specifier)) =>
                 {
-                    warnings.push(Warning {
+                    output.warnings.push(Warning {
                         message: format!(
                             "{}: dependency `{specifier}` is missing ({error}); excluded by --allow-missing",
                             path.display()
@@ -295,8 +297,8 @@ pub fn analyze_roots_with(
         }
     }
 
-    warnings.sort();
-    warnings.dedup();
+    output.warnings.sort();
+    output.warnings.dedup();
     // An explicit include is required even if the graph only reaches it through an
     // optional edge, or does not reach it at all.
     files.extend(data_roots.iter().cloned());
@@ -307,9 +309,10 @@ pub fn analyze_roots_with(
         manifests: fs.into_manifests(),
         builtins,
         formats,
-        static_files,
-        stripped,
-        warnings,
+        static_files: output.static_files,
+        static_dirs: output.static_dirs,
+        stripped: output.stripped,
+        warnings: output.warnings,
     })
 }
 
@@ -362,7 +365,7 @@ fn record_builtin(
     optional: bool,
     from: &Path,
     builtins: &mut BTreeMap<String, BTreeSet<PathBuf>>,
-    warnings: &mut Vec<Warning>,
+    output: &mut WalkOutput,
 ) -> Result<bool, Error> {
     let Some(module) = thinpack_caps::module_for_builtin(specifier) else {
         if !specifier.starts_with("node:") {
@@ -372,7 +375,7 @@ fn record_builtin(
         // checks for a builtin that may not ship; warn like an optional dependency
         // instead of failing the pack.
         if optional {
-            warnings.push(Warning {
+            output.warnings.push(Warning {
                 message: format!(
                     "{}: unknown builtin `{specifier}` may be absent; the app must handle ERR_UNKNOWN_BUILTIN_MODULE",
                     from.display()
@@ -387,7 +390,7 @@ fn record_builtin(
         });
     };
     if module.optional && optional {
-        warnings.push(Warning {
+        output.warnings.push(Warning {
             message: format!(
                 "{}: optional builtin `{specifier}` may be absent; the app must handle ERR_UNKNOWN_BUILTIN_MODULE",
                 from.display()
@@ -490,12 +493,19 @@ fn format_mismatch(
         .then_some(message)
 }
 
+/// What the walk collects besides the module edges themselves.
+#[derive(Default)]
+struct WalkOutput {
+    warnings: Vec<Warning>,
+    static_files: BTreeSet<PathBuf>,
+    static_dirs: BTreeSet<PathBuf>,
+    stripped: BTreeMap<PathBuf, String>,
+}
+
 fn load_module(
     path: &Path,
     fs: &impl FileSystem,
-    stripped: &mut BTreeMap<PathBuf, String>,
-    warnings: &mut Vec<Warning>,
-    static_files: &mut BTreeSet<PathBuf>,
+    output: &mut WalkOutput,
 ) -> Result<(Vec<SpecifierEntry>, Option<Format>), Error> {
     let bytes = fs.read(path).map_err(|error| Error::Read {
         path: path.to_path_buf(),
@@ -505,16 +515,15 @@ fn load_module(
         path: path.to_path_buf(),
         message: "module is not valid UTF-8".to_owned(),
     })?;
-    let source = typescript::strip(path, source, stripped)?;
-    parse_specifiers(&source, path, fs, warnings, static_files)
+    let source = typescript::strip(path, source, &mut output.stripped)?;
+    parse_specifiers(&source, path, fs, output)
 }
 
 fn parse_specifiers(
     source: &str,
     path: &Path,
     fs: &impl FileSystem,
-    warnings: &mut Vec<Warning>,
-    static_files: &mut BTreeSet<PathBuf>,
+    output: &mut WalkOutput,
 ) -> Result<(Vec<SpecifierEntry>, Option<Format>), Error> {
     let allocator = Allocator::default();
     let (source_type, format) = parser_dialect(path, fs)?;
@@ -533,7 +542,7 @@ fn parse_specifiers(
             let esm_type = source_type.with_module(true);
             let esm = Parser::new(&allocator, source, esm_type).parse();
             if esm.diagnostics.is_empty() {
-                warnings.push(Warning {
+                output.warnings.push(Warning {
                     message: format!(
                         "{}: contains ES module syntax in a package without \"type\"; packed as an ES module. Add \"type\": \"module\" to the nearest package.json to make the format explicit",
                         path.display()
@@ -571,8 +580,9 @@ fn parse_specifiers(
         try_depth: 0,
         semantic: &semantic,
         require_bindings: require::bindings(&semantic),
-        warnings,
-        static_files,
+        warnings: &mut output.warnings,
+        static_files: &mut output.static_files,
+        static_dirs: &mut output.static_dirs,
         fs,
     };
     collector.visit_program(&parsed.program);
@@ -599,6 +609,13 @@ fn global_name<'a>(expression: &'a Expression<'_>) -> Option<&'a str> {
     }
 }
 
+fn call_property<'a>(call: &'a CallExpression<'a>) -> Option<&'a str> {
+    call.callee
+        .as_member_expression()?
+        .static_property_name()?
+        .as_str()
+}
+
 struct SpecifierCollector<'a, 's> {
     path: &'s Path,
     specifiers: BTreeMap<(String, bool), bool>,
@@ -607,6 +624,7 @@ struct SpecifierCollector<'a, 's> {
     require_bindings: BTreeSet<SymbolId>,
     warnings: &'s mut Vec<Warning>,
     static_files: &'s mut BTreeSet<PathBuf>,
+    static_dirs: &'s mut BTreeSet<PathBuf>,
     fs: &'s dyn FileSystem,
 }
 
@@ -737,25 +755,13 @@ impl SpecifierCollector<'_, '_> {
     /// `createReadStream` when the path is built from `__dirname`. This is the
     /// `errorhandler` case: a runtime asset that no import reaches.
     fn static_asset(&mut self, call: &CallExpression<'_>) {
-        let Some(member) = call.callee.as_member_expression() else {
-            return;
-        };
-        let Some(property) = member
-            .static_property_name()
-            .and_then(oxc_str::JSStr::as_str)
-        else {
+        let Some(property) = call_property(call) else {
             return;
         };
         if !matches!(property, "readFile" | "readFileSync" | "createReadStream") {
             return;
         }
-        let Some(expression) = call.arguments.first().and_then(Argument::as_expression) else {
-            return;
-        };
-        let Some(path) = static_path::evaluate(
-            expression,
-            self.path.parent().unwrap_or_else(|| Path::new("/")),
-        ) else {
+        let Some(path) = self.static_path_argument(call) else {
             return;
         };
         if self.fs.is_file(&path) {
@@ -770,6 +776,33 @@ impl SpecifierCollector<'_, '_> {
                 strict: false,
             });
         }
+    }
+
+    /// Record a package-relative directory enumerated through `fs.readdir` or
+    /// `fs.readdirSync`. The names it returns are not known statically, but the
+    /// directory is, so it can be packed like `--include <directory>`.
+    fn static_directory(&mut self, call: &CallExpression<'_>) {
+        let Some(property) = call_property(call) else {
+            return;
+        };
+        if !matches!(property, "readdir" | "readdirSync") {
+            return;
+        }
+        let Some(path) = self.static_path_argument(call) else {
+            return;
+        };
+        if self.fs.is_dir(&path) {
+            self.static_dirs.insert(path);
+        }
+    }
+
+    fn static_path_argument(&self, call: &CallExpression<'_>) -> Option<PathBuf> {
+        let expression = call.arguments.first().and_then(Argument::as_expression)?;
+        static_path::evaluate(
+            expression,
+            self.path.parent().unwrap_or_else(|| Path::new("/")),
+            self.semantic,
+        )
     }
 }
 
@@ -808,6 +841,7 @@ impl<'a> VisitJs<'a> for SpecifierCollector<'a, '_> {
     fn visit_call_expression(&mut self, call: &CallExpression<'a>) {
         self.dynamic_function(&call.callee, &call.arguments);
         self.static_asset(call);
+        self.static_directory(call);
         self.require_call(call);
         walk_js::walk_call_expression(self, call);
     }
@@ -1560,6 +1594,39 @@ mod tests {
         let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
         assert!(analysis.static_files.is_empty());
         assert!(analysis.warnings.is_empty(), "{:?}", analysis.warnings);
+    }
+
+    #[test]
+    fn records_a_static_directory_scanned_through_dirname() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.cjs",
+                "const fs = require('node:fs');\nconst dir = __dirname + '/plugins';\nfs.readdirSync(dir);\n",
+            ),
+            ("/app/plugins/plugin.cjs", "module.exports = 42;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+        assert_eq!(
+            analysis.static_dirs,
+            BTreeSet::from([PathBuf::from("/app/plugins")])
+        );
+    }
+
+    #[test]
+    fn a_dynamic_directory_scan_is_left_alone() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.cjs",
+                "const fs = require('node:fs');\nfs.readdirSync(__dirname + '/' + process.argv[2]);\n",
+            ),
+            ("/app/plugins/plugin.cjs", "module.exports = 42;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+        assert!(
+            analysis.static_dirs.is_empty(),
+            "{:?}",
+            analysis.static_dirs
+        );
     }
 
     #[test]

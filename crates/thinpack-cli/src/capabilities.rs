@@ -30,13 +30,7 @@ pub(crate) fn analyze_entry(options: &Options, pack: bool) -> Result<Analyzed, B
     conditions.sort_unstable();
     conditions.dedup();
     let included = expand_includes(&root, &options.include)?;
-    let mut analysis = thinpack_analyze::analyze_roots_with(
-        &entry,
-        &included,
-        &thinpack_resolve::HostFs,
-        &allow_missing,
-        &conditions,
-    )?;
+    let mut analysis = analyze_graph(&entry, &root, &included, &allow_missing, &conditions)?;
     if pack {
         // A module outside the root cannot be reached from the payload. Pack leaves
         // optional ones out; the warning belongs with the other optional warnings so
@@ -71,6 +65,63 @@ pub(crate) fn analyze_entry(options: &Options, pack: bool) -> Result<Analyzed, B
         analysis,
         capabilities,
     })
+}
+
+/// Analyze the entry and explicit include roots, expanding every
+/// package-relative directory the graph enumerates with `fs.readdir` or
+/// `fs.readdirSync` as if it had been passed to `--include`. A directory can
+/// contain a module that scans another directory, so repeat until no new
+/// directory appears.
+fn analyze_graph(
+    entry: &Path,
+    root: &Path,
+    includes: &[PathBuf],
+    allow_missing: &BTreeSet<String>,
+    conditions: &[String],
+) -> Result<Analysis, Box<dyn Error>> {
+    let mut includes = includes.to_vec();
+    let mut expanded = BTreeSet::new();
+    let mut skipped = BTreeSet::new();
+    loop {
+        let mut analysis = thinpack_analyze::analyze_roots_with(
+            entry,
+            &includes,
+            &thinpack_resolve::HostFs,
+            allow_missing,
+            conditions,
+        )?;
+        let mut discovered = Vec::new();
+        for directory in &analysis.static_dirs {
+            let directory = normalize(directory);
+            if !expanded.insert(directory.clone()) {
+                continue;
+            }
+            // The payload is rooted at the project, and a scanned directory
+            // above it cannot be reached from `/app`. Leave it to the host.
+            if !directory.starts_with(root) {
+                skipped.insert(directory);
+                continue;
+            }
+            collect_files(&directory, &mut discovered)?;
+        }
+        if discovered.is_empty() {
+            for directory in skipped {
+                analysis.warnings.push(thinpack_analyze::Warning {
+                    message: format!(
+                        "static directory {} is outside the project root {}; it is left out of the payload",
+                        directory.display(),
+                        root.display()
+                    ),
+                    strict: false,
+                });
+            }
+            analysis.warnings.sort();
+            return Ok(analysis);
+        }
+        includes.extend(discovered);
+        includes.sort();
+        includes.dedup();
+    }
 }
 
 fn expand_includes(root: &Path, includes: &[PathBuf]) -> Result<Vec<PathBuf>, Box<dyn Error>> {

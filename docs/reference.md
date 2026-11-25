@@ -67,6 +67,12 @@ The analyzer follows conditional `require` calls when both branches name modules
 supplied at runtime, use `--with` to include the required built-ins explicitly. `--strict` makes
 unresolved dynamic requests an error during packing.
 
+A path built from `__dirname` can name files the module never imports: files read through
+`fs.readFileSync`, `readFile`, or `createReadStream` are packed, and so is every file under a
+directory listed with `fs.readdir` or `readdirSync`. `path.join`, `path.resolve`, string
+concatenation, and single-assignment bindings of them are evaluated; anything else still needs
+`--include`.
+
 Compiled module bytecode is cached under `<cache-root>/bytecode`, which makes a warm start
 about 29% faster (pi: 983 ms → 702 ms); `V82JSC_NO_BC_CACHE=1` disables it, and
 `--warm-cache` pre-compiles the payload's modules at deploy time without running app code.
