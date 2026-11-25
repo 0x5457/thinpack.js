@@ -705,10 +705,10 @@ fn module_target<'a>(expression: &'a Expression<'a>) -> &'a Expression<'a> {
         call.callee.without_parentheses(),
         Expression::StaticMemberExpression(member) if member.property.name == "pathToFileURL"
     );
-    if is_path_to_file_url {
-        if let Some(argument) = call.arguments.first().and_then(Argument::as_expression) {
-            return argument.without_parentheses();
-        }
+    if is_path_to_file_url
+        && let Some(argument) = call.arguments.first().and_then(Argument::as_expression)
+    {
+        return argument.without_parentheses();
     }
     expression
 }
