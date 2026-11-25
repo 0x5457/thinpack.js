@@ -4133,3 +4133,18 @@ ObjectDefineProperties(fs, {
     },
   },
 });
+
+// Node's ESM facade carries every enumerable export, including its lazy getters.
+// The shared probe skips getters so it cannot initialize an unselected capability; these
+// are all backed by modules this extension always ships, so name them explicitly.
+globalThis.__thinpack_declare_builtin_exports__('node:fs', [
+  'Dir',
+  'FileReadStream',
+  'FileWriteStream',
+  'ReadStream',
+  'Utf8Stream',
+  'WriteStream',
+  'opendir',
+  'opendirSync',
+  'promises',
+]);
