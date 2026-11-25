@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
-use thinpack_analyze::Analysis;
+use thinpack_analyze::{Analysis, StaticDir};
 use thinpack_caps::Module;
 
 use thinpack_resolve::normalize;
@@ -91,9 +91,9 @@ fn analyze_graph(
             conditions,
         )?;
         let mut discovered = Vec::new();
-        for directory in &analysis.static_dirs {
+        for (directory, filter) in &analysis.static_dirs {
             let directory = normalize(directory);
-            if !expanded.insert(directory.clone()) {
+            if !expanded.insert((directory.clone(), filter.clone())) {
                 continue;
             }
             // The payload is rooted at the project, so a directory above it cannot
@@ -109,7 +109,7 @@ fn analyze_graph(
                 );
                 continue;
             }
-            collect_files(&directory, false, &mut discovered)?;
+            collect_files(&directory, false, Some(filter), &mut discovered)?;
         }
         if discovered.is_empty() {
             for (directory, reason) in skipped {
@@ -181,7 +181,7 @@ fn expand_includes(root: &Path, includes: &[PathBuf]) -> Result<Vec<PathBuf>, Bo
             )
         })?;
         if metadata.is_dir() {
-            collect_files(&path, true, &mut files)?;
+            collect_files(&path, true, None, &mut files)?;
         } else {
             files.push(path);
         }
@@ -197,6 +197,7 @@ fn expand_includes(root: &Path, includes: &[PathBuf]) -> Result<Vec<PathBuf>, Bo
 fn collect_files(
     directory: &Path,
     follow_links: bool,
+    filter: Option<&StaticDir>,
     files: &mut Vec<PathBuf>,
 ) -> Result<(), Box<dyn Error>> {
     for entry in std::fs::read_dir(directory)? {
@@ -210,9 +211,9 @@ fn collect_files(
         if file_type.is_dir() {
             if entry.file_name() != ".git" && (follow_links || entry.file_name() != "node_modules")
             {
-                collect_files(&path, follow_links, files)?;
+                collect_files(&path, follow_links, filter, files)?;
             }
-        } else if file_type.is_file() {
+        } else if file_type.is_file() && filter.is_none_or(|filter| filter.accepts(&path)) {
             files.push(path);
         }
     }
