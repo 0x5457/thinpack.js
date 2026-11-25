@@ -727,6 +727,74 @@ mod unix {
     }
 
     #[test]
+    fn a_guarded_import_with_a_missing_static_dependency_packs() {
+        let directory = TempDir::new("guarded-missing-dependency");
+        fs::write(
+            directory.path().join("package.json"),
+            r#"{ "name": "optional-feature", "type": "module" }"#,
+        )
+        .expect("write package manifest");
+        let entry = directory.path().join("main.mjs");
+        fs::write(
+            &entry,
+            "try {\n  await import('./feature.mjs');\n} catch (error) {\n  if (error.code !== 'ERR_MODULE_NOT_FOUND') throw error;\n  console.log('optional feature unavailable');\n}\n",
+        )
+        .expect("write entry importing an optional feature");
+        fs::write(
+            directory.path().join("feature.mjs"),
+            "import 'optional-package-not-installed';\n",
+        )
+        .expect("write feature with a missing static dependency");
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let output = directory.path().join("packed-app");
+
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            directory.path(),
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+            ],
+        );
+        assert!(
+            result.status.success(),
+            "pack failed:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            error.contains("optional dependency `optional-package-not-installed` is missing"),
+            "{error}"
+        );
+
+        let pack = thinpack_pack::read_from_executable(&output)
+            .expect("read packed executable")
+            .expect("packed payload");
+        assert!(
+            pack.manifest
+                .files
+                .iter()
+                .any(|file| file.path == "/app/feature.mjs"),
+            "left out the handled feature: {:?}",
+            pack.manifest.files
+        );
+        assert!(
+            !pack
+                .manifest
+                .files
+                .iter()
+                .any(|file| file.path.contains("optional-package-not-installed")),
+            "packed the missing package"
+        );
+    }
+
+    #[test]
     fn a_dirname_relative_asset_is_packed() {
         let directory = TempDir::new("static-asset");
         let entry = directory.path().join("main.js");

@@ -242,19 +242,31 @@ pub fn analyze_roots_with(
         for ((specifier, is_import), usage) in specifiers {
             // A dependency listed in `optionalDependencies` is optional even when the
             // request is unguarded, so a hoisted install the payload cannot reach is
-            // omitted with a warning instead of failing the pack.
-            let optional = usage.optional
+            // omitted with a warning instead of failing the pack. The inherited edge is
+            // deliberately excluded here: `record_builtin` decides whether to link an
+            // optional builtin from the reference itself.
+            let direct_optional = usage.optional
                 || thinpack_resolve::is_optional_dependency(&specifier, &optional_dependencies);
-            if record_builtin(&specifier, optional, &path, &mut builtins, &mut warnings)? {
+            if record_builtin(
+                &specifier,
+                direct_optional,
+                &path,
+                &mut builtins,
+                &mut warnings,
+            )? {
                 continue;
             }
+            // Every file under an optional edge is optional, however the file itself
+            // reaches its dependencies. Required targets are visited first, so a file
+            // also reachable by a required edge still fails the pack.
+            let optional_edge = optional_subtree || direct_optional;
             let conditions = Conditions {
                 import: is_import,
                 custom: custom_conditions.to_vec(),
             };
             let Some(resolved) = resolve_dependency(
                 &specifier,
-                optional,
+                optional_edge,
                 &path,
                 &fs,
                 &conditions,
@@ -268,9 +280,7 @@ pub fn analyze_roots_with(
             // the payload without being parsed.
             if usage.resolve_only {
                 data_files.insert(resolved);
-            } else if optional_subtree || optional {
-                // Every file under an optional edge is optional, however the file
-                // itself reaches its dependencies.
+            } else if optional_edge {
                 pending.push_back((resolved, true));
             } else {
                 pending.push_front((resolved, false));
@@ -1246,6 +1256,72 @@ mod tests {
 
         let required = MemoryFs::new(&[("/app/main.js", "require('required-dep');\n")]);
         assert!(analyze(Path::new("/app/main.js"), &required).is_err());
+    }
+
+    #[test]
+    fn a_missing_dependency_under_a_guarded_import_only_warns() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.mjs",
+                "try { await import('./feature.mjs'); } catch (error) { if (error.code !== 'ERR_MODULE_NOT_FOUND') throw error; }\n",
+            ),
+            ("/app/feature.mjs", "import './nested.mjs';\n"),
+            (
+                "/app/nested.mjs",
+                "import 'optional-package-not-installed';\n",
+            ),
+        ]);
+        let analysis = analyze(Path::new("/app/main.mjs"), &fs).unwrap();
+        for path in ["/app/feature.mjs", "/app/nested.mjs"] {
+            assert!(analysis.files.contains(&PathBuf::from(path)), "{path}");
+            assert!(!analysis.required.contains(&PathBuf::from(path)), "{path}");
+        }
+        assert!(
+            analysis.warnings.iter().any(|warning| warning
+                .message
+                .contains("optional dependency `optional-package-not-installed` is missing")),
+            "{:?}",
+            analysis.warnings
+        );
+    }
+
+    #[test]
+    fn a_missing_dependency_under_an_unhandled_import_fails() {
+        let fs = MemoryFs::new(&[
+            ("/app/main.mjs", "await import('./feature.mjs');\n"),
+            (
+                "/app/feature.mjs",
+                "import 'optional-package-not-installed';\n",
+            ),
+        ]);
+        match analyze(Path::new("/app/main.mjs"), &fs) {
+            Err(Error::Resolve { specifier, .. }) => {
+                assert_eq!(specifier, "optional-package-not-installed");
+            }
+            other => panic!("expected a resolve error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_required_edge_keeps_a_shared_file_required() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.js",
+                "try { require('./optional-path'); } catch {}\nrequire('./required-path');\n",
+            ),
+            ("/app/optional-path.js", "require('./feature');\n"),
+            ("/app/required-path.js", "require('./feature');\n"),
+            (
+                "/app/feature.js",
+                "require('optional-package-not-installed');\n",
+            ),
+        ]);
+        match analyze(Path::new("/app/main.js"), &fs) {
+            Err(Error::Resolve { specifier, .. }) => {
+                assert_eq!(specifier, "optional-package-not-installed");
+            }
+            other => panic!("expected a resolve error, got {other:?}"),
+        }
     }
 
     #[test]
