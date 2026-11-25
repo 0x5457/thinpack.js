@@ -941,6 +941,17 @@ console.log('module.parent ok');
         capabilities: &["assert"],
         error: None,
     },
+    PackedTest {
+        name: "packed::process-env-export",
+        directory: "process-env-export",
+        entry: "/app/main.mjs",
+        files: &[(
+            "/app/main.mjs",
+            "import { env, pid } from 'node:process';\nif (env !== process.env) throw new Error('env mismatch');\nif (pid !== process.pid) throw new Error('pid mismatch');\nconsole.log('process exports ok');\n",
+        )],
+        capabilities: &[],
+        error: None,
+    },
 ];
 
 /// Packed startup cases whose source is generated because the payload is large.
