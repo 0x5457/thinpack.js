@@ -198,6 +198,15 @@ with (environment) {
   withClosure = () => value;
 }
 if (withClosure() !== 'with') throw new Error('with scope lookup failed');
+
+const padding = Array.from({ length: 32 }, (_, i) => `let v${i} = ${i};`).join('\n');
+const compileScoped = (body) => new Function(`${padding}\n${body}`);
+const values = Array.from({ length: 32 }, (_, i) => i);
+const siblings = values.map((i) => `{ let x = ${i}; out.push(x); }`).join('\n');
+if (compileScoped(`const out = []; ${siblings} return out.join(',');`)() !== values.join(','))
+  throw new Error('same-name sibling lookup failed');
+const nested = '{'.repeat(64) + 'return v31;' + '}'.repeat(64);
+if (compileScoped(nested)() !== 31) throw new Error('empty scope outer lookup failed');
 ",
         )],
         capabilities: &[],
