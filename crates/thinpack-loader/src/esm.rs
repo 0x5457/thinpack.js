@@ -339,6 +339,13 @@ pub(crate) fn default_source(
         "file" => {
             let path = path_from_url(specifier)
                 .ok_or_else(|| JsErrorBox::generic(format!("{specifier}: not a file URL")))?;
+            if let Some(message) = crate::unstripped_typescript(fs, &path) {
+                return Err(JsErrorBox::from_err(LoaderError {
+                    code: "ERR_UNKNOWN_FILE_EXTENSION",
+                    message,
+                    url: Some(specifier.to_string()),
+                }));
+            }
             let bytes = fs.read(&path).map_err(|error| {
                 if error.kind() == std::io::ErrorKind::NotFound {
                     module_not_found(fs, specifier.as_str(), Some(specifier), referrer)

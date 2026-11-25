@@ -90,6 +90,12 @@ impl ModuleFs {
         }
     }
 
+    /// Whether `path` is a payload file, whose TypeScript packing already stripped.
+    /// Everything else is read from the host untouched.
+    pub(crate) fn is_packed(&self, path: &Path) -> bool {
+        matches!(self, Self::Packed(_)) && path.starts_with(thinpack_vfs::ROOT)
+    }
+
     /// Renders a resolved module path the way JS names it.
     ///
     /// Payload paths are POSIX paths rooted at `/app` on every platform, and JS
@@ -129,6 +135,17 @@ pub fn commonjs_script(path: &Path, source: &str) -> Option<(String, String)> {
         name,
         format!("(function (exports, require, module, __filename, __dirname) {{{source}\n}})"),
     ))
+}
+
+/// The diagnostic for TypeScript read from the host: packing strips types only in
+/// the payload, and the runtime links no TypeScript parser of its own.
+pub(crate) fn unstripped_typescript(fs: &ModuleFs, path: &Path) -> Option<String> {
+    (thinpack_resolve::is_typescript(path) && !fs.is_packed(path)).then(|| {
+        format!(
+            "{}: TypeScript outside the packed payload is not type-stripped; pack the app instead of running its source",
+            fs.js_path(path)
+        )
+    })
 }
 
 fn strip_hashbang(source: &str) -> Cow<'_, str> {

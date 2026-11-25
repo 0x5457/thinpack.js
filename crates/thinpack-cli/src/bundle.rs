@@ -172,9 +172,15 @@ fn collect_analysis_files(
             // or optional dependency reaches this file.
             continue;
         };
+        // TypeScript ships as the JavaScript packing stripped it to; every other
+        // file ships byte for byte.
+        let contents = analysis.stripped.get(path).map_or_else(
+            || fs::read(path).map_err(|error| format!("{}: {error}", path.display())),
+            |javascript| Ok(javascript.clone().into_bytes()),
+        )?;
         files.push(PackedFile {
             path: virtual_path,
-            contents: fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?,
+            contents,
         });
     }
     Ok(files)

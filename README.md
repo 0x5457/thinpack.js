@@ -70,7 +70,7 @@ cargo build --release -p thinpack-rt -p thinpack-cli
 | `--backend <quickjs\|v8\|jsc>` | pick the template backend, `quickjs` by default; `jsc` is macOS-only |
 | `--rebuild` `--source <checkout>` | build a template for this app's own capability set and cache it |
 | `--asset <key>=<path>` | embed an asset, readable through `node:sea` |
-| `--include <path>` | pack extra files (`.d.ts`, templates, computed imports); paths are relative to the project root, and JavaScript is analyzed too |
+| `--include <path>` | pack extra files (`.d.ts`, templates, computed imports); paths are relative to the project root, and JavaScript and TypeScript are analyzed too |
 | `--with <module>` `--without <module>` | override the derived capability set. Both accept comma-separated lists or repeated flags. |
 | `--allow-missing <package>` | pack despite a missing package (it becomes a warning); use only for dependencies an inactive feature branch loads |
 | `--conditions <name>` | add custom `exports`/`imports` conditions, like Node's `--conditions`; the payload records them for runtime resolution |
@@ -104,6 +104,13 @@ recorded in the payload so the loader agrees. If the package explicitly declares
 remedies — rename it to `.mjs` or add `"type": "module"` — and the mirror case points at `.cjs`
 and at removing the declaration. `.cjs` and `.mjs` fix their format by extension and keep the
 parser's own diagnostic. The runtime keeps the same check for modules that reach it another way.
+
+TypeScript follows the same format rules: `.mts` and `.cts` fix the format, and `.ts` reads the
+package scope like `.js`. Packing strips the types with Node's strip-only pass (the SWC engine
+behind `amaro`), so the executable carries JavaScript and links no TypeScript parser. Only
+erasable syntax is accepted: `enum`, `namespace`, parameter properties, `import x = require()`,
+`export =` and `.tsx` fail at pack time, as they do in Node without
+`--experimental-transform-types`. TypeScript outside the payload is not stripped at run time.
 
 ## Size
 

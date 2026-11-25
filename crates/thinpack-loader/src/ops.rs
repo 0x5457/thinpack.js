@@ -207,6 +207,10 @@ fn lookup_builtin<'a>(builtins: &'a BuiltinSources, specifier: &str) -> Option<&
 fn read(resolved: &Resolved, fs: &ModuleFs) -> String {
     let path = fs.js_path(&resolved.path);
 
+    if let Some(message) = crate::unstripped_typescript(fs, &resolved.path) {
+        return format!("e\0ERR_UNKNOWN_FILE_EXTENSION\0{message}\0");
+    }
+
     let Some(url) = file_url(&resolved.path) else {
         return invalid_url(&path);
     };

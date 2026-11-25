@@ -15,6 +15,12 @@ oxc_parser = "0.159"
 oxc_semantic = "0.159"
 oxc_span = "0.159"
 oxc_str = "0.159"
+# Node's type stripping is SWC's strip-only pass (the `amaro` engine); packing
+# runs the same pass so TypeScript becomes JavaScript before it is packed and
+# the runtime links no TypeScript parser.
+swc_common = "17"
+swc_ecma_parser = "27"
+swc_ts_fast_strip = "36"
 
 [lints]
 workspace = true
