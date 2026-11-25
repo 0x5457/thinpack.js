@@ -21,7 +21,7 @@ oxc_str = "0.159"
 # Keep these versions in sync with the target Node release's amaro.
 swc_common = "=23.0.2"
 swc_ecma_parser = "=41.1.2"
-swc_ts_fast_strip = "=53.0.0"
+swc_ts_fast_strip = "=61.0.0"
 
 [lints]
 workspace = true
