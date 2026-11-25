@@ -1,4 +1,5 @@
 mod require;
+mod static_path;
 mod typescript;
 
 use std::cell::RefCell;
@@ -9,9 +10,9 @@ use std::path::{Path, PathBuf};
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    Argument, BinaryOperator, BindingPattern, CallExpression, ExportAllDeclaration,
-    ExportFromDeclaration, Expression, IdentifierReference, ImportDeclaration, ImportExpression,
-    NewExpression, PropertyKey, StaticMemberExpression, TryStatement, VariableDeclarator,
+    Argument, BindingPattern, CallExpression, ExportAllDeclaration, ExportFromDeclaration,
+    Expression, IdentifierReference, ImportDeclaration, ImportExpression, NewExpression,
+    PropertyKey, StaticMemberExpression, TryStatement, VariableDeclarator,
 };
 
 use oxc_ast_visit::{VisitJs, walk_js};
@@ -598,49 +599,6 @@ fn global_name<'a>(expression: &'a Expression<'_>) -> Option<&'a str> {
     }
 }
 
-/// Resolve a path expression rooted at `__dirname` (`path.join`, `path.resolve`,
-/// `join`, `resolve`, or `__dirname + "..."`). Only literal segments are accepted, so
-/// arbitrary dynamic paths are left alone.
-fn join_path(expression: &Expression<'_>, base: &Path) -> Option<PathBuf> {
-    match expression.without_parentheses() {
-        Expression::Identifier(identifier) if identifier.name == "__dirname" => {
-            Some(base.to_path_buf())
-        }
-        Expression::StringLiteral(literal) => {
-            let value = literal.value.as_str()?;
-            Some(base.join(value))
-        }
-        Expression::BinaryExpression(binary) if binary.operator == BinaryOperator::Addition => {
-            let left = join_path(&binary.left, base)?;
-            let Expression::StringLiteral(right) = binary.right.without_parentheses() else {
-                return None;
-            };
-            let value = right.value.as_str()?;
-            Some(if left.is_absolute() && value.starts_with('/') {
-                PathBuf::from(value)
-            } else {
-                left.join(value)
-            })
-        }
-        Expression::CallExpression(call) => {
-            let callee = match call.callee.without_parentheses() {
-                Expression::Identifier(identifier) => identifier.name.as_str(),
-                Expression::StaticMemberExpression(member) => member.property.name.as_str(),
-                _ => return None,
-            };
-            if callee != "join" && callee != "resolve" {
-                return None;
-            }
-            let mut path = base.to_path_buf();
-            for argument in &call.arguments {
-                path = join_path(argument.as_expression()?, &path)?;
-            }
-            Some(path)
-        }
-        _ => None,
-    }
-}
-
 struct SpecifierCollector<'a, 's> {
     path: &'s Path,
     specifiers: BTreeMap<(String, bool), bool>,
@@ -794,7 +752,7 @@ impl SpecifierCollector<'_, '_> {
         let Some(expression) = call.arguments.first().and_then(Argument::as_expression) else {
             return;
         };
-        let Some(path) = join_path(
+        let Some(path) = static_path::evaluate(
             expression,
             self.path.parent().unwrap_or_else(|| Path::new("/")),
         ) else {
@@ -1536,6 +1494,72 @@ mod tests {
             "{:?}",
             analysis.static_files
         );
+    }
+
+    #[test]
+    fn a_leading_slash_in_a_joined_asset_stays_under_dirname() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/nested/main.cjs",
+                "const fs = require('node:fs');\nconst path = require('node:path');\nfs.readFileSync(path.join(__dirname, '/public/style.css'), 'utf8');\n",
+            ),
+            ("/app/nested/public/style.css", "body {}\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/nested/main.cjs"), &fs).unwrap();
+        assert_eq!(
+            analysis.static_files,
+            BTreeSet::from([PathBuf::from("/app/nested/public/style.css")])
+        );
+        assert!(analysis.warnings.is_empty(), "{:?}", analysis.warnings);
+    }
+
+    #[test]
+    fn a_resolved_asset_still_resets_at_a_leading_slash() {
+        // Control for the join case: `path.resolve` drops the module directory.
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.js",
+                "const fs = require('node:fs');\nconst path = require('node:path');\nfs.readFileSync(path.resolve(__dirname, '/public/style.css'), 'utf8');\n",
+            ),
+            ("/public/style.css", "body {}\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
+        assert_eq!(
+            analysis.static_files,
+            BTreeSet::from([PathBuf::from("/public/style.css")])
+        );
+        assert!(analysis.warnings.is_empty(), "{:?}", analysis.warnings);
+    }
+
+    #[test]
+    fn a_concatenated_asset_keeps_its_leading_slash_under_dirname() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.js",
+                "const fs = require('node:fs');\nfs.readFileSync(__dirname + '/data.css', 'utf8');\n",
+            ),
+            ("/app/data.css", "body {}\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
+        assert_eq!(
+            analysis.static_files,
+            BTreeSet::from([PathBuf::from("/app/data.css")])
+        );
+        assert!(analysis.warnings.is_empty(), "{:?}", analysis.warnings);
+    }
+
+    #[test]
+    fn a_dynamic_asset_path_is_left_alone() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.js",
+                "const fs = require('node:fs');\nconst path = require('node:path');\nfs.readFileSync(path.join(__dirname, name), 'utf8');\n",
+            ),
+            ("/app/data.css", "body {}\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
+        assert!(analysis.static_files.is_empty());
+        assert!(analysis.warnings.is_empty(), "{:?}", analysis.warnings);
     }
 
     #[test]
