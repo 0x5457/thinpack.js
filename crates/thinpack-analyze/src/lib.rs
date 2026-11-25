@@ -9,9 +9,9 @@ use std::path::{Path, PathBuf};
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    Argument, BinaryOperator, CallExpression, ExportAllDeclaration, ExportFromDeclaration,
-    Expression, IdentifierReference, ImportDeclaration, ImportExpression, NewExpression,
-    TryStatement,
+    Argument, BinaryOperator, BindingPattern, CallExpression, ExportAllDeclaration,
+    ExportFromDeclaration, Expression, IdentifierReference, ImportDeclaration, ImportExpression,
+    NewExpression, PropertyKey, StaticMemberExpression, TryStatement, VariableDeclarator,
 };
 
 use oxc_ast_visit::{VisitJs, walk_js};
@@ -90,9 +90,10 @@ pub enum Error {
         path: PathBuf,
         message: String,
     },
-    /// The file is TypeScript that packing cannot turn into JavaScript: `.tsx`, or
-    /// syntax Node's strip-only mode rejects (enums, namespaces, parameter
-    /// properties, and other constructs that need a transform).
+    /// The file is TypeScript that packing cannot turn into JavaScript: TypeScript
+    /// under `node_modules`, `.tsx`, or syntax Node's strip-only mode rejects
+    /// (enums, namespaces, parameter properties, and other constructs that need a
+    /// transform).
     Unsupported {
         path: PathBuf,
         message: String,
@@ -581,31 +582,6 @@ fn js_string(value: oxc_str::JSStr<'_>) -> String {
         .map_or_else(|| value.display().to_string(), str::to_owned)
 }
 
-/// The vendored undici bundle (`crates/node/http/vendor/undici.js`) requires these, so a
-/// static reference to one of its globals has to pull all of them into the payload.
-/// `http2` and `sqlite` are not here: the bundle probes both and handles their absence.
-const FETCH_BUILTINS: [&str; 16] = [
-    "assert",
-    "async_hooks",
-    "buffer",
-    "crypto",
-    "diagnostics_channel",
-    "events",
-    "http",
-    "net",
-    "perf_hooks",
-    "querystring",
-    "stream",
-    "tls",
-    "url",
-    "util",
-    "worker_threads",
-    "zlib",
-];
-/// The globals the bundle sits behind. A static reference to any of them — `fetch(...)`,
-/// `new Response(...)`, `Response.json(...)` — is what pulls [`FETCH_BUILTINS`].
-const FETCH_GLOBALS: [&str; 5] = ["fetch", "Headers", "Request", "Response", "FormData"];
-
 /// The global an expression names, either bare or through `globalThis`.
 fn global_name<'a>(expression: &'a Expression<'_>) -> Option<&'a str> {
     match expression {
@@ -616,19 +592,6 @@ fn global_name<'a>(expression: &'a Expression<'_>) -> Option<&'a str> {
             }
             _ => None,
         },
-        _ => None,
-    }
-}
-
-/// The global an expression references: bare, through `globalThis`, or as the receiver of a
-/// static call, so `fetch(...)`, `globalThis.fetch(...)`, `Response.json(...)` and
-/// `globalThis.Response.redirect(...)` all name one.
-fn referenced_global<'a>(expression: &'a Expression<'_>) -> Option<&'a str> {
-    if let Some(name) = global_name(expression) {
-        return Some(name);
-    }
-    match expression {
-        Expression::StaticMemberExpression(member) => global_name(&member.object),
         _ => None,
     }
 }
@@ -702,6 +665,20 @@ impl SpecifierCollector<'_, '_> {
     fn add_builtins(&mut self, builtins: &[&str]) {
         for builtin in builtins {
             self.add_specifier((*builtin).to_owned(), false);
+        }
+    }
+
+    /// A static reference to a global selects the capability that owns it, so the
+    /// whole shared closure follows the reference instead of a local call name.
+    fn add_global(&mut self, name: &str) {
+        if let Some(module) = thinpack_caps::module_for_global(name) {
+            self.add_builtins(module.builtins);
+        }
+    }
+
+    fn add_global_reference(&mut self, identifier: &IdentifierReference<'_>) {
+        if identifier.is_global_reference(self.semantic.scoping()) {
+            self.add_global(identifier.name.as_str());
         }
     }
 
@@ -872,10 +849,37 @@ impl<'a> VisitJs<'a> for SpecifierCollector<'a, '_> {
         self.dynamic_function(&call.callee, &call.arguments);
         self.static_asset(call);
         self.require_call(call);
-        if referenced_global(&call.callee).is_some_and(|name| FETCH_GLOBALS.contains(&name)) {
-            self.add_builtins(&FETCH_BUILTINS);
-        }
         walk_js::walk_call_expression(self, call);
+    }
+
+    fn visit_identifier_reference(&mut self, identifier: &IdentifierReference<'a>) {
+        self.add_global_reference(identifier);
+        walk_js::walk_identifier_reference(self, identifier);
+    }
+
+    fn visit_static_member_expression(&mut self, member: &StaticMemberExpression<'a>) {
+        if let Expression::Identifier(object) = &member.object
+            && object.name == "globalThis"
+            && object.is_global_reference(self.semantic.scoping())
+        {
+            self.add_global(member.property.name.as_str());
+        }
+        walk_js::walk_static_member_expression(self, member);
+    }
+
+    fn visit_variable_declarator(&mut self, declarator: &VariableDeclarator<'a>) {
+        if let Some(Expression::Identifier(init)) = declarator.init.as_ref()
+            && init.name == "globalThis"
+            && init.is_global_reference(self.semantic.scoping())
+            && let BindingPattern::ObjectPattern(pattern) = &declarator.id
+        {
+            for property in &pattern.properties {
+                if let PropertyKey::StaticIdentifier(key) = &property.key {
+                    self.add_global(key.name.as_str());
+                }
+            }
+        }
+        walk_js::walk_variable_declarator(self, declarator);
     }
 
     fn visit_try_statement(&mut self, statement: &TryStatement<'a>) {
@@ -894,11 +898,6 @@ impl<'a> VisitJs<'a> for SpecifierCollector<'a, '_> {
 
     fn visit_new_expression(&mut self, expression: &NewExpression<'a>) {
         self.dynamic_function(&expression.callee, &expression.arguments);
-        match global_name(&expression.callee) {
-            Some("WebSocket") => self.add_builtins(&FETCH_BUILTINS),
-            Some(name) if FETCH_GLOBALS.contains(&name) => self.add_builtins(&FETCH_BUILTINS),
-            _ => {}
-        }
         walk_js::walk_new_expression(self, expression);
     }
 }
@@ -1057,6 +1056,34 @@ mod tests {
         let helper = &analysis.stripped[Path::new("/app/helper.ts")];
         assert!(!helper.contains(": number"), "{helper}");
         assert!(helper.contains("return value;"), "{helper}");
+    }
+
+    #[test]
+    fn typescript_in_node_modules_is_rejected() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.ts",
+                "import { value } from 'dep';\nconsole.log(value);\n",
+            ),
+            (
+                "/app/node_modules/dep/package.json",
+                r#"{"name": "dep", "type": "module", "exports": "./index.ts"}"#,
+            ),
+            (
+                "/app/node_modules/dep/index.ts",
+                "export const value: number = 1;\n",
+            ),
+        ]);
+        match analyze(Path::new("/app/main.ts"), &fs) {
+            Err(Error::Unsupported { path, message }) => {
+                assert_eq!(path, PathBuf::from("/app/node_modules/dep/index.ts"));
+                assert!(
+                    message.contains("ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING"),
+                    "{message}"
+                );
+            }
+            other => panic!("expected an unsupported TypeScript error, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1506,7 +1533,9 @@ mod tests {
         let fs = MemoryFs::new(&[("/app/main.js", "new WebSocket('ws://127.0.0.1:1');\n")]);
         let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
         let capabilities = capabilities(&analysis);
-        for name in ["http", "net", "tls", "crypto", "buffer", "stream", "zlib"] {
+        for name in [
+            "fetch", "http", "net", "tls", "crypto", "buffer", "stream", "zlib",
+        ] {
             assert!(
                 capabilities.iter().any(|capability| capability == name),
                 "missing {name}: {capabilities:?}"
@@ -1592,12 +1621,17 @@ mod tests {
             "new FormData();\n",
             "Response.json({});\n",
             "globalThis.Response.redirect('/x');\n",
+            "const request = fetch;\nrequest('http://127.0.0.1/');\n",
+            "const Socket = WebSocket;\nconsole.log(Socket.name);\n",
+            "const { fetch: request } = globalThis;\nrequest('http://127.0.0.1/');\n",
         ];
         for source in cases {
             let fs = MemoryFs::new(&[("/app/main.js", source)]);
             let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
             let capabilities = capabilities(&analysis);
-            for name in FETCH_BUILTINS {
+            for name in [
+                "fetch", "http", "net", "tls", "crypto", "buffer", "stream", "zlib",
+            ] {
                 assert!(
                     capabilities.iter().any(|capability| capability == name),
                     "{source} did not pull {name}: {capabilities:?}"
@@ -1613,16 +1647,14 @@ mod tests {
     }
 
     #[test]
-    fn fetch_pulls_the_undici_builtins_only() {
+    fn fetch_selects_the_capability_and_its_closure() {
         let fs = MemoryFs::new(&[("/app/main.js", "fetch('http://127.0.0.1/');\n")]);
         let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
-        for builtin in FETCH_BUILTINS {
-            assert!(
-                analysis.builtins.contains_key(builtin),
-                "missing {builtin}: {:?}",
-                analysis.builtins
-            );
-        }
+        assert!(
+            analysis.builtins.contains_key("thinpack/internal/undici"),
+            "missing the fetch marker: {:?}",
+            analysis.builtins
+        );
         // `http2` and `sqlite` stay out: undici guards both, so a fetch app must pack
         // without them (and `--without http2`/`--without sqlite` must keep working).
         for builtin in ["http2", "sqlite"] {
@@ -1632,9 +1664,47 @@ mod tests {
                 analysis.builtins
             );
         }
-        // The sixteen builtins close over nineteen modules; the CLI adds the ambient
-        // `console` and `timers` on top, so a one-line fetch app has 21 capabilities.
-        assert_eq!(capabilities(&analysis).len(), 19);
+        let capabilities = capabilities(&analysis);
+        assert_eq!(capabilities.len(), 20);
+        assert!(capabilities.iter().any(|name| name == "fetch"));
+    }
+
+    #[test]
+    fn an_http_only_app_does_not_pull_fetch() {
+        let fs = MemoryFs::new(&[(
+            "/app/main.js",
+            "const http = require('node:http');\nhttp.createServer();\n",
+        )]);
+        let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
+        let capabilities = capabilities(&analysis);
+        assert!(capabilities.iter().any(|name| name == "http"));
+        assert!(!capabilities.iter().any(|name| name == "fetch"));
+        assert!(
+            !analysis.builtins.contains_key("thinpack/internal/undici"),
+            "HTTP pulled Undici: {:?}",
+            analysis.builtins
+        );
+    }
+
+    #[test]
+    fn shadowed_fetch_globals_do_not_pull_fetch() {
+        let cases = [
+            "function fetch() { return 1; }\nfetch();\n",
+            "const fetch = () => 1;\nfetch();\n",
+            "function connect(WebSocket) { return new WebSocket(); }\nconnect(class {});\n",
+            "class Response {};\nnew Response();\n",
+            "const globalThis = { fetch() { return 1; } };\nglobalThis.fetch();\n",
+            "const globalThis = { fetch: 1 };\nconst { fetch } = globalThis;\nconsole.log(fetch);\n",
+        ];
+        for source in cases {
+            let fs = MemoryFs::new(&[("/app/main.js", source)]);
+            let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
+            let capabilities = capabilities(&analysis);
+            assert!(
+                !capabilities.iter().any(|name| name == "fetch"),
+                "{source} pulled fetch: {capabilities:?}"
+            );
+        }
     }
 
     #[test]

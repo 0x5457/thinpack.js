@@ -257,11 +257,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn slash(&mut self, start: usize) -> Token<'a> {
-        if self.byte_at(1) == Some(b'=') {
-            self.pos += 2;
-            self.expr_allowed = true;
-            return self.token(Kind::Punct, start);
-        }
+        // `/=` can open a regex (`/=x/`), so the expression context decides first.
         if self.expr_allowed
             && let Some(end) = self.scan_regex()
         {
@@ -269,7 +265,7 @@ impl<'a> Lexer<'a> {
             self.expr_allowed = false;
             return self.token(Kind::Regex, start);
         }
-        self.pos += 1;
+        self.pos += if self.byte_at(1) == Some(b'=') { 2 } else { 1 };
         self.expr_allowed = true;
         self.token(Kind::Punct, start)
     }

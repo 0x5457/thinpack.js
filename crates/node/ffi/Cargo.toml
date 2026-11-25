@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 thinpack-js.workspace = true
+thinpack-core.workspace = true
 deno_core.workspace = true
 deno_ffi = { path = "../../../vendor/deno_ffi" }
 
