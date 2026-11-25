@@ -275,9 +275,15 @@ mod tests {
     }
 }
 
-/// The `type` of the nearest package scope: `Some(true)` for `module`,
-/// `Some(false)` for `commonjs`, and `None` when the field is absent or there is no
-/// package.json. Node's syntax detection only applies to the `None` case.
+/// The `type` of the nearest package scope.
+///
+/// `Some(true)` is `module`, `Some(false)` is `commonjs`, and `None` means the field
+/// is absent or there is no package.json. Node's syntax detection only applies to the
+/// `None` case.
+///
+/// # Errors
+///
+/// Returns the manifest read and parse errors from the package scope walk.
 pub fn package_type(path: &Path, fs: &impl FileSystem) -> Result<Option<bool>, Error> {
     let mut directory = path.parent();
     while let Some(current) = directory {
