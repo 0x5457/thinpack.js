@@ -47,7 +47,30 @@
     return failure;
   };
 
-  const evaluate = (id, url, source, json, stack, isMain = false, wrapped = false, parent = null) => {
+  // `require.extensions`/`Module._extensions`. The defaults are sentinels: a
+  // registered handler replaces the compile/parse path for that extension.
+  const defaultJs = () => {};
+  const defaultJson = () => {};
+  const defaultNode = () => {};
+  const extensions = {
+    ".js": defaultJs,
+    ".json": defaultJson,
+    ".node": defaultNode,
+  };
+  Object.defineProperty(globalThis, "__thinpack_module_extensions", {
+    value: extensions,
+  });
+
+  const extensionHandler = (filename) => {
+    const base = filename.slice(filename.lastIndexOf("/") + 1);
+    for (let index = base.indexOf("."); index !== -1; index = base.indexOf(".", index + 1)) {
+      const handler = extensions[base.slice(index)];
+      if (handler !== undefined) return handler;
+    }
+    return defaultJs;
+  };
+
+  const evaluate = (id, url, source, json, stack, isMain = false, wrapped = false, parent = null, file = false) => {
     const cached = cache[id];
     if (cached !== undefined) return cached.exports;
 
@@ -62,7 +85,19 @@
     if (isMain) mainModule = module;
     cache[id] = module;
 
-    if (json) {
+    const handler = file ? extensionHandler(id) : defaultJs;
+    if (handler !== defaultJs && handler !== defaultJson && handler !== defaultNode) {
+      try {
+        handler(module, id);
+      } catch (failure) {
+        delete cache[id];
+        throw failure;
+      }
+      module.loaded = true;
+      return module.exports;
+    }
+
+    if (json || handler === defaultJson) {
       try {
         module.exports = JSON.parse(source);
       } catch (failure) {
@@ -102,9 +137,9 @@
       case "b":
         return evaluate(id, url, body, false, stack, isMain);
       case "f":
-        return evaluate(id, url, body, false, stack, isMain, true, parent);
+        return evaluate(id, url, body, false, stack, isMain, true, parent, true);
       case "j":
-        return evaluate(id, url, body, true, stack, isMain, false, parent);
+        return evaluate(id, url, body, true, stack, isMain, false, parent, true);
       case "m":
         return requireEsm(id, url, parent);
       case "e":
@@ -144,15 +179,6 @@
     cache[filename] = module;
     return namespace;
   };
-  const extensions = {
-    ".js": () => {},
-    ".json": () => {},
-    ".node": () => {},
-  };
-  Object.defineProperty(globalThis, "__thinpack_module_extensions", {
-    value: extensions,
-  });
-
   let mainModule = null;
 
   const makeRequire = (filename, stack) => {
