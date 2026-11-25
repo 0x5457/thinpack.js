@@ -26,6 +26,10 @@ struct HookLoad {
 pub struct EsmLoader {
     fs: ModuleFs,
     builtins: BuiltinSources,
+    /// Export names read from the live `module.exports` of a builtin when its import was
+    /// resolved. A static scan cannot see the alias assignments builtins use; Node reads
+    /// `ObjectKeys(module.exports)`.
+    builtin_exports: RefCell<HashMap<String, BTreeSet<String>>>,
     hook_loads: RefCell<HashMap<String, HookLoad>>,
     in_hook: Cell<bool>,
 }
@@ -36,6 +40,7 @@ impl EsmLoader {
         Self {
             fs,
             builtins,
+            builtin_exports: RefCell::new(HashMap::new()),
             hook_loads: RefCell::new(HashMap::new()),
             in_hook: Cell::new(false),
         }
@@ -72,24 +77,32 @@ impl ModuleLoader for EsmLoader {
             reply
         }?;
 
-        if hook_reply.is_empty() {
-            return self.resolve(specifier, referrer, kind);
-        }
+        let specifier = if hook_reply.is_empty() {
+            self.resolve(specifier, referrer, kind)?
+        } else {
+            let mut parts = hook_reply.splitn(3, '\0');
+            let url = parts.next().unwrap_or_default();
+            let format = parts.next();
+            let source = parts.next();
+            let specifier = ModuleSpecifier::parse(url)
+                .map_err(|error| JsErrorBox::generic(error.to_string()))?;
+            if let (Some(format), Some(source)) = (format, source) {
+                self.hook_loads.borrow_mut().insert(
+                    specifier.as_str().to_owned(),
+                    HookLoad {
+                        format: format.to_owned(),
+                        source: source.to_owned(),
+                    },
+                );
+            }
+            specifier
+        };
 
-        let mut parts = hook_reply.splitn(3, '\0');
-        let url = parts.next().unwrap_or_default();
-        let format = parts.next();
-        let source = parts.next();
-        let specifier =
-            ModuleSpecifier::parse(url).map_err(|error| JsErrorBox::generic(error.to_string()))?;
-        if let (Some(format), Some(source)) = (format, source) {
-            self.hook_loads.borrow_mut().insert(
-                specifier.as_str().to_owned(),
-                HookLoad {
-                    format: format.to_owned(),
-                    source: source.to_owned(),
-                },
-            );
+        if specifier.scheme() == "node" {
+            let names = call_builtin_exports(scope, specifier.as_str())?;
+            self.builtin_exports
+                .borrow_mut()
+                .insert(specifier.as_str().to_owned(), names);
         }
         Ok(specifier)
     }
@@ -113,9 +126,21 @@ impl ModuleLoader for EsmLoader {
             ));
         }
         let referrer = maybe_referrer.map(|referrer| &referrer.specifier);
+        let names = self
+            .builtin_exports
+            .borrow()
+            .get(module_specifier.as_str())
+            .cloned();
         let result = default_source(&self.fs, &self.builtins, module_specifier, referrer).and_then(
             |(format, source)| {
-                module_from_format(&self.fs, &self.builtins, module_specifier, format, source)
+                module_from_format(
+                    &self.fs,
+                    &self.builtins,
+                    module_specifier,
+                    format,
+                    source,
+                    names.as_ref(),
+                )
             },
         );
         ModuleLoadResponse::Sync(result)
@@ -141,26 +166,54 @@ fn call_esm_bridge(
     referrer: &str,
     attributes: &str,
 ) -> Result<String, JsErrorBox> {
+    call_global(
+        scope,
+        "__thinpack_esm_resolve__",
+        "the ESM loader hook bridge is not installed",
+        [specifier, referrer, attributes],
+    )
+}
+
+fn call_builtin_exports(
+    scope: &mut deno_core::v8::PinScope<'_, '_>,
+    specifier: &str,
+) -> Result<BTreeSet<String>, JsErrorBox> {
+    let names = call_global(
+        scope,
+        "__thinpack_builtin_exports__",
+        "the builtin export bridge is not installed",
+        [specifier],
+    )?;
+    Ok(names
+        .split('\0')
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
+fn call_global<const N: usize>(
+    scope: &mut deno_core::v8::PinScope<'_, '_>,
+    name: &str,
+    missing: &'static str,
+    arguments: [&str; N],
+) -> Result<String, JsErrorBox> {
     deno_core::v8::tc_scope!(let scope, scope);
     let global = scope.get_current_context().global(scope);
-    let name = deno_core::v8::String::new(scope, "__thinpack_esm_resolve__").unwrap();
+    let name = deno_core::v8::String::new(scope, name).unwrap();
     let bridge = global
         .get(scope, name.into())
         .unwrap_or_else(|| deno_core::v8::undefined(scope).into());
     let Ok(bridge) = deno_core::v8::Local::<deno_core::v8::Function>::try_from(bridge) else {
-        return Err(JsErrorBox::generic(
-            "the ESM loader hook bridge is not installed",
-        ));
+        return Err(JsErrorBox::generic(missing));
     };
-    let args = [
-        deno_core::v8::String::new(scope, specifier).unwrap().into(),
-        deno_core::v8::String::new(scope, referrer).unwrap().into(),
-        deno_core::v8::String::new(scope, attributes)
-            .unwrap()
-            .into(),
-    ];
+    let arguments: [deno_core::v8::Local<'_, deno_core::v8::Value>; N] =
+        std::array::from_fn(|index| {
+            deno_core::v8::String::new(scope, arguments[index])
+                .unwrap()
+                .into()
+        });
     let receiver = deno_core::v8::undefined(scope);
-    let result = bridge.call(scope, receiver.into(), &args);
+    let result = bridge.call(scope, receiver.into(), &arguments);
     if scope.has_caught() {
         let exception = scope.exception().unwrap();
         return Err(JsErrorBox::generic(exception_message(scope, exception)));
@@ -378,7 +431,14 @@ fn load_from_hook(
     specifier: &ModuleSpecifier,
     hook_load: HookLoad,
 ) -> Result<ModuleSource, JsErrorBox> {
-    module_from_format(fs, builtins, specifier, &hook_load.format, hook_load.source)
+    module_from_format(
+        fs,
+        builtins,
+        specifier,
+        &hook_load.format,
+        hook_load.source,
+        None,
+    )
 }
 
 fn module_from_format(
@@ -387,6 +447,7 @@ fn module_from_format(
     specifier: &ModuleSpecifier,
     format: &str,
     source: String,
+    builtin_names: Option<&BTreeSet<String>>,
 ) -> Result<ModuleSource, JsErrorBox> {
     match format {
         "module" => Ok(module_source(specifier, ModuleType::JavaScript, source)),
@@ -410,7 +471,10 @@ fn module_from_format(
             Ok(module_source(specifier, ModuleType::JavaScript, facade))
         }
         "builtin" => {
-            let names = builtin_export_names(builtins, &source, &mut BTreeSet::new());
+            let mut names = builtin_export_names(builtins, &source, &mut BTreeSet::new());
+            if let Some(runtime) = builtin_names {
+                names.extend(runtime.iter().cloned());
+            }
             Ok(module_source(
                 specifier,
                 ModuleType::JavaScript,
@@ -447,12 +511,90 @@ fn facade(target: &str, names: &std::collections::BTreeSet<String>) -> String {
 
 fn append_named_exports(source: &mut String, names: &std::collections::BTreeSet<String>) {
     for name in names {
-        if name == "__exports__" {
+        if !is_export_name(name) {
             continue;
         }
         let _ = writeln!(source, "export const {name} = __exports__.{name};");
     }
     source.push_str("export default __exports__;\n");
+}
+
+/// Whether `name` can be declared by the facade source.
+///
+/// The lexer returns every detected key, including `default` and keys that are not
+/// identifiers; only the latter can be declared with `export const`. `default` is
+/// the facade's own default export, and `__exports__` is its binding.
+fn is_export_name(name: &str) -> bool {
+    if matches!(name, "default" | "__exports__") || is_reserved(name) {
+        return false;
+    }
+    let mut bytes = name.bytes();
+    match bytes.next() {
+        Some(first) if is_identifier_start(first) => {}
+        _ => return false,
+    }
+    bytes.all(is_identifier_part)
+}
+
+const fn is_identifier_start(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'_' || byte == b'$'
+}
+
+const fn is_identifier_part(byte: u8) -> bool {
+    is_identifier_start(byte) || byte.is_ascii_digit()
+}
+
+fn is_reserved(name: &str) -> bool {
+    matches!(
+        name,
+        "await"
+            | "break"
+            | "case"
+            | "catch"
+            | "class"
+            | "const"
+            | "continue"
+            | "debugger"
+            | "delete"
+            | "do"
+            | "else"
+            | "enum"
+            | "export"
+            | "extends"
+            | "false"
+            | "finally"
+            | "for"
+            | "function"
+            | "if"
+            | "import"
+            | "in"
+            | "instanceof"
+            | "let"
+            | "new"
+            | "null"
+            | "return"
+            | "static"
+            | "super"
+            | "switch"
+            | "this"
+            | "throw"
+            | "true"
+            | "try"
+            | "typeof"
+            | "var"
+            | "void"
+            | "while"
+            | "with"
+            | "yield"
+            | "arguments"
+            | "eval"
+            | "implements"
+            | "interface"
+            | "package"
+            | "private"
+            | "protected"
+            | "public"
+    )
 }
 
 #[must_use]

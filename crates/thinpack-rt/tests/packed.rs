@@ -1071,6 +1071,28 @@ console.log('module.parent ok');
         error: None,
     },
     PackedTest {
+        name: "packed::builtin-named-exports",
+        directory: "builtin-named-exports",
+        entry: "/app/main.mjs",
+        files: &[(
+            "/app/main.mjs",
+            r"import { createRequire } from 'node:module';
+import { join, sep } from 'node:path';
+import { Readable } from 'node:stream';
+if (typeof createRequire !== 'function' || typeof Readable !== 'function') {
+  throw new Error('builtin named exports are missing');
+}
+if (join('a', 'b') !== `a${sep}b`) throw new Error('path.join mismatch');
+if (typeof createRequire(import.meta.url).resolve('node:path') !== 'string') {
+  throw new Error('createRequire mismatch');
+}
+console.log('builtin named exports ok');
+",
+        )],
+        capabilities: &[],
+        error: None,
+    },
+    PackedTest {
         name: "packed::cjs-named-exports",
         directory: "cjs-named-exports",
         entry: "/app/main.mjs",
