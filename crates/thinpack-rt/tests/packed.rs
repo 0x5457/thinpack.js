@@ -10,6 +10,9 @@ use std::time::{Duration, Instant};
 
 use thinpack_pack::{Compression, FileRecord, Manifest, Template};
 
+#[cfg(unix)]
+mod tty;
+
 // A packed test normally finishes in under a second, but a debug-build RSA key generation
 // can spend several seconds searching for primes.
 const TEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -1269,6 +1272,8 @@ pub(super) fn print_list(cli: &super::Cli) {
             println!("{}", test.name);
         }
     }
+    #[cfg(unix)]
+    tty::print_list(cli);
 }
 
 pub(super) fn execute(cli: &super::Cli) -> bool {
@@ -1281,6 +1286,9 @@ pub(super) fn execute(cli: &super::Cli) -> bool {
         .iter()
         .filter(|test| cli.matches(test.name))
         .collect();
+    #[cfg(unix)]
+    let test_count = selected.len() + startup.len() + tty::selected(cli).len();
+    #[cfg(not(unix))]
     let test_count = selected.len() + startup.len();
     if test_count == 0 {
         return true;
@@ -1301,6 +1309,17 @@ pub(super) fn execute(cli: &super::Cli) -> bool {
         report(
             test.name,
             run_startup_test(test),
+            started,
+            &mut passed,
+            &mut failed,
+        );
+    }
+    #[cfg(unix)]
+    for test in tty::selected(cli) {
+        let started = Instant::now();
+        report(
+            test.name,
+            tty::run_test(test),
             started,
             &mut passed,
             &mut failed,
