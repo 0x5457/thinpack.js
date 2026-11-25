@@ -23,3 +23,7 @@ Record the baseline on the reference runner (`ubuntu-24.04` with the pinned tool
 gate compares the target triple, backend and profile, but a same-triple host with another
 compiler or libc still produces different bytes, and the 1% tolerance is meant for runner
 image updates, not for a different build environment.
+
+The Size workflow also reports a local `hello` fixture (`console.log('hello')`).
+It builds the minimal template, runs the executable, and reports its exact raw
+and gzip sizes separately. It does not install npm packages or affect the app baseline.
