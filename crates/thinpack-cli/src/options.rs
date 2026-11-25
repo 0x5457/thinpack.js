@@ -17,6 +17,7 @@ pub(crate) struct Options {
     pub rebuild: bool,
     pub strict: bool,
     pub include: Vec<PathBuf>,
+    pub allow_missing: Vec<String>,
     pub list_capabilities: bool,
 }
 
@@ -63,6 +64,9 @@ pub(crate) fn parse_options(args: Vec<String>, pack: bool) -> Result<Parsed, Usa
                 .extend(module_list(&value(&mut args, &arg)?, &arg)?),
             "--without" => options
                 .without
+                .extend(module_list(&value(&mut args, &arg)?, &arg)?),
+            "--allow-missing" => options
+                .allow_missing
                 .extend(module_list(&value(&mut args, &arg)?, &arg)?),
             "--backend" => {
                 let backend = value(&mut args, &arg)?;

@@ -12,7 +12,7 @@ const USAGE: &str = "\
 Usage: thinpack pack <entry.js> [-o <output>] [--template <thinpack-rt>] [--rebuild]
                       [--backend <quickjs|v8|jsc>] [--source <checkout>]
                       [--asset <key>=<path>]... [--with <module[,module...]>]...
-                      [--without <module[,module...]>]... [--include <path>]... [--strict] [--list-capabilities]
+                      [--without <module[,module...]>]... [--allow-missing <package[,package...]>]...\n                      [--include <path>]... [--strict] [--list-capabilities]
        thinpack run <entry.js> [--template <thinpack-rt>] [--rebuild]
                      [--backend <quickjs|v8|jsc>] [--source <checkout>]
                      [--with <module[,module...]>]... [--without <module[,module...]>]... [-- <args>...]
