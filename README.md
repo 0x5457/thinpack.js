@@ -250,8 +250,9 @@ for adding a module.
   a warning, and the app must handle its absence.
 - The artifact's `process.argv` is `[execPath, invoked path, ...args]` (same shape as Node
   SEA); the only runtime switch is `--warm-cache`, every other argument goes to the app.
-- `require.extensions` handlers are not invoked;
-  `require.main` and `require.cache` are. See `docs/gaps.md` for the recorded gaps.
+- `require.extensions` handlers are invoked for required files (a custom handler replaces the
+  default compile/parse path); `require.main` and `require.cache` are available. See
+  `docs/gaps.md` for the recorded gaps.
 
 ## License
 

@@ -1048,6 +1048,37 @@ fs.writeFileSync(path.join(dir, 'sub', 'file.txt'), 'x');
         capabilities: &["fs", "os"],
         error: None,
     },
+    PackedTest {
+        name: "packed::require-extensions",
+        directory: "require-extensions",
+        entry: "/app/main.js",
+        files: &[
+            (
+                "/app/main.js",
+                r"
+const assert = require('node:assert/strict');
+require.extensions['.foo'] = (module, filename) => {
+  module.exports = { kind: 'foo', filename };
+};
+const value = require('./data.foo');
+assert.equal(value.kind, 'foo');
+assert.equal(value.filename, '/app/data.foo');
+require.extensions['.js'] = (module) => {
+  module.exports = 'overridden';
+};
+assert.equal(require('./lib.js'), 'overridden');
+console.log('require.extensions ok');
+",
+            ),
+            (
+                "/app/data.foo",
+                "module.exports = 'the handler replaces this';\n",
+            ),
+            ("/app/lib.js", "module.exports = 'compiled';\n"),
+        ],
+        capabilities: &["assert"],
+        error: None,
+    },
 ];
 /// Packed startup cases whose source is generated because the payload is large.
 struct StartupTest {
