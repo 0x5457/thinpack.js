@@ -30,6 +30,7 @@ pub(crate) struct Module {
     pub builtins: Vec<String>,
     pub deps: Vec<String>,
     pub optional_deps: Vec<String>,
+    pub layers: Vec<String>,
     pub ambient: bool,
     pub optional: bool,
 }
@@ -43,6 +44,7 @@ impl Module {
             builtins: entry.builtins,
             deps: entry.deps,
             optional_deps: entry.optional_deps,
+            layers: entry.layers,
             ambient: entry.ambient,
             optional: entry.optional,
             name,
@@ -63,6 +65,8 @@ struct Entry {
     deps: Vec<String>,
     #[serde(default)]
     optional_deps: Vec<String>,
+    #[serde(default)]
+    layers: Vec<String>,
     #[serde(default)]
     ambient: bool,
     #[serde(default)]
@@ -212,6 +216,15 @@ fn validate(modules: &[Module], runtime_manifest: &str) -> Result<(), String> {
                 ));
             }
         }
+        for layer in &module.layers {
+            if !is_layer_name(layer) {
+                return Err(format!(
+                    "layer `{layer}` must be a package name starting with `thinpack-`"
+                ));
+            }
+            check_crate_dir(layer)?;
+            check_optional_dependency(runtime_manifest, layer)?;
+        }
     }
 
     dependency_order(modules).map(|_| ())
@@ -221,6 +234,15 @@ fn is_module_name(name: &str) -> bool {
     let mut chars = name.chars();
     let starts_lowercase = chars.next().is_some_and(|first| first.is_ascii_lowercase());
     starts_lowercase && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+fn is_layer_name(name: &str) -> bool {
+    name.strip_prefix("thinpack-").is_some_and(|rest| {
+        !rest.is_empty()
+            && rest
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    })
 }
 
 fn dependency_order(modules: &[Module]) -> Result<Vec<&Module>, String> {
@@ -254,11 +276,13 @@ fn dependency_order(modules: &[Module]) -> Result<Vec<&Module>, String> {
     Ok(ordered)
 }
 
+/// Checks that `krate` has a crate directory: `crates/node/<name>` for a module crate and
+/// `crates/<package>` for anything else.
 fn check_crate_dir(krate: &str) -> Result<(), String> {
     let relative = if let Some(name) = krate.strip_prefix("thinpack-node-") {
         format!("crates/node/{name}")
-    } else if let Some(name) = krate.strip_prefix("thinpack-") {
-        format!("crates/{name}")
+    } else if krate.starts_with("thinpack-") {
+        format!("crates/{krate}")
     } else {
         return Err(format!("package `{krate}` must start with thinpack-"));
     };
@@ -342,6 +366,23 @@ pub(crate) fn extensions() -> Vec<deno_core::Extension> {
     let mut extensions = Vec::new();
 "#,
     );
+    for (layer, users) in layers(ordered) {
+        let condition = if let [only] = users.as_slice() {
+            format!("#[cfg(feature = {:?})]", only.feature)
+        } else {
+            let features: Vec<String> = users
+                .iter()
+                .map(|module| format!("feature = {:?}", module.feature))
+                .collect();
+            format!("#[cfg(any({}))]", features.join(", "))
+        };
+        let _ = writeln!(source, "    {condition}");
+        let _ = writeln!(
+            source,
+            "    extensions.push({}::init());",
+            layer.replace('-', "_")
+        );
+    }
     for module in ordered {
         let _ = writeln!(source, "    #[cfg(feature = {:?})]", module.feature);
         let _ = writeln!(
@@ -402,6 +443,7 @@ fn render_manifest(manifest: &str, modules: &[Module]) -> Result<String, String>
                 .iter()
                 .map(|dep| format!("\"{}\"", feature_of(modules, dep))),
         );
+        entries.extend(module.layers.iter().map(|layer| format!("\"dep:{layer}\"")));
         let _ = writeln!(block, "{} = [{}]", module.feature, entries.join(", "));
     }
     block.push_str(FEATURES_END);
@@ -421,6 +463,20 @@ fn feature_of<'a>(modules: &'a [Module], name: &str) -> &'a str {
         .expect("validate() rejects unknown dependencies")
 }
 
+/// The shared layer crates in first-appearance order, each with the modules that list it.
+fn layers<'a>(ordered: &[&'a Module]) -> Vec<(&'a str, Vec<&'a Module>)> {
+    let mut layers: Vec<(&str, Vec<&Module>)> = Vec::new();
+    for module in ordered {
+        for layer in &module.layers {
+            match layers.iter_mut().find(|(name, _)| name == layer) {
+                Some((_, users)) => users.push(module),
+                None => layers.push((layer, vec![module])),
+            }
+        }
+    }
+    layers
+}
+
 fn string_slice(values: &[String]) -> String {
     let items: Vec<String> = values.iter().map(|value| format!("{value:?}")).collect();
     format!("[{}]", items.join(", "))
@@ -436,6 +492,17 @@ mod tests {
             Entry {
                 builtins: vec![name.to_owned()],
                 deps: deps.iter().map(ToString::to_string).collect(),
+                ..Entry::default()
+            },
+        )
+    }
+
+    fn layered_module(name: &str, layers: &[&str]) -> Module {
+        Module::new(
+            name.to_owned(),
+            Entry {
+                builtins: vec![name.to_owned()],
+                layers: layers.iter().map(ToString::to_string).collect(),
                 ..Entry::default()
             },
         )
@@ -463,5 +530,44 @@ mod tests {
         assert!(rendered.contains("node-stream = [\"dep:thinpack-node-stream\", \"node-buffer\"]"));
         assert!(rendered.contains("default = [\"backend-quickjs\", \"node-all\"]"));
         assert!(rendered.contains("node-all = [\"node-buffer\", \"node-stream\"]"));
+    }
+
+    #[test]
+    fn manifest_features_enable_the_layers_a_module_uses() {
+        let manifest = "# BEGIN GENERATED FEATURES\n# END GENERATED FEATURES\n";
+        let modules = [
+            layered_module("child_process", &["thinpack-child"]),
+            layered_module("cluster", &["thinpack-child"]),
+        ];
+        let rendered = render_manifest(manifest, &modules).expect("markers exist");
+
+        assert!(
+            rendered
+                .contains("node-cluster = [\"dep:thinpack-node-cluster\", \"dep:thinpack-child\"]")
+        );
+    }
+
+    #[test]
+    fn a_shared_layer_is_registered_once_before_the_modules_that_use_it() {
+        let modules = [
+            layered_module("child_process", &["thinpack-child"]),
+            layered_module("cluster", &["thinpack-child"]),
+        ];
+        let order = dependency_order(&modules).expect("the graph is acyclic");
+        let rendered = render_registry(&order);
+
+        assert_eq!(rendered.matches("thinpack_child::init()").count(), 1);
+        let layer = rendered
+            .find("thinpack_child::init()")
+            .expect("the layer is registered");
+        let module = rendered
+            .find("thinpack_node_child_process::init()")
+            .expect("the module is registered");
+        assert!(layer < module, "a layer is registered before its users");
+        assert!(
+            rendered.contains(
+                "#[cfg(any(feature = \"node-child-process\", feature = \"node-cluster\"))]"
+            )
+        );
     }
 }

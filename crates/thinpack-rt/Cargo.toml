@@ -28,6 +28,7 @@ thinpack-pack.workspace = true
 thinpack-vfs.workspace = true
 thinpack-io.workspace = true
 thinpack-node-internals.workspace = true
+thinpack-child = { workspace = true, optional = true }
 thinpack-node-console = { workspace = true, optional = true }
 thinpack-node-constants = { workspace = true, optional = true }
 thinpack-node-process = { workspace = true, optional = true }
@@ -86,8 +87,8 @@ node-all = ["node-assert", "node-async-hooks", "node-buffer", "node-child-proces
 node-assert = ["dep:thinpack-node-assert", "node-util"]
 node-async-hooks = ["dep:thinpack-node-async-hooks"]
 node-buffer = ["dep:thinpack-node-buffer", "node-process"]
-node-child-process = ["dep:thinpack-node-child-process", "node-events", "node-stream"]
-node-cluster = ["dep:thinpack-node-cluster", "node-events", "node-net", "node-path", "node-process"]
+node-child-process = ["dep:thinpack-node-child-process", "node-events", "node-stream", "dep:thinpack-child"]
+node-cluster = ["dep:thinpack-node-cluster", "node-events", "node-net", "node-path", "node-process", "dep:thinpack-child"]
 node-console = ["dep:thinpack-node-console", "node-util"]
 node-constants = ["dep:thinpack-node-constants"]
 node-crypto = ["dep:thinpack-node-crypto", "node-buffer", "node-stream"]

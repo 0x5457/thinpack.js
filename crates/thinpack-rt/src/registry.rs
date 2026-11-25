@@ -10,6 +10,8 @@
 pub(crate) fn extensions() -> Vec<deno_core::Extension> {
     #[allow(unused_mut, reason = "nothing is pushed when every capability is compiled out")]
     let mut extensions = Vec::new();
+    #[cfg(any(feature = "node-child-process", feature = "node-cluster"))]
+    extensions.push(thinpack_child::init());
     #[cfg(feature = "node-async-hooks")]
     extensions.push(thinpack_node_async_hooks::init());
     #[cfg(feature = "node-constants")]
