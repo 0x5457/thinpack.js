@@ -920,6 +920,27 @@ test('skipped sibling', () => {
         capabilities: &["test"],
         error: None,
     },
+    PackedTest {
+        name: "packed::module-parent",
+        directory: "module-parent",
+        entry: "/app/main.js",
+        files: &[
+            (
+                "/app/main.js",
+                r"
+const assert = require('node:assert/strict');
+assert.equal(module.parent, null);
+const child = require('./child.cjs');
+assert.equal(child.parent, module);
+assert.equal(require('./child.cjs').parent, module);
+console.log('module.parent ok');
+",
+            ),
+            ("/app/child.cjs", "exports.parent = module.parent;\n"),
+        ],
+        capabilities: &["assert"],
+        error: None,
+    },
 ];
 
 /// Packed startup cases whose source is generated because the payload is large.
