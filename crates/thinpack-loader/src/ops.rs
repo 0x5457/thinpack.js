@@ -5,7 +5,7 @@
 )]
 
 use std::cell::RefCell;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use deno_core::error::CoreErrorKind;
@@ -27,6 +27,8 @@ pub(crate) const OPS: &[OpDecl] = &[
     op_entry(),
     op_builtin_modules(),
     op_require_resolve(),
+    op_module_lookup_paths(),
+    op_module_global_paths(),
     op_esm_resolve_default(),
     op_esm_load_default(),
     op_esm_format(),
@@ -84,6 +86,136 @@ fn builtin_specifier(builtins: &BuiltinSources, specifier: &str) -> Option<Strin
     builtins
         .get(&builtin_name(specifier))
         .map(|_| specifier.to_owned())
+}
+
+// Node exposes these built-ins only through the `node:` scheme; a bare name is
+// an ordinary package request.
+const NODE_SCHEME_ONLY: &[&str] = &["ffi", "sea", "sqlite", "test"];
+
+fn is_node_builtin(builtins: &BuiltinSources, specifier: &str) -> bool {
+    let bare = specifier.strip_prefix("node:").unwrap_or(specifier);
+    if bare.starts_with("thinpack/") {
+        return false;
+    }
+    if NODE_SCHEME_ONLY.contains(&bare) && !specifier.starts_with("node:") {
+        return false;
+    }
+    builtins.get(&builtin_name(specifier)).is_some()
+        || thinpack_caps::module_for_builtin(bare).is_some()
+}
+
+#[op2]
+#[string]
+fn op_module_lookup_paths(
+    state: Rc<RefCell<OpState>>,
+    #[string] specifier: &str,
+    #[string] parent: &str,
+    #[string] global_paths: &str,
+) -> String {
+    let op_state = state.borrow();
+    let builtins = op_state.borrow::<BuiltinSources>();
+    if is_node_builtin(builtins, specifier) {
+        return "n".to_owned();
+    }
+    let fs = op_state.borrow::<ModuleFs>();
+    let paths = if is_relative_specifier(specifier) {
+        vec![fs.js_path(parent_directory(parent))]
+    } else {
+        let mut paths = if parent.is_empty() {
+            Vec::new()
+        } else {
+            thinpack_resolve::node_module_paths(parent_directory(parent))
+                .into_iter()
+                .map(|path| fs.js_path(&path))
+                .collect()
+        };
+        paths.extend(
+            global_paths
+                .split('\0')
+                .filter(|path| !path.is_empty())
+                .map(str::to_owned),
+        );
+        paths
+    };
+    if paths.is_empty() {
+        return "n".to_owned();
+    }
+    let mut reply = String::from("p");
+    for path in paths {
+        reply.push('\0');
+        reply.push_str(&path);
+    }
+    reply
+}
+
+fn is_relative_specifier(specifier: &str) -> bool {
+    let bytes = specifier.as_bytes();
+    bytes.first() == Some(&b'.')
+        && (bytes.len() == 1
+            || matches!(bytes[1], b'.' | b'/')
+            || (cfg!(windows) && bytes[1] == b'\\'))
+}
+
+fn parent_directory(parent: &str) -> &Path {
+    Path::new(parent)
+        .parent()
+        .filter(|directory| !directory.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
+#[op2]
+#[string]
+fn op_module_global_paths() -> String {
+    module_global_paths().join("\0")
+}
+
+fn module_global_paths() -> Vec<String> {
+    let mut paths = Vec::new();
+    if let Some(value) = std::env::var_os("NODE_PATH") {
+        let delimiter = if cfg!(windows) { ';' } else { ':' };
+        paths.extend(
+            value
+                .to_string_lossy()
+                .split(delimiter)
+                .filter(|entry| !entry.is_empty())
+                .map(str::to_owned),
+        );
+    }
+    let home_name = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    if let Some(home) = std::env::var_os(home_name).filter(|value| !value.is_empty()) {
+        let home = absolute(Path::new(&home));
+        paths.push(home.join(".node_modules").to_string_lossy().into_owned());
+        paths.push(home.join(".node_libraries").to_string_lossy().into_owned());
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        // `$PREFIX/bin/node` on Unix and `$PREFIX\node.exe` on Windows.
+        let prefix = if cfg!(windows) {
+            executable.parent()
+        } else {
+            executable.parent().and_then(Path::parent)
+        };
+        if let Some(prefix) = prefix {
+            paths.push(
+                prefix
+                    .join("lib")
+                    .join("node")
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+    }
+    paths
+}
+
+fn absolute(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        thinpack_resolve::normalize(path)
+    } else {
+        std::env::current_dir().map_or_else(
+            |_| thinpack_resolve::normalize(path),
+            |directory| thinpack_resolve::normalize(&directory.join(path)),
+        )
+    }
 }
 
 #[op2]

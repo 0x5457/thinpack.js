@@ -32,6 +32,11 @@
     return paths;
   };
 
+  Module.globalPaths = globalThis.__thinpack_module_global_paths__().slice();
+  Module._initPaths = function _initPaths() {
+    Module.globalPaths = globalThis.__thinpack_module_init_paths__().slice();
+  };
+
   const isBuiltin = (name) => {
     const bare = String(name).replace(/^node:/, "");
     return bare === "module" || builtins.includes(bare);
