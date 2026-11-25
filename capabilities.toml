@@ -92,6 +92,10 @@ optional_deps = ["async_hooks"]
 builtins = ["net"]
 deps = ["stream", "events"]
 
+[modules.dgram]
+builtins = ["dgram"]
+deps = ["events"]
+
 [modules.diagnostics_channel]
 builtins = ["diagnostics_channel"]
 deps = []
