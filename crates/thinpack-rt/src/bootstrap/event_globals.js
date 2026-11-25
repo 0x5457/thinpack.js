@@ -586,32 +586,6 @@
   Object.defineProperty(globalThis, "EventTarget", {
     value: EventTarget, writable: true, configurable: true, enumerable: false,
   });
-  Object.defineProperty(globalThis, "WebSocket", {
-    configurable: true,
-    enumerable: false,
-    get() {
-      let WebSocket;
-      try {
-        ({ WebSocket } = globalThis.__thinpack_require__("node:thinpack/internal/undici"));
-      } catch (error) {
-        const wrapped = new Error(
-          "WebSocket is not available in this build; re-pack with --with http,https,crypto,buffer",
-        );
-        wrapped.code = error.code ?? "ERR_UNKNOWN_BUILTIN_MODULE";
-        wrapped.cause = error;
-        throw wrapped;
-      }
-      Object.defineProperty(globalThis, "WebSocket", {
-        value: WebSocket, writable: true, configurable: true, enumerable: false,
-      });
-      return WebSocket;
-    },
-    set(value) {
-      Object.defineProperty(globalThis, "WebSocket", {
-        value, writable: true, configurable: true, enumerable: false,
-      });
-    },
-  });
 
   Object.defineProperty(globalThis, "__thinpack_event", {
     value: {

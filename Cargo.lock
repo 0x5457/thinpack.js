@@ -4559,6 +4559,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "thinpack-node-fetch"
+version = "0.2.0"
+dependencies = [
+ "deno_core",
+ "thinpack-js",
+]
+
+[[package]]
 name = "thinpack-node-ffi"
 version = "0.2.0"
 dependencies = [
@@ -4886,6 +4894,7 @@ dependencies = [
  "thinpack-node-dns",
  "thinpack-node-domain",
  "thinpack-node-events",
+ "thinpack-node-fetch",
  "thinpack-node-ffi",
  "thinpack-node-fs",
  "thinpack-node-http",

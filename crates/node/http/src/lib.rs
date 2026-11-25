@@ -4,13 +4,10 @@ use deno_core::{Extension, ExtensionFileSource};
 
 #[must_use]
 pub fn init() -> Extension {
-    const BUILTINS: &[ExtensionFileSource] = &[
-        ExtensionFileSource::new_compressed("node:http", thinpack_js::js!("http.js")),
-        ExtensionFileSource::new_compressed(
-            "node:thinpack/internal/undici",
-            thinpack_js::js!("vendor/undici.js"),
-        ),
-    ];
+    const BUILTINS: &[ExtensionFileSource] = &[ExtensionFileSource::new_compressed(
+        "node:http",
+        thinpack_js::js!("http.js"),
+    )];
 
     Extension {
         name: "thinpack_node_http",

@@ -36,23 +36,24 @@ the divergence, why it exists, and where it lives.
 
 - `fetch`, `Headers`, `Request`, `Response` and `FormData` are Node's own undici, vendored
   byte for byte from `deps/undici/undici.js` at the Node tag this repo tracks
-  (`crates/node/http/src/vendor/undici.js`). They are the same code Node runs, so request
+  (`crates/node/fetch/src/vendor/undici.js`). They are the same code Node runs, so request
   construction, redirects, `AbortSignal`, multipart encoding and the error shapes are Node's,
   and the module needs no seams: the bundle requires only `node:` builtins.
-  - That bundle is the reason a `fetch` or `WebSocket` call pulls sixteen modules into the payload
-    (`assert`, `async_hooks`, `buffer`, `crypto`, `diagnostics_channel`, `events`, `http`,
-    `net`, `perf_hooks`, `querystring`, `stream`, `tls`, `url`, `util`, `worker_threads`,
-    `zlib`), which closes over 21 capabilities once the ambient modules are added. `http2`
-    and `sqlite` stay out of both sets: undici probes them and handles their absence, so the
-    analyzer does not pull them and `--without http2`/`--without sqlite` keep working.
+  - That bundle is the reason a `fetch` or `WebSocket` reference selects the `fetch` capability
+    and pulls sixteen modules into the payload (`assert`, `async_hooks`, `buffer`, `crypto`,
+    `diagnostics_channel`, `events`, `http`, `net`, `perf_hooks`, `querystring`, `stream`,
+    `tls`, `url`, `util`, `worker_threads`, `zlib`), which closes over 22 capabilities once
+    the ambient modules are added. `http2` and `sqlite` stay out of both sets: undici probes
+    them and handles their absence, so the analyzer does not pull them and
+    `--without http2`/`--without sqlite` keep working.
   - `WebSocket` is the bundle's implementation, not a separate stack, so it shares the same
     closure and the same protocol behavior as Node.
-  - Loading is lazy, the payload is not: the bundle is a lazy source of the `http` extension,
+  - Loading is lazy, the payload is not: the bundle is a lazy source of the `fetch` extension,
     and every lazy source is decompressed and retained as a string per realm when the runtime
-    is created. An app that enables `http` — which includes every app that only uses
-    `new WebSocket(…)` — therefore pays its 132 KiB of template, a brotli decode per realm and
-    its 812 KiB of JavaScript kept for the life of the process, whether or not `fetch` is ever
-    evaluated; only evaluation is lazy.
+    is created. An app that selects `fetch` — including one that only uses `new WebSocket(…)`
+    — therefore pays its 132 KiB of template, a brotli decode per realm and its 812 KiB of
+    JavaScript kept for the life of the process, whether or not `fetch` is ever evaluated;
+    only evaluation is lazy. An HTTP-only pack carries none of it.
   - `EventSource` is exported by that bundle but absent here: Node gates the global behind
     `--experimental-eventsource` and deletes it otherwise, and this runtime has no equivalent
     switch, so the global is never installed.
@@ -62,7 +63,7 @@ the divergence, why it exists, and where it lives.
   - `reportError` throws its argument from a microtask, which reaches the same
     uncaught-exception path; Node first dispatches a cancelable `ErrorEvent` on `globalThis`,
     and that global does not exist here
-    (`crates/thinpack-rt/src/bootstrap/fetch_globals.js`).
+    (`crates/thinpack-rt/src/bootstrap/report_error.js`).
   - Everything undici builds on is still this runtime's implementation, so the entries below
     for `net`, `tls`, `zlib` and the streams apply to it too.
 - `Blob` parts are read through a JS reader (`crates/node/buffer/src/binding_blob.js`). Node's

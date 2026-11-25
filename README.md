@@ -194,9 +194,10 @@ Ambient (every template): `console`, `process`, `timers`, `buffer`, `url`, plus 
 `console` formats through it.
 
 On demand: `assert`, `async_hooks`, `child_process`, `constants`, `crypto`,
-`diagnostics_channel`, `dns`, `events`, `ffi`, `fs`, `http`, `http2`, `https`, `inspector`,
-`module`, `net`, `os`, `path`, `perf_hooks`, `querystring`, `readline`, `sea`, `sqlite`,
-`stream`, `string_decoder`, `test`, `tls`, `tty`, `util`, `v8`, `vm`, `worker_threads`, `zlib`.
+`diagnostics_channel`, `dns`, `events`, `fetch`, `ffi`, `fs`, `http`, `http2`, `https`,
+`inspector`, `module`, `net`, `os`, `path`, `perf_hooks`, `querystring`, `readline`, `sea`,
+`sqlite`, `stream`, `string_decoder`, `test`, `tls`, `tty`, `util`, `v8`, `vm`, `worker_threads`,
+`zlib`.
 Subpaths (`fs/promises`, `stream/web`, `path/posix`, `util/types`, …) ship with their module.
 
 `http2` and `sqlite` are optional: a package probing for them does not fail the pack. A module
@@ -256,9 +257,10 @@ for adding a module.
 - `fetch`, `WebSocket` and their types are Node's own undici, vendored from
   `deps/undici/undici.js`, so they behave as Node does; `EventSource`, `MessageEvent`,
   `CloseEvent` and `ErrorEvent` are absent. `Blob`, `File` and `reportError` are present.
-  The bundle's evaluation is lazy, but its payload is not: it ships with `http` and is
-  decoded at startup, and a `WebSocket` app pulls the same sixteen-module closure as `fetch`.
-  `docs/gaps.md` records what remains different.
+  The bundle belongs to the `fetch` capability: an HTTP-only pack does not carry it, while a
+  `fetch` or `WebSocket` reference pulls the same sixteen-module closure and decodes the
+  bundle at startup. Omitting the capability omits both globals. `docs/gaps.md` records what
+  remains different.
 - No N-API or native addon loading; code that needs native code goes through `node:ffi`.
 - `crypto` key material covers RSA/RSA-PSS, EC (P-256/P-384/P-521/secp256k1), Ed25519 and
   X25519. DSA, DH, Ed448 and X448 keys are rejected; encrypted PKCS#1/SEC1 PEM is not
