@@ -1,9 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
+use std::path::Path;
 
 use oxc_ast::AstKind;
 use oxc_ast::ast::{BinaryOperator, Expression, IdentifierReference, Statement};
 use oxc_semantic::{IsGlobalReference, Scoping, Semantic, SymbolId};
-use oxc_str::JSStr;
+
+use crate::static_path;
 
 pub(super) fn bindings(semantic: &Semantic<'_>) -> BTreeSet<SymbolId> {
     semantic
@@ -36,11 +38,12 @@ enum PendingSpecifier<'a, 'e> {
 pub(super) fn specifiers<'a>(
     argument: &Expression<'a>,
     semantic: &Semantic<'a>,
-    mut add: impl FnMut(JSStr<'a>),
+    base: &Path,
+    mut add: impl FnMut(String),
 ) -> bool {
     let argument = argument.without_parentheses();
     if let Expression::StringLiteral(literal) = argument {
-        add(literal.value);
+        add(crate::js_string(literal.value));
         return true;
     }
 
@@ -56,7 +59,7 @@ pub(super) fn specifiers<'a>(
             }
         };
         match expression {
-            Expression::StringLiteral(literal) => add(literal.value),
+            Expression::StringLiteral(literal) => add(crate::js_string(literal.value)),
             Expression::ConditionalExpression(branch) => {
                 pending.push(PendingSpecifier::Expression(&branch.alternate));
                 pending.push(PendingSpecifier::Expression(&branch.consequent));
@@ -78,6 +81,14 @@ pub(super) fn specifiers<'a>(
                         pending.push(PendingSpecifier::Resolved(symbol));
                         pending.push(PendingSpecifier::Expression(init));
                     }
+                }
+            }
+            // `require(path.resolve(__dirname, 'entry.js'))` and the binding that
+            // holds it name a path the same way an asset read does.
+            Expression::CallExpression(_) | Expression::BinaryExpression(_) => {
+                match static_path::evaluate_rooted(expression, base) {
+                    Some(path) => add(path.display().to_string()),
+                    None => complete = false,
                 }
             }
             _ => complete = false,

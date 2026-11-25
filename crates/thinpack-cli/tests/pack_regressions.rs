@@ -777,6 +777,99 @@ mod unix {
     }
 
     #[test]
+    fn a_resolved_require_and_bounded_command_directory_are_packed() {
+        let directory = TempDir::new("resolved-require");
+        let entry = directory.path().join("bin/main.js");
+        fs::create_dir_all(directory.path().join("bin")).expect("create bin directory");
+        fs::create_dir_all(directory.path().join("lib/cli")).expect("create cli directory");
+        fs::create_dir_all(directory.path().join("lib/commands"))
+            .expect("create commands directory");
+        fs::write(
+            directory.path().join("package.json"),
+            r#"{ "name": "app", "private": true }"#,
+        )
+        .expect("write project manifest");
+        fs::write(&entry, "require('../lib/cli.js')(process.argv[2]);\n").expect("write entry");
+        fs::write(
+            directory.path().join("lib/cli.js"),
+            "const path = require('node:path');\nconst entry = path.resolve(__dirname, 'cli/entry.js');\nmodule.exports = (command) => require(entry)(command);\n",
+        )
+        .expect("write the resolved require");
+        fs::write(
+            directory.path().join("lib/cli/entry.js"),
+            "module.exports = (command) => require('../npm.js').run(command);\n",
+        )
+        .expect("write the resolved target");
+        fs::write(
+            directory.path().join("lib/npm.js"),
+            "module.exports.run = (command) => require(`./commands/${command}.js`)();\n",
+        )
+        .expect("write the bounded dispatcher");
+        fs::write(
+            directory.path().join("lib/commands/pkg.js"),
+            "module.exports = () => console.log('pkg');\n",
+        )
+        .expect("write the pkg command");
+        fs::write(
+            directory.path().join("lib/commands/get.js"),
+            "module.exports = () => console.log('get');\n",
+        )
+        .expect("write the get command");
+        fs::write(
+            directory.path().join("lib/commands/README.md"),
+            "not a command module\n",
+        )
+        .expect("write a non-matching sibling");
+
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let output = directory.path().join("packed-app");
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            directory.path(),
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+            ],
+        );
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(result.status.success(), "pack failed:\n{stderr}");
+        assert!(!stderr.contains("non-literal"), "{stderr}");
+
+        let pack = thinpack_pack::read_from_executable(&output)
+            .expect("read packed executable")
+            .expect("packed payload");
+        for path in [
+            "/app/lib/cli/entry.js",
+            "/app/lib/commands/pkg.js",
+            "/app/lib/commands/get.js",
+        ] {
+            assert!(
+                pack.manifest.files.iter().any(|file| file.path == path),
+                "{path} was not packed: {:?}",
+                pack.manifest
+                    .files
+                    .iter()
+                    .map(|file| &file.path)
+                    .collect::<Vec<_>>()
+            );
+        }
+        assert!(
+            !pack
+                .manifest
+                .files
+                .iter()
+                .any(|file| file.path == "/app/lib/commands/README.md"),
+            "packed a file outside the literal suffix"
+        );
+    }
+
+    #[test]
     fn a_joined_asset_with_a_leading_slash_stays_under_dirname() {
         let directory = TempDir::new("leading-slash-asset");
         let project = directory.path().join("project");

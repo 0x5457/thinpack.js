@@ -19,7 +19,7 @@ use oxc_ast_visit::{VisitJs, walk_js};
 use oxc_parser::Parser;
 use oxc_semantic::{IsGlobalReference, Semantic, SemanticBuilder, SymbolId};
 use oxc_span::SourceType;
-use thinpack_resolve::{Conditions, FileSystem, Format};
+use thinpack_resolve::{Conditions, FileSystem, Format, HostFs};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Warning {
@@ -72,6 +72,23 @@ impl Analysis {
         self.warnings.extend(other.warnings);
         self.warnings.sort();
         self.warnings.dedup();
+    }
+}
+
+/// The file system the analyzer walks. It adds directory listing to
+/// [`FileSystem`], which the resolver does not need.
+pub trait AnalysisFs: FileSystem {
+    /// # Errors
+    ///
+    /// Returns the underlying [`io::Error`] when the directory cannot be read.
+    fn read_dir(&self, path: &Path) -> io::Result<Vec<PathBuf>>;
+}
+
+impl AnalysisFs for HostFs {
+    fn read_dir(&self, path: &Path) -> io::Result<Vec<PathBuf>> {
+        std::fs::read_dir(path)?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect()
     }
 }
 
@@ -148,7 +165,7 @@ impl std::error::Error for Error {}
 /// for TypeScript that cannot be stripped, [`Error::Resolve`] for unresolvable
 /// non-optional specifiers and [`Error::UnknownBuiltin`] for `node:` builtins that
 /// thinpack does not ship.
-pub fn analyze(entry: &Path, fs: &impl FileSystem) -> Result<Analysis, Error> {
+pub fn analyze(entry: &Path, fs: &impl AnalysisFs) -> Result<Analysis, Error> {
     analyze_roots(entry, &[], fs)
 }
 
@@ -160,7 +177,7 @@ pub fn analyze(entry: &Path, fs: &impl FileSystem) -> Result<Analysis, Error> {
 /// Returns the same errors as [`analyze`].
 pub fn analyze_with(
     entry: &Path,
-    fs: &impl FileSystem,
+    fs: &impl AnalysisFs,
     allow_missing: &BTreeSet<String>,
     custom_conditions: &[String],
 ) -> Result<Analysis, Error> {
@@ -179,7 +196,7 @@ pub fn analyze_with(
 pub fn analyze_roots(
     entry: &Path,
     roots: &[PathBuf],
-    fs: &impl FileSystem,
+    fs: &impl AnalysisFs,
 ) -> Result<Analysis, Error> {
     analyze_roots_with(entry, roots, fs, &BTreeSet::new(), &[])
 }
@@ -193,7 +210,7 @@ pub fn analyze_roots(
 pub fn analyze_roots_with(
     entry: &Path,
     roots: &[PathBuf],
-    fs: &impl FileSystem,
+    fs: &impl AnalysisFs,
     allow_missing: &BTreeSet<String>,
     custom_conditions: &[String],
 ) -> Result<Analysis, Error> {
@@ -234,12 +251,11 @@ pub fn analyze_roots_with(
         }
 
         let optional_dependencies = thinpack_resolve::optional_dependencies(&path, &fs);
-        let (specifiers, detected) =
-            load_module(&path, &fs, &mut stripped, &mut warnings, &mut data_files)?;
-        if let Some(format) = detected {
+        let loaded = load_module(&path, &fs, &mut stripped, &mut warnings, &mut data_files)?;
+        if let Some(format) = loaded.detected {
             formats.insert(path.clone(), format);
         }
-        for ((specifier, is_import), usage) in specifiers {
+        for ((specifier, is_import), usage) in loaded.specifiers {
             // A dependency listed in `optionalDependencies` is optional even when the
             // request is unguarded, so a hoisted install the payload cannot reach is
             // omitted with a warning instead of failing the pack.
@@ -274,6 +290,26 @@ pub fn analyze_roots_with(
                 pending.push_back((resolved, true));
             } else {
                 pending.push_front((resolved, false));
+            }
+        }
+        for bounded in loaded.bounded {
+            let Ok(entries) = fs.read_dir(&bounded.directory) else {
+                continue;
+            };
+            for entry in entries {
+                let matches = entry
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(&bounded.suffix));
+                if !matches || !fs.is_file(&entry) {
+                    continue;
+                }
+                let entry = thinpack_resolve::normalize(&entry);
+                if optional_subtree || bounded.optional {
+                    pending.push_back((entry, true));
+                } else {
+                    pending.push_front((entry, false));
+                }
             }
         }
     }
@@ -346,7 +382,7 @@ struct ManifestRecorder<'a, F> {
     manifests: RefCell<BTreeSet<PathBuf>>,
 }
 
-impl<'a, F: FileSystem> ManifestRecorder<'a, F> {
+impl<'a, F: AnalysisFs> ManifestRecorder<'a, F> {
     const fn new(inner: &'a F) -> Self {
         Self {
             inner,
@@ -377,6 +413,12 @@ impl<F: FileSystem> FileSystem for ManifestRecorder<'_, F> {
     }
 }
 
+impl<F: AnalysisFs> AnalysisFs for ManifestRecorder<'_, F> {
+    fn read_dir(&self, path: &Path) -> io::Result<Vec<PathBuf>> {
+        self.inner.read_dir(path)
+    }
+}
+
 /// How the module graph uses a specifier.
 #[derive(Clone, Copy, Debug)]
 struct Usage {
@@ -389,6 +431,24 @@ struct Usage {
 }
 
 type SpecifierEntry = ((String, bool), Usage);
+
+/// A computed `require` whose literal prefix and suffix bound the candidates to
+/// the files directly inside one directory: npm's
+/// `require(`./commands/${command}.js`)` names a command module without saying
+/// which one. The directory bounds the set, so every matching file is a possible
+/// target.
+struct BoundedRequire {
+    directory: PathBuf,
+    suffix: String,
+    optional: bool,
+}
+
+/// What reading one module contributes to the walk.
+struct LoadedModule {
+    specifiers: Vec<SpecifierEntry>,
+    detected: Option<Format>,
+    bounded: Vec<BoundedRequire>,
+}
 
 /// Records `specifier` when it names a builtin and reports whether it did. A
 /// guarded reference to a builtin that may be absent only warns; an unguarded
@@ -532,7 +592,7 @@ fn load_module(
     stripped: &mut BTreeMap<PathBuf, String>,
     warnings: &mut Vec<Warning>,
     data_files: &mut BTreeSet<PathBuf>,
-) -> Result<(Vec<SpecifierEntry>, Option<Format>), Error> {
+) -> Result<LoadedModule, Error> {
     let bytes = fs.read(path).map_err(|error| Error::Read {
         path: path.to_path_buf(),
         message: error.to_string(),
@@ -551,7 +611,7 @@ fn parse_specifiers(
     fs: &impl FileSystem,
     warnings: &mut Vec<Warning>,
     data_files: &mut BTreeSet<PathBuf>,
-) -> Result<(Vec<SpecifierEntry>, Option<Format>), Error> {
+) -> Result<LoadedModule, Error> {
     let allocator = Allocator::default();
     let (source_type, format) = parser_dialect(path, fs)?;
     let mut parsed = Parser::new(&allocator, source, source_type).parse();
@@ -601,6 +661,7 @@ fn parse_specifiers(
         .with_build_nodes(true)
         .build(&parsed.program)
         .semantic;
+    let mut bounded = Vec::new();
     let mut collector = SpecifierCollector {
         path,
         specifiers: BTreeMap::new(),
@@ -609,10 +670,15 @@ fn parse_specifiers(
         require_bindings: require::bindings(&semantic),
         warnings,
         data_files,
+        bounded: &mut bounded,
         fs,
     };
     collector.visit_program(&parsed.program);
-    Ok((collector.specifiers.into_iter().collect(), detected))
+    Ok(LoadedModule {
+        specifiers: collector.specifiers.into_iter().collect(),
+        detected,
+        bounded,
+    })
 }
 
 fn js_string(value: oxc_str::JSStr<'_>) -> String {
@@ -643,6 +709,7 @@ struct SpecifierCollector<'a, 's> {
     require_bindings: BTreeSet<SymbolId>,
     warnings: &'s mut Vec<Warning>,
     data_files: &'s mut BTreeSet<PathBuf>,
+    bounded: &'s mut Vec<BoundedRequire>,
     fs: &'s dyn FileSystem,
 }
 
@@ -731,15 +798,16 @@ impl SpecifierCollector<'_, '_> {
         let Some(argument) = call.arguments.first() else {
             return;
         };
+        let optional = optional || self.try_depth > 0;
         let complete = argument.as_expression().is_some_and(|argument| {
-            require::specifiers(argument, self.semantic, |specifier| {
-                self.add(
-                    js_string(specifier),
-                    is_import,
-                    optional || self.try_depth > 0,
-                    resolve_only,
-                );
-            })
+            require::specifiers(
+                argument,
+                self.semantic,
+                self.path.parent().unwrap_or_else(|| Path::new("/")),
+                |specifier| {
+                    self.add(specifier, is_import, optional, resolve_only);
+                },
+            ) || (!resolve_only && self.bounded_require(argument, optional))
         });
         if !complete {
             self.warnings.push(Warning {
@@ -750,6 +818,63 @@ impl SpecifierCollector<'_, '_> {
                 strict: true,
             });
         }
+    }
+
+    /// A computed `require` whose literal prefix and suffix bound the candidates
+    /// to the files directly inside one directory: `require(`./commands/${command}.js`)`.
+    /// The directory is the bound, so every matching file is a possible target and
+    /// the expression itself does not have to be predictable.
+    fn bounded_require(&mut self, expression: &Expression<'_>, optional: bool) -> bool {
+        let Expression::TemplateLiteral(template) = expression.without_parentheses() else {
+            return false;
+        };
+        if template.expressions.len() != 1 || template.quasis.len() != 2 {
+            return false;
+        }
+        let Some(prefix) = template.quasis[0]
+            .value
+            .cooked
+            .and_then(oxc_str::JSStr::as_str)
+        else {
+            return false;
+        };
+        let Some(suffix) = template.quasis[1]
+            .value
+            .cooked
+            .and_then(oxc_str::JSStr::as_str)
+        else {
+            return false;
+        };
+        // A package-style prefix (`commands/${name}.js`) names a package, not a
+        // directory next to the module. Only paths with a directory bound are safe
+        // to expand.
+        if !(prefix.starts_with("./")
+            || prefix.starts_with("../")
+            || prefix.starts_with('/')
+            || Path::new(prefix).is_absolute())
+            || !(prefix.ends_with('/') || prefix.ends_with('\\'))
+            || !suffix.starts_with('.')
+            || suffix.contains('/')
+            || suffix.contains('\\')
+        {
+            return false;
+        }
+        let directory = thinpack_resolve::normalize(
+            &self
+                .path
+                .parent()
+                .unwrap_or_else(|| Path::new("/"))
+                .join(prefix),
+        );
+        if !self.fs.is_dir(&directory) {
+            return false;
+        }
+        self.bounded.push(BoundedRequire {
+            directory,
+            suffix: suffix.to_owned(),
+            optional,
+        });
+        true
     }
 
     /// `new Function(...)`/`Function(...)` hides imports from the analyzer. Warn only
@@ -941,6 +1066,21 @@ mod tests {
                 fs.files.insert(path, (*contents).to_owned());
             }
             fs
+        }
+    }
+
+    impl AnalysisFs for MemoryFs {
+        fn read_dir(&self, path: &Path) -> io::Result<Vec<PathBuf>> {
+            if !self.directories.contains(path) {
+                return Err(io::Error::from(io::ErrorKind::NotFound));
+            }
+            Ok(self
+                .files
+                .keys()
+                .chain(self.directories.iter())
+                .filter(|entry| entry.parent() == Some(path))
+                .cloned()
+                .collect())
         }
     }
 
@@ -1663,6 +1803,102 @@ mod tests {
         let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
         assert!(analysis.data_files.is_empty());
         assert!(analysis.warnings.is_empty(), "{:?}", analysis.warnings);
+    }
+
+    #[test]
+    fn follows_a_require_of_a_resolved_constant_path() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/lib/cli.js",
+                "const path = require('node:path');\nconst cliEntry = path.resolve(__dirname, 'cli/entry.js');\nmodule.exports = () => require(cliEntry);\n",
+            ),
+            ("/app/lib/cli/entry.js", "module.exports = 1;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/lib/cli.js"), &fs).unwrap();
+        assert!(
+            analysis
+                .files
+                .contains(&PathBuf::from("/app/lib/cli/entry.js")),
+            "{:?}",
+            analysis.files
+        );
+        assert!(analysis.warnings.is_empty(), "{:?}", analysis.warnings);
+    }
+
+    #[test]
+    fn a_require_path_resolved_from_the_working_directory_is_left_alone() {
+        // Control for the rooted case: `path.resolve('cli/entry.js')` is relative to
+        // the process working directory, which packing does not know.
+        let fs = MemoryFs::new(&[
+            (
+                "/app/lib/cli.js",
+                "const path = require('node:path');\nrequire(path.resolve('cli/entry.js'));\n",
+            ),
+            ("/app/lib/cli/entry.js", "module.exports = 1;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/lib/cli.js"), &fs).unwrap();
+        assert!(
+            !analysis
+                .files
+                .contains(&PathBuf::from("/app/lib/cli/entry.js")),
+            "{:?}",
+            analysis.files
+        );
+        assert_eq!(analysis.warnings.len(), 1);
+        assert!(analysis.warnings[0].message.contains("non-literal"));
+    }
+
+    #[test]
+    #[expect(
+        clippy::literal_string_with_formatting_args,
+        reason = "the fixture is npm's template literal, not Rust formatting"
+    )]
+    fn expands_a_require_bounded_by_its_literal_directory() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/lib/npm.js",
+                "const command = process.argv[2];\nmodule.exports = () => require(`./commands/${command}.js`);\n",
+            ),
+            ("/app/lib/commands/pkg.js", "module.exports = 'pkg';\n"),
+            ("/app/lib/commands/get.js", "module.exports = 'get';\n"),
+            ("/app/lib/commands/README.md", "not a command\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/lib/npm.js"), &fs).unwrap();
+        for command in ["pkg", "get"] {
+            let path = PathBuf::from(format!("/app/lib/commands/{command}.js"));
+            assert!(analysis.files.contains(&path), "{:?}", analysis.files);
+        }
+        assert!(
+            !analysis
+                .files
+                .contains(&PathBuf::from("/app/lib/commands/README.md")),
+            "{:?}",
+            analysis.files
+        );
+        assert!(analysis.warnings.is_empty(), "{:?}", analysis.warnings);
+    }
+
+    #[test]
+    fn a_computed_require_with_two_dynamic_segments_is_left_alone() {
+        // Control for the bounded directory: only a single dynamic segment inside a
+        // literal directory is a bound packing can enumerate.
+        let fs = MemoryFs::new(&[
+            (
+                "/app/lib/npm.js",
+                "const directory = process.argv[2];\nconst command = process.argv[3];\nrequire(`./commands/${directory}/${command}.js`);\n",
+            ),
+            ("/app/lib/commands/pkg.js", "module.exports = 'pkg';\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/lib/npm.js"), &fs).unwrap();
+        assert!(
+            !analysis
+                .files
+                .contains(&PathBuf::from("/app/lib/commands/pkg.js")),
+            "{:?}",
+            analysis.files
+        );
+        assert_eq!(analysis.warnings.len(), 1);
+        assert!(analysis.warnings[0].message.contains("non-literal"));
     }
 
     #[test]
