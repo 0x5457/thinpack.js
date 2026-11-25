@@ -193,7 +193,10 @@ fn open_terminal() -> Result<(OwnedFd, CString, OwnedFd), String> {
     }
     // SAFETY: the pointer above is NUL-terminated.
     let slave = unsafe { CStr::from_ptr(slave) }.to_owned();
+    let inspect = open_slave(&slave)?;
 
+    // The window size belongs to the terminal, and only the slave side accepts
+    // TIOCSWINSZ on macOS.
     let winsize = libc::winsize {
         ws_row: ROWS,
         ws_col: COLUMNS,
@@ -201,7 +204,7 @@ fn open_terminal() -> Result<(OwnedFd, CString, OwnedFd), String> {
         ws_ypixel: 0,
     };
     // SAFETY: `TIOCSWINSZ` only reads the `winsize` argument.
-    if unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ, &winsize) } != 0 {
+    if unsafe { libc::ioctl(inspect.as_raw_fd(), libc::TIOCSWINSZ, &winsize) } != 0 {
         return Err(format!(
             "cannot size the pty: {}",
             io::Error::last_os_error()
@@ -220,7 +223,6 @@ fn open_terminal() -> Result<(OwnedFd, CString, OwnedFd), String> {
         ));
     }
 
-    let inspect = open_slave(&slave)?;
     Ok((master, slave, inspect))
 }
 
