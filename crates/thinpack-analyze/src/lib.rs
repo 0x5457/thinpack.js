@@ -12,7 +12,7 @@ use oxc_allocator::Allocator;
 use oxc_ast::ast::{
     Argument, BindingPattern, CallExpression, ExportAllDeclaration, ExportFromDeclaration,
     Expression, IdentifierReference, ImportDeclaration, ImportExpression, NewExpression,
-    PropertyKey, StaticMemberExpression, TryStatement, VariableDeclarator,
+    PropertyKey, StaticMemberExpression, StringLiteral, TryStatement, VariableDeclarator,
 };
 
 use oxc_ast_visit::{VisitJs, walk_js};
@@ -43,7 +43,8 @@ pub struct Analysis {
     /// module); the payload records them so the loader reads the same format.
     pub formats: BTreeMap<PathBuf, Format>,
     /// Files the payload carries as data instead of parsing: paths read through
-    /// `fs.readFileSync`/`readFile`/`createReadStream` and targets named only by
+    /// `fs.readFileSync`/`readFile`/`createReadStream`, declaration files a module
+    /// names beside itself, and targets named only by
     /// `require.resolve`/`import.meta.resolve`. Resolving a path does not make it a
     /// module, so the analyzer keeps its bytes and parses nothing.
     pub data_files: BTreeSet<PathBuf>,
@@ -817,6 +818,31 @@ impl SpecifierCollector<'_, '_> {
             });
         }
     }
+
+    /// Keep a declaration file the module names and that sits beside it. Programs
+    /// such as the TypeScript compiler build the path from `__filename` and pass
+    /// the name through tables, so no call argument is statically evaluable; the
+    /// name itself is still a literal. Declarations are data, so the app can read
+    /// them without the analyzer parsing anything.
+    fn sibling_declaration(&mut self, literal: &StringLiteral<'_>) {
+        let Some(name) = literal.value.as_str() else {
+            return;
+        };
+        let name = Path::new(name);
+        if !thinpack_resolve::is_declaration(name)
+            || name.file_name().and_then(|file_name| file_name.to_str()) != name.to_str()
+        {
+            return;
+        }
+        let path = self
+            .path
+            .parent()
+            .unwrap_or_else(|| Path::new("/"))
+            .join(name);
+        if self.fs.is_file(&path) {
+            self.data_files.insert(path);
+        }
+    }
 }
 
 impl<'a> VisitJs<'a> for SpecifierCollector<'a, '_> {
@@ -861,6 +887,11 @@ impl<'a> VisitJs<'a> for SpecifierCollector<'a, '_> {
     fn visit_identifier_reference(&mut self, identifier: &IdentifierReference<'a>) {
         self.add_global_reference(identifier);
         walk_js::walk_identifier_reference(self, identifier);
+    }
+
+    fn visit_string_literal(&mut self, literal: &StringLiteral<'a>) {
+        self.sibling_declaration(literal);
+        walk_js::walk_string_literal(self, literal);
     }
 
     fn visit_static_member_expression(&mut self, member: &StaticMemberExpression<'a>) {
@@ -1539,6 +1570,25 @@ mod tests {
             analysis.data_files.contains(Path::new("/app/data.css")),
             "{:?}",
             analysis.data_files
+        );
+    }
+
+    #[test]
+    fn records_a_declaration_file_named_beside_a_module() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/compiler.js",
+                "const libs = ['lib.d.ts', 'helper.js', 'data.json', 'nested/lib.d.ts'];\nfor (const lib of libs) fs.readFileSync(lib);\n",
+            ),
+            ("/app/lib.d.ts", "/// <reference lib=\"es2020\" />\n"),
+            ("/app/helper.js", "module.exports = 42;\n"),
+            ("/app/data.json", "{}\n"),
+            ("/app/nested/lib.d.ts", "declare const nested: number;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/compiler.js"), &fs).unwrap();
+        assert_eq!(
+            analysis.data_files,
+            BTreeSet::from([PathBuf::from("/app/lib.d.ts")])
         );
     }
 

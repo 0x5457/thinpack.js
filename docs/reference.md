@@ -91,7 +91,8 @@ erasable syntax is accepted: `enum`, `namespace`, parameter properties, `import 
 `--experimental-transform-types`. TypeScript under `node_modules` is not stripped either: Node
 refuses it with `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`, so packing rejects it instead of
 building an artifact that behaves differently. TypeScript outside the payload is not stripped at
-run time.
+run time. A declaration file that a packed module names and that sits beside it joins the payload
+as data, so the TypeScript compiler finds its standard library without `--include`.
 
 ## Built-in modules
 
