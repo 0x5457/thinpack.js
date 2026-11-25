@@ -1,0 +1,12 @@
+[package]
+name = "thinpack-cjs-lexer"
+description = "Node's merve CommonJS named-export lexer for thinpack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[build-dependencies]
+cc = "1"
+
+[lints]
+workspace = true
