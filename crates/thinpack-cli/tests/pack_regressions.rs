@@ -66,14 +66,14 @@ mod unix {
     }
 
     #[test]
-    fn esm_syntax_in_a_commonjs_js_entry_fails_during_packing() {
+    fn esm_syntax_in_an_explicit_commonjs_entry_fails_during_packing() {
         let directory = TempDir::new("esm-syntax-in-commonjs");
         let entry = directory.path().join("main.js");
         fs::write(
             directory.path().join("package.json"),
-            r#"{ "name": "esm-bundle" }"#,
+            r#"{ "name": "esm-bundle", "type": "commonjs" }"#,
         )
-        .expect("write package manifest");
+        .expect("write an explicit CommonJS package manifest");
         fs::write(
             &entry,
             "import { createRequire } from 'node:module';\n\
@@ -300,6 +300,49 @@ mod unix {
                 .map(|file| &file.path)
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn a_typeless_js_file_with_esm_syntax_is_packed_as_esm() {
+        let directory = TempDir::new("detect-module");
+        let entry = directory.path().join("main.js");
+        fs::write(&entry, "export const answer = 42;\nconsole.log(answer);\n")
+            .expect("write ESM entry without a package type");
+
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let output = directory.path().join("packed-app");
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            directory.path(),
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+            ],
+        );
+        assert!(
+            result.status.success(),
+            "pack failed:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(error.contains("without \"type\""), "{error}");
+
+        let pack = thinpack_pack::read_from_executable(&output)
+            .expect("read packed executable")
+            .expect("packed payload");
+        let format = pack
+            .manifest
+            .formats
+            .iter()
+            .find(|record| record.path == "/app/main.js")
+            .expect("the detected format is recorded");
+        assert_eq!(format.format, thinpack_resolve::Format::Esm);
     }
 
     #[test]

@@ -8,7 +8,7 @@ use std::path::{Component, Path, PathBuf};
 
 use package::Manifest;
 
-pub use package::{declares_optional, is_optional_dependency, optional_dependencies};
+pub use package::{declares_optional, is_optional_dependency, optional_dependencies, package_type};
 
 pub trait FileSystem {
     fn is_file(&self, path: &Path) -> bool;
@@ -18,6 +18,12 @@ pub trait FileSystem {
     ///
     /// Returns the underlying [`io::Error`] when the path cannot be read.
     fn read(&self, path: &Path) -> io::Result<Vec<u8>>;
+
+    /// The module format recorded in the payload for this file, when packing
+    /// detected one (a typeless `.js` written as an ES module).
+    fn format_override(&self, _path: &Path) -> Option<Format> {
+        None
+    }
 }
 
 #[derive(Debug)]
@@ -42,6 +48,27 @@ pub enum Format {
     CommonJs,
     Json,
     Esm,
+}
+
+impl Format {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::CommonJs => "commonjs",
+            Self::Json => "json",
+            Self::Esm => "esm",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "commonjs" => Some(Self::CommonJs),
+            "json" => Some(Self::Json),
+            "esm" => Some(Self::Esm),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -376,6 +403,9 @@ pub fn is_javascript(path: &Path) -> bool {
 /// Returns [`Error::Unsupported`] for native addons and the manifest errors
 /// raised while looking for the nearest `package.json`.
 pub fn format_of(path: &Path, fs: &impl FileSystem) -> Result<Format, Error> {
+    if let Some(format) = fs.format_override(path) {
+        return Ok(format);
+    }
     match path.extension().and_then(|extension| extension.to_str()) {
         Some("json") => Ok(Format::Json),
         Some("mjs") => Ok(Format::Esm),
@@ -528,6 +558,29 @@ mod tests {
             resolve_from(&fs, "./lib", "/app/main.js").unwrap().path,
             PathBuf::from("/app/shared/entry.js")
         );
+    }
+
+    struct OverrideFs(MemoryFs);
+
+    impl FileSystem for OverrideFs {
+        fn is_file(&self, path: &Path) -> bool {
+            self.0.is_file(path)
+        }
+        fn is_dir(&self, path: &Path) -> bool {
+            self.0.is_dir(path)
+        }
+        fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
+            self.0.read(path)
+        }
+        fn format_override(&self, _path: &Path) -> Option<Format> {
+            Some(Format::Esm)
+        }
+    }
+
+    #[test]
+    fn a_format_override_wins_over_the_extension() {
+        let fs = OverrideFs(MemoryFs::new(&[("/app/main.js", "")]));
+        assert_eq!(format_of(Path::new("/app/main.js"), &fs), Ok(Format::Esm));
     }
 
     #[test]

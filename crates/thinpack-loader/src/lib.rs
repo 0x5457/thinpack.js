@@ -62,6 +62,13 @@ impl FileSystem for ModuleFs {
             Self::Virtual(vfs) => vfs.read(path),
         }
     }
+
+    fn format_override(&self, path: &std::path::Path) -> Option<thinpack_resolve::Format> {
+        match self {
+            Self::Host => None,
+            Self::Virtual(vfs) => vfs.format_override(path),
+        }
+    }
 }
 
 impl ModuleFs {

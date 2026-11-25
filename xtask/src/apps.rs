@@ -703,6 +703,7 @@ mod tests {
                 offset: 0,
                 length: 0,
             }],
+            formats: Vec::new(),
             assets: Vec::new(),
         };
         let payload = thinpack_pack::assemble(&manifest, b"", thinpack_pack::Compression::None)

@@ -1161,6 +1161,7 @@ fn build_packed_payload(
         capabilities,
         template,
         files,
+        formats: Vec::new(),
         assets: Vec::new(),
     };
     let payload = thinpack_pack::assemble(&manifest, &blob, Compression::None)?;

@@ -37,6 +37,9 @@ pub struct Analysis {
     /// scope manifests are not recorded.
     pub manifests: BTreeSet<PathBuf>,
     pub builtins: BTreeMap<String, BTreeSet<PathBuf>>,
+    /// Files whose module format packing detected (a typeless `.js` written as an ES
+    /// module); the payload records them so the loader reads the same format.
+    pub formats: BTreeMap<PathBuf, Format>,
     pub warnings: Vec<Warning>,
 }
 
@@ -52,6 +55,7 @@ impl Analysis {
         for (builtin, files) in other.builtins {
             self.builtins.entry(builtin).or_default().extend(files);
         }
+        self.formats.extend(other.formats);
         self.warnings.extend(other.warnings);
         self.warnings.sort();
         self.warnings.dedup();
@@ -130,6 +134,7 @@ pub fn analyze(entry: &Path, fs: &impl FileSystem) -> Result<Analysis, Error> {
     let mut files = BTreeSet::new();
     let mut required = BTreeSet::new();
     let mut builtins: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
+    let mut formats = BTreeMap::new();
     let mut warnings = Vec::new();
 
     while let Some((path, optional_subtree)) = pending.pop_front() {
@@ -156,7 +161,10 @@ pub fn analyze(entry: &Path, fs: &impl FileSystem) -> Result<Analysis, Error> {
         })?;
 
         let optional_dependencies = thinpack_resolve::optional_dependencies(&path, &fs);
-        let specifiers = parse_specifiers(&source, &path, &fs, &mut warnings)?;
+        let (specifiers, detected) = parse_specifiers(&source, &path, &fs, &mut warnings)?;
+        if let Some(format) = detected {
+            formats.insert(path.clone(), format);
+        }
         for ((specifier, is_import), guarded) in specifiers {
             // A dependency listed in `optionalDependencies` is optional even when the
             // request is unguarded, so a hoisted install the payload cannot reach is
@@ -206,6 +214,7 @@ pub fn analyze(entry: &Path, fs: &impl FileSystem) -> Result<Analysis, Error> {
         required,
         manifests: fs.into_manifests(),
         builtins,
+        formats,
         warnings,
     })
 }
@@ -371,10 +380,36 @@ fn parse_specifiers(
     path: &Path,
     fs: &impl FileSystem,
     warnings: &mut Vec<Warning>,
-) -> Result<Vec<SpecifierEntry>, Error> {
+) -> Result<(Vec<SpecifierEntry>, Option<Format>), Error> {
     let allocator = Allocator::default();
     let (source_type, format) = parser_dialect(path, fs)?;
-    let parsed = Parser::new(&allocator, source, source_type).parse();
+    let mut parsed = Parser::new(&allocator, source, source_type).parse();
+    let mut detected = None;
+    if !parsed.diagnostics.is_empty() && format == Some(Format::CommonJs) {
+        // Node's detect-module: a typeless `.js` that does not parse as CommonJS is
+        // reparsed as an ES module. An explicit `"type": "commonjs"` keeps the strict
+        // rule, so only a missing type opts in.
+        let package_type =
+            thinpack_resolve::package_type(path, fs).map_err(|error| Error::Format {
+                path: path.to_path_buf(),
+                message: error.to_string(),
+            })?;
+        if package_type.is_none() {
+            let esm_type = source_type.with_module(true);
+            let esm = Parser::new(&allocator, source, esm_type).parse();
+            if esm.diagnostics.is_empty() {
+                warnings.push(Warning {
+                    message: format!(
+                        "{}: contains ES module syntax in a package without \"type\"; packed as an ES module. Add \"type\": \"module\" to the nearest package.json to make the format explicit",
+                        path.display()
+                    ),
+                    strict: false,
+                });
+                parsed = esm;
+                detected = Some(Format::Esm);
+            }
+        }
+    }
     if !parsed.diagnostics.is_empty() {
         if let Some(format) = format
             && let Some(message) = format_mismatch(source, &allocator, source_type, format)
@@ -404,7 +439,7 @@ fn parse_specifiers(
         warnings,
     };
     collector.visit_program(&parsed.program);
-    Ok(collector.specifiers.into_iter().collect())
+    Ok((collector.specifiers.into_iter().collect(), detected))
 }
 
 fn js_string(value: oxc_str::JSStr<'_>) -> String {
@@ -755,7 +790,10 @@ mod tests {
     #[test]
     fn a_js_file_loaded_as_commonjs_cannot_use_es_module_syntax() {
         let fs = MemoryFs::new(&[
-            ("/app/package.json", r#"{"name": "esm-bundle"}"#),
+            (
+                "/app/package.json",
+                r#"{"name": "esm-bundle", "type": "commonjs"}"#,
+            ),
             (
                 "/app/main.js",
                 "import { readFileSync } from 'node:fs';\nconsole.log(readFileSync);\n",
@@ -993,6 +1031,36 @@ mod tests {
         )]);
         let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
         assert_eq!(analysis.files, vec![PathBuf::from("/app/main.js")]);
+    }
+
+    #[test]
+    fn detects_esm_syntax_in_a_typeless_js_file() {
+        let fs = MemoryFs::new(&[("/app/main.js", "export const answer = 42;\n")]);
+        let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
+        assert_eq!(
+            analysis.formats.get(Path::new("/app/main.js")),
+            Some(&Format::Esm)
+        );
+        assert!(
+            analysis
+                .warnings
+                .iter()
+                .any(|warning| warning.message.contains("without \"type\"")),
+            "{:?}",
+            analysis.warnings
+        );
+    }
+
+    #[test]
+    fn an_explicit_commonjs_type_does_not_detect_esm_syntax() {
+        let fs = MemoryFs::new(&[
+            ("/app/package.json", r#"{"type":"commonjs"}"#),
+            ("/app/main.js", "export const answer = 42;\n"),
+        ]);
+        assert!(matches!(
+            analyze(Path::new("/app/main.js"), &fs),
+            Err(Error::Format { .. })
+        ));
     }
 
     #[test]
