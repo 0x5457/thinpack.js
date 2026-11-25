@@ -99,8 +99,13 @@ fn expand_includes(root: &Path, includes: &[PathBuf]) -> Result<Vec<PathBuf>, Bo
             )
             .into());
         }
-        let metadata =
-            std::fs::metadata(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+        let metadata = std::fs::metadata(&path).map_err(|error| {
+            format!(
+                "{}: {error}\n--include paths are relative to the project root {}",
+                path.display(),
+                root.display()
+            )
+        })?;
         if metadata.is_dir() {
             collect_files(&path, &mut files)?;
         } else {

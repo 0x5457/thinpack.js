@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    CallExpression, ExportAllDeclaration, ExportFromDeclaration, Expression, IdentifierReference,
-    ImportDeclaration, ImportExpression, NewExpression, TryStatement,
+    Argument, CallExpression, ExportAllDeclaration, ExportFromDeclaration, Expression,
+    IdentifierReference, ImportDeclaration, ImportExpression, NewExpression, TryStatement,
 };
 
 use oxc_ast_visit::{VisitJs, walk_js};
@@ -583,12 +583,40 @@ impl SpecifierCollector<'_, '_> {
         if !complete {
             self.warnings.push(Warning {
                 message: format!(
-                    "{}: `{target}{member}(...)` with a non-literal argument cannot be analyzed. Add any required builtin capabilities with `--with <module>`.",
+                    "{}: `{target}{member}(...)` with a non-literal argument cannot be analyzed. Add required built-ins with `--with <module>`, and computed local files with `--include <path>` (relative to the project root).",
                     self.path.display()
                 ),
                 strict: true,
             });
         }
+    }
+
+    /// `new Function(...)`/`Function(...)` hides imports from the analyzer. Warn only
+    /// when a literal body actually mentions `require`/`import`, so ordinary dynamic
+    /// expressions stay quiet.
+    fn dynamic_function(&mut self, callee: &Expression<'_>, arguments: &[Argument<'_>]) {
+        if global_name(callee).is_none_or(|name| name != "Function") {
+            return;
+        }
+        let body = arguments
+            .iter()
+            .filter_map(Argument::as_expression)
+            .filter_map(|expression| match expression {
+                Expression::StringLiteral(literal) => Some(js_string(literal.value)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !body.contains("require(") && !body.contains("import(") {
+            return;
+        }
+        self.warnings.push(Warning {
+            message: format!(
+                "{}: code built with `Function` is not analyzed; add the files it loads with `--include <path>` (relative to the project root)",
+                self.path.display()
+            ),
+            strict: false,
+        });
     }
 }
 
@@ -615,7 +643,7 @@ impl<'a> VisitJs<'a> for SpecifierCollector<'a, '_> {
             }
             _ => self.warnings.push(Warning {
                 message: format!(
-                    "{}: `import(...)` with a non-literal argument cannot be analyzed",
+                    "{}: `import(...)` with a non-literal argument cannot be analyzed; add computed local files with `--include <path>` (relative to the project root)",
                     self.path.display()
                 ),
                 strict: true,
@@ -625,6 +653,7 @@ impl<'a> VisitJs<'a> for SpecifierCollector<'a, '_> {
     }
 
     fn visit_call_expression(&mut self, call: &CallExpression<'a>) {
+        self.dynamic_function(&call.callee, &call.arguments);
         self.require_call(call);
         if referenced_global(&call.callee).is_some_and(|name| FETCH_GLOBALS.contains(&name)) {
             self.add_builtins(&FETCH_BUILTINS);
@@ -647,6 +676,7 @@ impl<'a> VisitJs<'a> for SpecifierCollector<'a, '_> {
     }
 
     fn visit_new_expression(&mut self, expression: &NewExpression<'a>) {
+        self.dynamic_function(&expression.callee, &expression.arguments);
         match global_name(&expression.callee) {
             Some("WebSocket") => self.add_builtins(&FETCH_BUILTINS),
             Some(name) if FETCH_GLOBALS.contains(&name) => self.add_builtins(&FETCH_BUILTINS),
@@ -1000,6 +1030,7 @@ mod tests {
         let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
         assert_eq!(analysis.warnings.len(), 1);
         assert!(analysis.warnings[0].message.contains("non-literal"));
+        assert!(analysis.warnings[0].message.contains("--include"));
         assert!(analysis.warnings[0].strict);
     }
 
@@ -1061,6 +1092,17 @@ mod tests {
             analyze(Path::new("/app/main.js"), &fs),
             Err(Error::Format { .. })
         ));
+    }
+
+    #[test]
+    fn warns_about_function_constructed_imports() {
+        let fs = MemoryFs::new(&[(
+            "/app/main.js",
+            "new Function('module', 'return import(module)');\n",
+        )]);
+        let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
+        assert_eq!(analysis.warnings.len(), 1);
+        assert!(analysis.warnings[0].message.contains("--include"));
     }
 
     #[test]
