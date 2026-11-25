@@ -681,6 +681,62 @@ mod unix {
     }
 
     #[test]
+    fn a_joined_asset_with_a_leading_slash_stays_under_dirname() {
+        let directory = TempDir::new("leading-slash-asset");
+        let project = directory.path().join("project");
+        fs::create_dir_all(project.join("nested/public")).expect("create nested project");
+        fs::write(project.join("package.json"), r#"{ "name": "app" }"#)
+            .expect("write project manifest");
+        let entry = project.join("nested/main.cjs");
+        fs::write(
+            &entry,
+            "const fs = require('node:fs');\nconst path = require('node:path');\nconsole.log(fs.readFileSync(path.join(__dirname, '/public/style.css'), 'utf8').trim());\n",
+        )
+        .expect("write entry reading a nested asset");
+        fs::write(project.join("nested/public/style.css"), "body {}\n").expect("write the asset");
+
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let output = directory.path().join("packed-app");
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            &project,
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+            ],
+        );
+        assert!(
+            result.status.success(),
+            "pack failed:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(!stderr.contains("static asset"), "{stderr}");
+
+        let pack = thinpack_pack::read_from_executable(&output)
+            .expect("read packed executable")
+            .expect("packed payload");
+        assert!(
+            pack.manifest
+                .files
+                .iter()
+                .any(|file| file.path == "/app/nested/public/style.css"),
+            "asset was not packed: {:?}",
+            pack.manifest
+                .files
+                .iter()
+                .map(|file| &file.path)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn custom_conditions_select_the_export_target() {
         let directory = TempDir::new("custom-conditions");
         let project = directory.path().join("project");
