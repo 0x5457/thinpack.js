@@ -151,18 +151,23 @@ jobs:
       # encoding tests would otherwise pin the tail of the run.
       - run: cargo test --workspace -- --test-threads 8
 
+  # A hosted macOS runner is regularly unavailable for 15 minutes, at which point
+  # GitHub cancels the queued job, so a pull request can wait a quarter of an hour
+  # for a job that never starts. macOS runs on main, on dispatch, and on a PR
+  # labelled `macos`; the Linux job covers the rest of the suite.
+  #
+  # Three jobs rather than one: the default-feature suite, the JSC suite and the JSC
+  # release template are three feature sets of the same crates, so one job rebuilds
+  # the workspace for each of them and a single artifact cache is warm for the last
+  # one only. Apart, the three overlap and main waits for the longest instead of the
+  # sum. This is the smallest split that keeps every job warm: `clippy` and the JSC
+  # tests share the JSC dependency set, while the release template builds a fourth
+  # configuration that nothing else uses.
   test-macos:
     name: Test (macos-latest)
-    # A hosted macOS runner is regularly unavailable for 15 minutes, at which
-    # point GitHub cancels the queued job, so a pull request can wait a quarter of
-    # an hour for a job that never starts. macOS runs on main, on dispatch, and on
-    # a PR labelled `macos`; the Linux job covers the rest of the suite.
-    #
-    # JSC lives in this job rather than a second macOS job: two queued jobs on the
-    # same runner pool made one of them wait out the 15-minute cancellation window.
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'macos')
     runs-on: macos-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
 
@@ -171,10 +176,46 @@ jobs:
           rustflags: ""
           cache: false
       - uses: Swatinem/rust-cache@v2
+        id: cache
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: actions/cache@v6
+        id: index
+        with:
+          path: ~/.cargo/registry/index
+          key: cargo-index-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-index-${{ runner.os }}-
+      - name: Cargo offline while the caches match
+        shell: bash
+        run: echo "CARGO_NET_OFFLINE=${{ steps.index.outputs.cache-hit == 'true' && steps.cache.outputs.cache-hit == 'true' }}" >> "$GITHUB_ENV"
 
       - run: cargo test --workspace -- --test-threads 8
+
+  test-macos-jsc:
+    name: Test (macos-latest, jsc)
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'macos')
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          rustflags: ""
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        id: cache
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: actions/cache@v6
+        id: index
+        with:
+          path: ~/.cargo/registry/index
+          key: cargo-index-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-index-${{ runner.os }}-
+      - name: Cargo offline while the caches match
+        shell: bash
+        run: echo "CARGO_NET_OFFLINE=${{ steps.index.outputs.cache-hit == 'true' && steps.cache.outputs.cache-hit == 'true' }}" >> "$GITHUB_ENV"
 
       # `cargo xtask lint` covers this locally on macOS; the job lints the two
       # crates that carry backend-specific code so the whole gate need not run twice.
@@ -186,6 +227,25 @@ jobs:
       # Two cases are skipped for engine limits: SharedArrayBuffer is absent from the
       # system framework and V8 natives syntax is V8-only. docs/gaps.md records them.
       - run: cargo test -p thinpack-rt --no-default-features --features backend-jsc,node-all -- --test-threads 8
+
+  dist-macos-jsc:
+    name: Dist (macos-latest, jsc)
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'macos')
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          rustflags: ""
+          cache: false
+      # The index cache and the offline switch stay out of this job: `cargo xtask
+      # dist` cross-compiles the second Apple target, whose crates a host-target
+      # registry need not carry.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - run: cargo xtask dist --backend jsc
 
