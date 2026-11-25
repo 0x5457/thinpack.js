@@ -353,12 +353,12 @@ function parentContext(parent) {
   return parent?.context || null;
 }
 
-async function runEntry(entry, number, suites, tests) {
+async function runEntry(entry, number, suites, tests, forceSkip = false) {
   const depth = Math.max(0, suites.length - 1);
   write(depth, `# Subtest: ${entry.name}`);
 
   let error;
-  let skippedEntry = Boolean(entry.options.skip);
+  let skippedEntry = forceSkip || Boolean(entry.options.skip);
   const parentTodo = suites.find((suite) => suite.options.todo)?.options.todo;
   let todoReason = entry.options.todo || parentTodo;
   let skipReason = entry.options.skip;
@@ -383,8 +383,16 @@ async function runEntry(entry, number, suites, tests) {
       if (entry.body && typeof entry.body.then === 'function') await entry.body;
       await runHookList(entry.before, context, activeStore);
       await runHookList(context._beforeHooks(), context, activeStore);
+      const only = entry.children.some((child) => child.options.only);
       for (let i = 0; i < entry.children.length; i++) {
-        const result = await runEntry(entry.children[i], i + 1, suiteChain, tests);
+        const child = entry.children[i];
+        const result = await runEntry(
+          child,
+          i + 1,
+          suiteChain,
+          tests,
+          only && !child.options.only,
+        );
         if (!result.ok) childFailed = true;
       }
     } catch (caught) {
@@ -516,7 +524,10 @@ async function executeRun() {
       while (rootIndex < root.children.length) {
         const entry = root.children[rootIndex];
         rootIndex++;
-        await runEntry(entry, rootIndex, [root], []);
+        // `only` marks the selected siblings; the rest are reported as skipped and
+        // never executed, the way Node's runner treats them.
+        const only = root.children.some((child) => child.options.only);
+        await runEntry(entry, rootIndex, [root], [], only && !entry.options.only);
       }
     }
     if (!rootAfterRan) {
