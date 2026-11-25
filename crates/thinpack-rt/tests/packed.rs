@@ -685,43 +685,32 @@ export async function load(url, context, nextLoad) {
     PackedTest {
         name: "packed::esm-register-require-stays-sync",
         directory: "esm-register-require-stays-sync",
-        entry: "/app/main.js",
+        entry: "/app/main.mjs",
         files: &[
             (
-                "/app/main.js",
+                "/app/main.mjs",
                 r"
-const assert = require('node:assert/strict');
-const nodeModule = require('node:module');
-const { pathToFileURL } = require('node:url');
+import assert from 'node:assert/strict';
+import { createRequire, register } from 'node:module';
 
-nodeModule.register('./hooks.mjs', pathToFileURL(__filename).href);
-const lib = require('./lib.mjs');
-assert.equal(lib.value, 'plain');
-console.log('require bypass ok');
+register('./hooks.mjs', import.meta.url);
+const require = createRequire(import.meta.url);
+assert.equal(require('./lib.mjs').value, 'plain');
 ",
             ),
             (
                 "/app/hooks.mjs",
                 r"
-import fs from 'node:fs';
-
-const refuse = async (hook) => {
-  await fs.promises.open(process.execPath, 'r');
-  throw new Error(`the asynchronous ${hook} hook ran during require()`);
-};
-
-export async function resolve() {
-  await refuse('resolve');
+async function fail() {
+  throw new Error('async hook ran during require()');
 }
 
-export async function load() {
-  await refuse('load');
-}
+export { fail as resolve, fail as load };
 ",
             ),
             ("/app/lib.mjs", "export const value = 'plain';\n"),
         ],
-        capabilities: &["assert", "fs", "module"],
+        capabilities: &["assert", "module"],
         error: None,
     },
     PackedTest {
