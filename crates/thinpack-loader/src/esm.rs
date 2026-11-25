@@ -29,7 +29,9 @@ pub struct EsmLoader {
     builtins: BuiltinSources,
     /// Export names read from the live `module.exports` of a builtin when its import was
     /// resolved. A static scan cannot see the alias assignments builtins use; Node reads
-    /// `ObjectKeys(module.exports)` and builds the facade once per module.
+    /// `ObjectKeys(module.exports)` and builds the facade once per module. The probe also
+    /// adds getter-backed names the module declares, since reading a getter to discover it
+    /// could initialize a capability the template omitted.
     builtin_exports: RefCell<HashMap<String, BTreeSet<String>>>,
     hook_loads: RefCell<HashMap<String, HookLoad>>,
     #[cfg(feature = "esm-hooks")]

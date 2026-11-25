@@ -1328,6 +1328,65 @@ console.log('builtin named exports ok');
         error: None,
     },
     PackedTest {
+        name: "packed::fs-named-exports",
+        directory: "fs-named-exports",
+        entry: "/app/main.mjs",
+        files: &[
+            (
+                "/app/main.mjs",
+                r"import {
+  Dir,
+  FileReadStream,
+  FileWriteStream,
+  ReadStream,
+  Utf8Stream,
+  WriteStream,
+  opendir,
+  opendirSync,
+  promises,
+  promises as promisesAgain,
+} from 'node:fs';
+import { createRequire } from 'node:module';
+
+if (promises !== promisesAgain) throw new Error('fs.promises identity mismatch');
+for (const [name, value] of Object.entries({
+  Dir, FileReadStream, FileWriteStream, ReadStream, Utf8Stream, WriteStream, opendir, opendirSync,
+})) {
+  if (typeof value !== 'function') throw new Error(`fs.${name} is not a function`);
+}
+
+// The named export must not have replaced Node's lazy getter.
+const fs = createRequire(import.meta.url)('node:fs');
+const descriptor = Object.getOwnPropertyDescriptor(fs, 'promises');
+if (typeof descriptor.get !== 'function' || 'value' in descriptor) {
+  throw new Error('fs.promises is no longer a getter');
+}
+if (fs.promises !== promises) throw new Error('fs.promises differs from the named export');
+if ((await promises.readFile('/app/fixture.txt', 'utf8')).trim() !== 'fs named exports ok') {
+  throw new Error('fs.promises.readFile mismatch');
+}
+console.log('fs named exports ok');
+",
+            ),
+            ("/app/fixture.txt", "fs named exports ok\n"),
+        ],
+        capabilities: &["fs", "module"],
+        error: None,
+    },
+    PackedTest {
+        name: "packed::fs-named-exports-missing",
+        directory: "fs-named-exports-missing",
+        entry: "/app/main.mjs",
+        files: &[(
+            "/app/main.mjs",
+            "import { notAnExport } from 'node:fs';\nconsole.log(notAnExport);\n",
+        )],
+        capabilities: &["fs"],
+        error: Some(&[
+            "The requested module 'node:fs' does not provide an export named 'notAnExport'",
+        ]),
+    },
+    PackedTest {
         name: "packed::cjs-named-exports",
         directory: "cjs-named-exports",
         entry: "/app/main.mjs",
