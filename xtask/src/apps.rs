@@ -588,12 +588,15 @@ fn report(
             );
         let _ = writeln!(
             markdown,
-            "| `{}` | {} | {:.2} MiB | {:.2} MiB | {:.2} MiB | {} | {} | {delta} |",
+            "| `{}` | {} | {:.2} MiB ({} B) | {:.2} MiB ({} B) | {:.2} MiB ({} B) | {} | {} | {delta} |",
             app.name,
             record.version,
             mib(record.bytes),
+            record.bytes,
             mib(record.gzip_bytes),
+            record.gzip_bytes,
             mib(record.payload_bytes),
+            record.payload_bytes,
             record.files,
             record.capabilities
         );
