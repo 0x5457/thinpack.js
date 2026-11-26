@@ -170,14 +170,16 @@ fn measure_all(config: &Config) -> Result<(), String> {
     let host = crate::build::host_triple()?;
     build_cli()?;
 
+    let hello = config.only.is_none().then(measure_hello).transpose()?;
     let apps: Vec<&'static App> = config.only.clone().unwrap_or_else(|| APPS.iter().collect());
     let mut measurements = Vec::with_capacity(apps.len());
-    for app in apps {
+    let measured = apps.into_iter().try_for_each(|app| {
         // Template builds take minutes and their output is captured; one line per app keeps
         // a CI log readable while the measurement runs.
         eprintln!("measuring {}", app.name);
         measurements.push((app, measure(app)?));
-    }
+        Ok::<(), String>(())
+    });
 
     let baseline = if config.write_baseline {
         None
@@ -188,12 +190,20 @@ fn measure_all(config: &Config) -> Result<(), String> {
     let regressions = baseline
         .as_ref()
         .map_or_else(Vec::new, |baseline| compare(baseline, &host, &measurements));
-    let markdown = report(config, &host, &measurements, comparable, &regressions);
+    let markdown = report(
+        config,
+        &host,
+        &measurements,
+        hello.as_ref(),
+        comparable,
+        &regressions,
+    );
 
     print!("{markdown}");
     if let Some(summary) = &config.summary {
         append_summary(summary, &markdown)?;
     }
+    measured?;
     if config.write_baseline {
         write_baseline(&config.baseline, &host, &measurements)?;
     }
@@ -233,24 +243,41 @@ fn measure(app: &'static App) -> Result<Record, String> {
     let package = installed(app, &fixture)?;
 
     let artifact = artifact_root().join(app.name);
-    if let Some(directory) = artifact.parent() {
-        fs::create_dir_all(directory)
-            .map_err(|error| format!("{}: {error}", directory.display()))?;
-    }
-
     let includes = include_paths(app, &fixture);
     pack(&fixture, &package.entry, &artifact, &includes)?;
-    let summary = PackSummary::read(&artifact)?;
-    let bytes = fs::metadata(&artifact)
+    verify(&artifact, &package.version)?;
+    measure_artifact(&artifact, app.package.to_owned(), package.version)
+}
+
+fn measure_hello() -> Result<Record, String> {
+    eprintln!("measuring hello");
+    let root = crate::repo_root();
+    let artifact = artifact_root().join(format!("hello{}", env::consts::EXE_SUFFIX));
+    let entry = Path::new(FIXTURES).join("hello/main.js");
+    pack(&root, &entry, &artifact, &[])?;
+    let output = Command::new(&artifact)
+        .output()
+        .map_err(|error| format!("cannot run {}: {error}", artifact.display()))?;
+    if !output.status.success() || String::from_utf8_lossy(&output.stdout).trim_end() != "hello" {
+        return Err(format!(
+            "{} did not print hello ({})",
+            artifact.display(),
+            output.status
+        ));
+    }
+    measure_artifact(&artifact, String::new(), "—".to_owned())
+}
+
+fn measure_artifact(artifact: &Path, package: String, version: String) -> Result<Record, String> {
+    let summary = PackSummary::read(artifact)?;
+    let bytes = fs::metadata(artifact)
         .map_err(|error| format!("{}: {error}", artifact.display()))?
         .len();
-    verify(&artifact, &package.version)?;
-
     Ok(Record {
-        package: app.package.to_owned(),
-        version: package.version,
+        package,
+        version,
         bytes,
-        gzip_bytes: gzip_size(&artifact)?,
+        gzip_bytes: gzip_size(artifact)?,
         payload_bytes: summary.payload_bytes,
         files: summary.files,
         capabilities: summary.capabilities,
@@ -345,6 +372,10 @@ fn pack(
     artifact: &Path,
     includes: &[PathBuf],
 ) -> Result<String, String> {
+    if let Some(directory) = artifact.parent() {
+        fs::create_dir_all(directory)
+            .map_err(|error| format!("{}: {error}", directory.display()))?;
+    }
     let cli = cli_path();
     let mut command = Command::new(&cli);
     command
@@ -563,6 +594,7 @@ fn report(
     config: &Config,
     host: &str,
     measurements: &[(&'static App, Record)],
+    hello: Option<&Record>,
     baseline: Option<&Baseline>,
     regressions: &[String],
 ) -> String {
@@ -579,9 +611,13 @@ fn report(
         "\n\n| App | Version | Artifact | gzip | Payload | Files | Caps | vs baseline |\n\
          | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |\n",
     );
-    for (app, record) in measurements {
+    let rows = hello
+        .into_iter()
+        .map(|record| ("console.log('hello')", record))
+        .chain(measurements.iter().map(|(app, record)| (app.name, record)));
+    for (name, record) in rows {
         let delta = baseline
-            .and_then(|baseline| baseline.apps.get(app.name))
+            .and_then(|baseline| baseline.apps.get(name))
             .map_or_else(
                 || "—".to_owned(),
                 |expected| format!("{:+.1}%", percent(record.bytes, expected.bytes)),
@@ -589,7 +625,7 @@ fn report(
         let _ = writeln!(
             markdown,
             "| `{}` | {} | {:.2} MiB ({} B) | {:.2} MiB ({} B) | {:.2} MiB ({} B) | {} | {} | {delta} |",
-            app.name,
+            name,
             record.version,
             mib(record.bytes),
             record.bytes,
@@ -649,6 +685,32 @@ mod tests {
             profile: "small".to_owned(),
             apps: [(app.name.to_owned(), record)].into(),
         }
+    }
+
+    #[test]
+    fn hello_shares_the_app_table_without_a_baseline_delta() {
+        let config = super::parse(&[]).unwrap();
+        let app = &APPS[0];
+        let measurements = [(app, record("1.0.0", 100, 50))];
+        let hello = record("—", 90, 40);
+        let baseline = baseline(app, record("1.0.0", 100, 50));
+        let output = super::report(
+            &config,
+            HOST,
+            &measurements,
+            Some(&hello),
+            Some(&baseline),
+            &[],
+        );
+        let rows: Vec<_> = output
+            .lines()
+            .filter(|line| line.starts_with("| `"))
+            .collect();
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].starts_with("| `console.log('hello')` | — |"));
+        assert!(rows[0].ends_with("| — |"));
+        assert!(rows[1].starts_with("| `tsc` | 1.0.0 |"));
+        assert!(rows[1].ends_with("| +0.0% |"));
     }
 
     #[test]
