@@ -25,6 +25,7 @@ pub(crate) const OPS: &[OpDecl] = &[
     op_require(),
     op_require_esm(),
     op_entry(),
+    op_module_file_url(),
     op_builtin_modules(),
     op_require_resolve(),
     op_module_lookup_paths(),
@@ -426,6 +427,13 @@ fn op_entry(state: Rc<RefCell<OpState>>) -> String {
             format!("v\0{}\0{url}\0{source}", fs.js_path(&filename))
         }
     }
+}
+
+/// The stack origin for source compiled from memory by `Module.prototype._compile`.
+#[op2]
+#[string]
+fn op_module_file_url(#[string] filename: &str) -> String {
+    file_url(Path::new(filename)).map_or_else(|| "thinpack:compile".to_owned(), String::from)
 }
 
 fn builtin_name(specifier: &str) -> String {

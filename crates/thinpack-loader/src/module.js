@@ -70,6 +70,31 @@
     return defaultJs;
   };
 
+  // Compiles and runs one CommonJS source in an existing module record. Loading a
+  // file and compiling caller-owned source share this half; callers own caching
+  // and formats.
+  const execute = (module, id, url, source, wrapped, stack) => {
+    const code = wrapped
+      ? source
+      : "(function (exports, require, module, __filename, __dirname) {" + source + "\n})";
+    const [factory, error] = Deno.core.evalContext(code, url);
+    if (error) {
+      throw error.isCompileError ? compileFailure(error.thrown, id) : error.thrown;
+    }
+
+    // Node runs the wrapper with the initial `module.exports` as `this`, even when
+    // the module later replaces `exports`.
+    const exports = module.exports;
+    return factory.call(
+      exports,
+      exports,
+      makeRequire(id, stack.concat(id)),
+      module,
+      id,
+      dirname(id),
+    );
+  };
+
   const evaluate = (id, url, source, json, stack, isMain = false, wrapped = false, parent = null, file = false) => {
     const cached = cache[id];
     if (cached !== undefined) return cached.exports;
@@ -85,44 +110,15 @@
     if (isMain) mainModule = module;
     cache[id] = module;
 
-    const handler = file ? extensionHandler(id) : defaultJs;
-    if (handler !== defaultJs && handler !== defaultJson && handler !== defaultNode) {
-      try {
-        handler(module, id);
-      } catch (failure) {
-        delete cache[id];
-        throw failure;
-      }
-      module.loaded = true;
-      return module.exports;
-    }
-
-    if (json || handler === defaultJson) {
-      try {
-        module.exports = JSON.parse(source);
-      } catch (failure) {
-        delete cache[id];
-        throw failure;
-      }
-      module.loaded = true;
-      return module.exports;
-    }
     try {
-      const code = wrapped
-        ? source
-        : "(function (exports, require, module, __filename, __dirname) {" + source + "\n})";
-      const [factory, error] = Deno.core.evalContext(code, url);
-      if (error) {
-        throw error.isCompileError ? compileFailure(error.thrown, id) : error.thrown;
+      const handler = file ? extensionHandler(id) : defaultJs;
+      if (handler !== defaultJs && handler !== defaultJson && handler !== defaultNode) {
+        handler(module, id);
+      } else if (json || handler === defaultJson) {
+        module.exports = JSON.parse(source);
+      } else {
+        execute(module, id, url, source, wrapped, stack);
       }
-
-      factory(
-        module.exports,
-        makeRequire(id, stack.concat(id)),
-        module,
-        id,
-        dirname(id),
-      );
     } catch (failure) {
       delete cache[id];
       throw failure;
@@ -537,6 +533,14 @@
       const cached = cache[id];
       if (cached !== undefined) return cached.exports;
       return evaluate(id, url, source, false, [id]);
+    },
+  });
+  // `Module.prototype._compile` compiles source the caller already has, under the
+  // instance's own exports. Node leaves that instance out of the require cache.
+  Object.defineProperty(globalThis, "__thinpack_module_compile__", {
+    value: (module, source, filename) => {
+      const id = String(filename);
+      return execute(module, id, ops.op_module_file_url(id), source, false, []);
     },
   });
 })();

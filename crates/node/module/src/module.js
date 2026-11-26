@@ -54,6 +54,11 @@
   Module.prototype.require = function require(specifier) {
     return createRequire(this.filename || this.id)(specifier);
   };
+  // Node compiles the source under this instance's exports and the given filename
+  // without adding the instance to the require cache. require-from-string relies on this.
+  Module.prototype._compile = function _compile(content, filename) {
+    return globalThis.__thinpack_module_compile__(this, content, filename);
+  };
   Module._resolveFilename = function _resolveFilename(specifier, parent) {
     const filename = parent && (parent.filename || parent.id);
     if (!filename) throw new Error("module._resolveFilename needs a parent module");
