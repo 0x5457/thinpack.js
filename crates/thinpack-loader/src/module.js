@@ -47,9 +47,71 @@
     return failure;
   };
 
-  // `require.extensions`/`Module._extensions`. The defaults are sentinels: a
-  // registered handler replaces the compile/parse path for that extension.
-  const defaultJs = () => {};
+  // Compiles and runs one CommonJS source in an existing module record. Loading a
+  // file and compiling caller-owned source share this half; callers own caching
+  // and formats. Source arrives unwrapped; this adds the one wrapper.
+  const execute = (module, id, url, source, stack) => {
+    const code =
+      "(function (exports, require, module, __filename, __dirname) {" + source + "\n})";
+    const [factory, error] = Deno.core.evalContext(code, url);
+    if (error) {
+      throw error.isCompileError ? compileFailure(error.thrown, id) : error.thrown;
+    }
+
+    // Node runs the wrapper with the initial `module.exports` as `this`, even when
+    // the module later replaces `exports`.
+    const exports = module.exports;
+    return factory.call(
+      exports,
+      exports,
+      makeRequire(id, stack.concat(id)),
+      module,
+      id,
+      dirname(id),
+    );
+  };
+
+  // What `evaluate` already read for a record whose extension handler is a
+  // wrapper: its source and the require stack the load path built. A wrapper
+  // delegates files it does not transform to `defaultJs`, which compiles that
+  // source through `_compile`. The synchronous handler call owns the entry.
+  const handlerLoads = new WeakMap();
+
+  // The half `Module.prototype._compile` and a delegated default `.js` handler
+  // share: compile caller-owned source into an existing module record. A module
+  // the loader is not loading has no require stack of its own.
+  const compile = (module, id, source) => {
+    const pending = handlerLoads.get(module);
+    return execute(
+      module,
+      id,
+      ops.op_module_file_url(id),
+      source,
+      pending === undefined ? [] : pending.stack,
+    );
+  };
+
+  // Node hands `require.extensions` a Module whose `_compile` compiles the source
+  // a wrapper supplies. Hooks such as pirates replace that method to transform
+  // what the default loader reads, so the record carries it on its prototype.
+  const modulePrototype = {
+    _compile(source, filename) {
+      return compile(this, String(filename), source);
+    },
+  };
+
+  // `require.extensions`/`Module._extensions`. JSON and native addons are
+  // sentinels that keep the loader's own parse path. `.js` keeps Node's default
+  // loader: a wrapper stores the handler it replaced and delegates the files it
+  // passes through. CommonJS source arrives unwrapped, so this never reads the
+  // file again. `evaluate` recognises the default and never needs the map.
+  const defaultJs = (module, filename) => {
+    const pending = handlerLoads.get(module);
+    if (pending === undefined) {
+      throw fail("ERR_INTERNAL_LOADER", "the default .js loader has no source for " + filename);
+    }
+    module._compile(pending.source, String(filename));
+  };
   const defaultJson = () => {};
   const defaultNode = () => {};
   const extensions = {
@@ -70,36 +132,12 @@
     return defaultJs;
   };
 
-  // Compiles and runs one CommonJS source in an existing module record. Loading a
-  // file and compiling caller-owned source share this half; callers own caching
-  // and formats.
-  const execute = (module, id, url, source, wrapped, stack) => {
-    const code = wrapped
-      ? source
-      : "(function (exports, require, module, __filename, __dirname) {" + source + "\n})";
-    const [factory, error] = Deno.core.evalContext(code, url);
-    if (error) {
-      throw error.isCompileError ? compileFailure(error.thrown, id) : error.thrown;
-    }
-
-    // Node runs the wrapper with the initial `module.exports` as `this`, even when
-    // the module later replaces `exports`.
-    const exports = module.exports;
-    return factory.call(
-      exports,
-      exports,
-      makeRequire(id, stack.concat(id)),
-      module,
-      id,
-      dirname(id),
-    );
-  };
-
-  const evaluate = (id, url, source, json, stack, isMain = false, wrapped = false, parent = null, file = false) => {
+  const evaluate = (id, url, source, json, stack, isMain = false, parent = null, file = false) => {
     const cached = cache[id];
     if (cached !== undefined) return cached.exports;
 
     const module = {
+      __proto__: modulePrototype,
       id,
       filename: id,
       exports: {},
@@ -113,11 +151,18 @@
     try {
       const handler = file ? extensionHandler(id) : defaultJs;
       if (handler !== defaultJs && handler !== defaultJson && handler !== defaultNode) {
-        handler(module, id);
+        // A wrapper only delegates during this call, so release the load however
+        // the handler returns.
+        handlerLoads.set(module, { source, stack });
+        try {
+          handler(module, id);
+        } finally {
+          handlerLoads.delete(module);
+        }
       } else if (json || handler === defaultJson) {
         module.exports = JSON.parse(source);
       } else {
-        execute(module, id, url, source, wrapped, stack);
+        execute(module, id, url, source, stack);
       }
     } catch (failure) {
       delete cache[id];
@@ -133,9 +178,9 @@
       case "b":
         return evaluate(id, url, body, false, stack, isMain);
       case "f":
-        return evaluate(id, url, body, false, stack, isMain, true, parent, true);
+        return evaluate(id, url, body, false, stack, isMain, parent, true);
       case "j":
-        return evaluate(id, url, body, true, stack, isMain, false, parent, true);
+        return evaluate(id, url, body, true, stack, isMain, parent, true);
       case "m":
         return requireEsm(id, url, parent);
       case "e":
@@ -602,9 +647,6 @@
   // `Module.prototype._compile` compiles source the caller already has, under the
   // instance's own exports. Node leaves that instance out of the require cache.
   Object.defineProperty(globalThis, "__thinpack_module_compile__", {
-    value: (module, source, filename) => {
-      const id = String(filename);
-      return execute(module, id, ops.op_module_file_url(id), source, false, []);
-    },
+    value: (module, source, filename) => compile(module, String(filename), source),
   });
 })();

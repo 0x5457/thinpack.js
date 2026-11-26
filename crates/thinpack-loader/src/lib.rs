@@ -128,10 +128,11 @@ const fn posix_separators(path: String) -> String {
     path
 }
 
-/// The engine name and wrapped source for a `CommonJS` module.
+/// The engine name and wrapped source `--warm-cache` precompiles for a
+/// `CommonJS` module.
 ///
-/// The loader and `--warm-cache` must produce the same `(eval flags, source,
-/// resource name)` key, so both build it here; a hashbang becomes a line comment once.
+/// The loader's JavaScript wrapper must build the same `(eval flags, source,
+/// resource name)` key, so both paths turn a hashbang into a line comment once.
 #[must_use]
 pub fn commonjs_script(path: &Path, source: &str) -> Option<(String, String)> {
     let name = file_url(path)?.to_string();
