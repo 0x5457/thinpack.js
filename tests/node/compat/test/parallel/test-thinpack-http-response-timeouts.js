@@ -2,7 +2,7 @@
 
 // The ordinary HTTP boundary Fastify uses: Node-shaped server timeout properties and
 // chaining, a callable ServerResponse with assignSocket, the client URL/options and
-// timeout argument forms, and a handled server connection timeout.
+// timeout argument forms, and the connection, header, request, and keep-alive deadlines.
 
 const assert = require('node:assert/strict');
 const http = require('node:http');
@@ -17,11 +17,39 @@ const listen = (server) => new Promise((resolve, reject) => {
 
 const close = (server) => new Promise((resolve) => server.close(resolve));
 
+const exchange = (port, payload) => new Promise((resolve, reject) => {
+  const socket = net.connect(port, '127.0.0.1');
+  let data = '';
+  const timer = setTimeout(() => {
+    socket.destroy();
+    reject(new Error(`exchange with ${port} did not close`));
+  }, 2000);
+  socket.setEncoding('utf8');
+  socket.on('data', (chunk) => { data += chunk; });
+  socket.once('error', reject);
+  socket.once('connect', () => socket.write(payload));
+  socket.once('close', () => {
+    clearTimeout(timer);
+    resolve(data);
+  });
+});
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const waitUntil = async (predicate, message, timeout = 1000) => {
+  const deadline = Date.now() + timeout;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error(message);
+    await delay(5);
+  }
+};
+
 (async () => {
   const defaults = http.createServer();
   assert.deepEqual(
-    [defaults.timeout, defaults.keepAliveTimeout, defaults.headersTimeout, defaults.requestTimeout],
-    [0, 5000, 60000, 300000],
+    [defaults.timeout, defaults.keepAliveTimeout, defaults.keepAliveTimeoutBuffer,
+      defaults.headersTimeout, defaults.requestTimeout],
+    [0, 5000, 1000, 60000, 300000],
   );
   assert.equal(defaults.setTimeout(17, () => {}), defaults);
   assert.equal(defaults.timeout, 17);
@@ -143,6 +171,91 @@ const close = (server) => new Promise((resolve) => server.close(resolve));
   } finally {
     unhandledSocket.destroy();
     await close(unhandled);
+  }
+
+  // Incomplete headers and bodies receive the ordinary 408 response.
+  const incomplete = http.createServer({
+    headersTimeout: 40,
+    requestTimeout: 80,
+    connectionsCheckingInterval: 10,
+  }, () => {});
+  const incompletePort = await listen(incomplete);
+  try {
+    assert.equal(
+      await exchange(incompletePort, 'GET /slow HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Partial: '),
+      'HTTP/1.1 408 Request Timeout\r\nConnection: close\r\n\r\n',
+    );
+    assert.equal(
+      await exchange(
+        incompletePort,
+        'POST /slow HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 5\r\n\r\nab',
+      ),
+      'HTTP/1.1 408 Request Timeout\r\nConnection: close\r\n\r\n',
+    );
+  } finally {
+    await close(incomplete);
+  }
+
+  // A keep-alive connection handles another request, then closes after its idle deadline.
+  const withKeepAlive = http.createServer({
+    keepAliveTimeout: 100,
+    keepAliveTimeoutBuffer: 0,
+    connectionsCheckingInterval: 10,
+  }, (req, res) => {
+    res.setHeader('content-length', '2');
+    res.end('ok');
+  });
+  const keepAlivePort = await listen(withKeepAlive);
+  const keepAliveSocket = net.connect(keepAlivePort, '127.0.0.1');
+  let keepAliveData = '';
+  let keepAliveClosed = false;
+  keepAliveSocket.setEncoding('utf8');
+  keepAliveSocket.on('data', (chunk) => { keepAliveData += chunk; });
+  keepAliveSocket.on('error', () => {});
+  keepAliveSocket.once('close', () => { keepAliveClosed = true; });
+  try {
+    await new Promise((resolve, reject) => {
+      keepAliveSocket.once('connect', resolve);
+      keepAliveSocket.once('error', reject);
+    });
+    keepAliveSocket.write('GET /1 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n');
+    await waitUntil(
+      () => keepAliveData.split('\r\n\r\nok').length > 1,
+      'first keep-alive response missing',
+    );
+    keepAliveSocket.write('GET /2 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n');
+    await waitUntil(
+      () => keepAliveData.split('\r\n\r\nok').length > 2,
+      'second keep-alive response missing',
+    );
+    assert.equal((keepAliveData.match(/HTTP\/1\.1 200 OK/g) ?? []).length, 2);
+    await waitUntil(() => keepAliveClosed, 'keep-alive socket did not close');
+  } finally {
+    keepAliveSocket.destroy();
+    await close(withKeepAlive);
+  }
+
+  // Pipelined requests keep their order even when the first handler outlives
+  // keepAliveTimeout; an idle deadline must not apply while work is outstanding.
+  const pipelined = http.createServer({
+    keepAliveTimeout: 20,
+    keepAliveTimeoutBuffer: 0,
+    connectionsCheckingInterval: 10,
+  }, (req, res) => {
+    res.setHeader('content-length', '3');
+    if (req.url === '/1') setTimeout(() => res.end('one'), 50);
+    else res.end('two');
+  });
+  const pipelinedPort = await listen(pipelined);
+  try {
+    const data = await exchange(
+      pipelinedPort,
+      'GET /1 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n' +
+      'GET /2 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n',
+    );
+    assert.match(data, /\r\n\r\noneHTTP\/1\.1 200 OK[\s\S]*\r\n\r\ntwo$/);
+  } finally {
+    await close(pipelined);
   }
 })().catch((error) => {
   console.error(error);
