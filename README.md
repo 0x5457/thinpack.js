@@ -37,7 +37,7 @@ A single-line `console.log("hello")` packs to **4.03 MiB** (4,230,361 bytes) on 
 
 In a [Linux x64 benchmark](docs/benchmarks.md), `tsc` packed to **9.0 MiB** with Thinpack and **109.6 MiB** with Bun `--compile`. Thinpack used QuickJS with `--rebuild` to link only the needed built-ins. The prebuilt template is larger, and QuickJS can trade startup speed for size.
 
-Thinpack supports many Node.js APIs, but it is not a drop-in replacement for Node.js. It does not load native Node addons. Use `--include <path>` to package extra files or computed local imports; paths are relative to the project root. Verify important commands on every platform you ship.
+Thinpack supports many Node.js APIs, but it is not a drop-in replacement for Node.js. It does not load native Node addons. Use `--include <path>` to package extra files or computed local imports; paths are relative to the project root. A config file that selects a package, such as Babel's `.babelrc`, must be included too; the packed copy lives under `/app`, not in the working directory. See the [Babel example](docs/reference.md#commands). Verify important commands on every platform you ship.
 
 - [Downloads, backend options, and CLI flags](docs/reference.md)
 - [Node.js compatibility limits](docs/reference.md#known-limits)

@@ -195,11 +195,75 @@
     return reply === "n" ? null : reply.slice(2).split("\0");
   };
 
+  const argumentError = (name, expected, value) => {
+    const { codes } = globalThis.__thinpack_require__(
+      "node:thinpack/internal/errors",
+    );
+    return new codes.ERR_INVALID_ARG_TYPE(name, expected, value);
+  };
+
+  // Node's `isRelative`: a `.`/`..` request or one starting with `./`, `../`
+  // or the Windows separators. Accepting `.\\` everywhere only changes which
+  // error a malformed path list reports on a non-Windows host.
+  const isRelative = (specifier) =>
+    typeof specifier === "string" &&
+    specifier[0] === "." &&
+    (specifier.length === 1 ||
+      specifier === ".." ||
+      specifier.startsWith("./") ||
+      specifier.startsWith("../") ||
+      specifier.startsWith(".\\") ||
+      specifier.startsWith("..\\"));
+
   const makeRequire = (filename, stack) => {
     const require = function require(specifier) {
       return load(specifier, filename, stack);
     };
-    const resolve = (specifier) => ops.op_require_resolve(specifier, filename);
+    const resolve = (specifier, options) => {
+      const paths = options !== null && typeof options === "object"
+        ? options.paths
+        : undefined;
+      if (paths === undefined) {
+        return ops.op_require_resolve(specifier, filename);
+      }
+      if (!Array.isArray(paths)) {
+        // Node resolves a builtin before it validates the options object.
+        if (lookupPaths(specifier, filename) === null) {
+          return ops.op_require_resolve(specifier, filename);
+        }
+        const { codes } = globalThis.__thinpack_require__(
+          "node:thinpack/internal/errors",
+        );
+        throw new codes.ERR_INVALID_ARG_VALUE("options.paths", paths);
+      }
+      for (let index = 0; index < paths.length; index++) {
+        if (typeof paths[index] === "string") continue;
+        if (!isRelative(specifier)) {
+          // Node resolves a builtin before it validates the options object.
+          if (lookupPaths(specifier, filename) === null) {
+            return ops.op_require_resolve(specifier, filename);
+          }
+          // `path.resolve` validates the single entry it receives, so the
+          // index in Node's message is always zero.
+          throw argumentError("paths[0]", "string", paths[index]);
+        }
+        // `_findPath` walks a relative search list, so only the entries before
+        // an invalid one are searched.
+        try {
+          return ops.op_require_resolve_paths(
+            specifier,
+            filename,
+            paths.slice(0, index),
+          );
+        } catch (error) {
+          if (error.code === "MODULE_NOT_FOUND") {
+            throw argumentError("paths", "array of strings", paths);
+          }
+          throw error;
+        }
+      }
+      return ops.op_require_resolve_paths(specifier, filename, paths);
+    };
     resolve.paths = (request) => lookupPaths(request, filename);
     require.resolve = resolve;
     require.extensions = extensions;

@@ -28,6 +28,7 @@ pub(crate) const OPS: &[OpDecl] = &[
     op_module_file_url(),
     op_builtin_modules(),
     op_require_resolve(),
+    op_require_resolve_paths(),
     op_module_lookup_paths(),
     op_module_global_paths(),
     op_esm_resolve_default(),
@@ -49,6 +50,27 @@ fn op_require_resolve(
     #[string] specifier: &str,
     #[string] parent: &str,
 ) -> Result<String, JsErrorBox> {
+    require_resolve(state, specifier, parent, None)
+}
+
+#[op2]
+#[string]
+fn op_require_resolve_paths(
+    state: Rc<RefCell<OpState>>,
+    #[string] specifier: &str,
+    #[string] parent: &str,
+    #[serde] paths: Vec<String>,
+) -> Result<String, JsErrorBox> {
+    let paths: Vec<PathBuf> = paths.iter().map(|path| search_path(path)).collect();
+    require_resolve(state, specifier, parent, Some(&paths))
+}
+
+fn require_resolve(
+    state: Rc<RefCell<OpState>>,
+    specifier: &str,
+    parent: &str,
+    search: Option<&[PathBuf]>,
+) -> Result<String, JsErrorBox> {
     let op_state = state.borrow();
     let builtins = op_state.borrow::<BuiltinSources>();
     if let Some(name) = builtin_specifier(builtins, specifier) {
@@ -61,12 +83,15 @@ fn op_require_resolve(
         )));
     }
     let fs = op_state.borrow::<ModuleFs>();
-    match thinpack_resolve::resolve_with_conditions(
-        specifier,
-        Path::new(parent),
-        fs,
-        &fs.conditions(false),
-    ) {
+    let parent_path = Path::new(parent);
+    let conditions = fs.conditions(false);
+    let resolved = search.map_or_else(
+        || thinpack_resolve::resolve_with_conditions(specifier, parent_path, fs, &conditions),
+        |paths| {
+            thinpack_resolve::resolve_from_paths(specifier, parent_path, paths, fs, &conditions)
+        },
+    );
+    match resolved {
         Ok(resolved) => Ok(fs.js_path(&resolved.path)),
         Err(error) => {
             let message = if matches!(error, thinpack_resolve::Error::NotFound) {
@@ -222,6 +247,18 @@ fn absolute(path: &Path) -> PathBuf {
             |_| thinpack_resolve::normalize(path),
             |directory| thinpack_resolve::normalize(&directory.join(path)),
         )
+    }
+}
+
+/// The base directory a `require.resolve` search path names. Payload paths stay
+/// rooted at `/app` on every platform; relative host paths resolve against the
+/// cwd, as they do in Node.
+fn search_path(path: &str) -> PathBuf {
+    let native = Path::new(path);
+    if native.is_absolute() || path.starts_with('/') {
+        thinpack_resolve::normalize(native)
+    } else {
+        absolute(native)
     }
 }
 

@@ -184,7 +184,30 @@ pub fn resolve_with_conditions(
     fs: &impl FileSystem,
     conditions: &Conditions,
 ) -> Result<Resolved, Error> {
-    let path = resolve_with(specifier, parent, fs, conditions)?;
+    let path = resolve_with(specifier, parent, None, fs, conditions)?;
+    let format = format_of(&path, fs)?;
+    Ok(Resolved { path, format })
+}
+
+/// [`resolve_with_conditions`] with the search list `require.resolve(request,
+/// { paths })` takes.
+///
+/// A relative request resolves against each directory in order; a bare request
+/// searches each directory's `node_modules` ancestors. Absolute requests,
+/// package self-references and `#` imports keep the caller's scope, as they do
+/// in Node.
+///
+/// # Errors
+///
+/// Returns the same errors as [`resolve_with_conditions`].
+pub fn resolve_from_paths(
+    specifier: &str,
+    parent: &Path,
+    paths: &[PathBuf],
+    fs: &impl FileSystem,
+    conditions: &Conditions,
+) -> Result<Resolved, Error> {
+    let path = resolve_with(specifier, parent, Some(paths), fs, conditions)?;
     let format = format_of(&path, fs)?;
     Ok(Resolved { path, format })
 }
@@ -226,7 +249,7 @@ pub fn resolve_path_with_conditions(
     fs: &impl FileSystem,
     conditions: &Conditions,
 ) -> Result<PathBuf, Error> {
-    let path = resolve_with(specifier, parent, fs, conditions)?;
+    let path = resolve_with(specifier, parent, None, fs, conditions)?;
     reject_native_addon(&path)?;
     Ok(path)
 }
@@ -258,6 +281,7 @@ fn reject_native_addon(path: &Path) -> Result<(), Error> {
 fn resolve_with(
     specifier: &str,
     parent: &Path,
+    search: Option<&[PathBuf]>,
     fs: &impl FileSystem,
     conditions: &Conditions,
 ) -> Result<PathBuf, Error> {
@@ -274,10 +298,20 @@ fn resolve_with(
         || specifier.starts_with("./")
         || specifier.starts_with("../")
     {
+        if let Some(paths) = search {
+            for path in paths {
+                match load_path(&path.join(specifier), fs) {
+                    Ok(resolved) => return Ok(resolved),
+                    Err(Error::NotFound) => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            return Err(Error::NotFound);
+        }
         let base = parent.parent().unwrap_or_else(|| Path::new("/"));
         return load_path(&normalize(&base.join(specifier)), fs);
     }
-    load_package(specifier, parent, fs, conditions)
+    load_package(specifier, parent, search, fs, conditions)
 }
 
 fn resolve_package_import(
@@ -302,7 +336,7 @@ fn resolve_package_import(
             if target.starts_with("../") {
                 return Err(Error::NotFound);
             }
-            return resolve_with(&target, &directory.join("index.js"), fs, conditions);
+            return resolve_with(&target, &directory.join("index.js"), None, fs, conditions);
         }
         match directory.parent() {
             Some(next) => directory = next,
@@ -314,6 +348,7 @@ fn resolve_package_import(
 fn load_package(
     specifier: &str,
     parent: &Path,
+    search: Option<&[PathBuf]>,
     fs: &impl FileSystem,
     conditions: &Conditions,
 ) -> Result<PathBuf, Error> {
@@ -323,9 +358,30 @@ fn load_package(
         let manifest = Manifest::read(&directory.join("package.json"), fs)?;
         return resolve_package(&directory, &manifest, subpath, conditions, fs);
     }
-    let directory = find_package(name, base, fs).ok_or(Error::NotFound)?;
-    let manifest = Manifest::read(&directory.join("package.json"), fs)?;
-    resolve_package(&directory, &manifest, subpath, conditions, fs)
+    let directories: Vec<PathBuf> = search.map_or_else(
+        || node_module_paths(base),
+        |paths| {
+            paths
+                .iter()
+                .flat_map(|path| node_module_paths(path))
+                .collect()
+        },
+    );
+    for directory in directories {
+        let directory = directory.join(name);
+        if !fs.is_dir(&directory) {
+            continue;
+        }
+        let manifest = Manifest::read(&directory.join("package.json"), fs)?;
+        let result = resolve_package(&directory, &manifest, subpath, conditions, fs);
+        // A legacy miss may fall through to the next explicit directory.
+        if search.is_some() && manifest.exports.is_none() && matches!(result, Err(Error::NotFound))
+        {
+            continue;
+        }
+        return result;
+    }
+    Err(Error::NotFound)
 }
 
 /// Node's package self-reference: the nearest package scope may import its own
@@ -381,13 +437,6 @@ fn resolve_package(
     }
 
     load_path(&directory.join(subpath), fs)
-}
-
-fn find_package(name: &str, base: &Path, fs: &impl FileSystem) -> Option<PathBuf> {
-    node_module_paths(base).into_iter().find_map(|directory| {
-        let candidate = directory.join(name);
-        fs.is_dir(&candidate).then_some(candidate)
-    })
 }
 
 fn split_package(specifier: &str) -> (&str, &str) {
@@ -658,6 +707,92 @@ mod tests {
         assert_eq!(util.path, PathBuf::from("/app/src/util.js"));
         let lib = resolve_from(&fs, "./lib", "/app/src/main.js").unwrap();
         assert_eq!(lib.path, PathBuf::from("/app/src/lib/index.js"));
+    }
+
+    #[test]
+    fn resolves_from_an_explicit_search_list() {
+        let fs = MemoryFs::new(&[
+            ("/app/main.js", ""),
+            ("/app/node_modules/pkg/index.js", ""),
+            ("/app/search/node_modules/pkg/index.js", ""),
+            ("/app/search/node_modules/legacy/index.js", ""),
+            ("/app/node_modules/legacy/feature.js", ""),
+            (
+                "/app/search/node_modules/exports-only/package.json",
+                r#"{"exports":"./index.js"}"#,
+            ),
+            ("/app/node_modules/exports-only/feature.js", ""),
+            ("/app/search/local.js", ""),
+            ("/other/empty/.keep", ""),
+            (
+                "/app/self/package.json",
+                r##"{"name":"self","exports":"./index.js","imports":{"#dep":"./dep.js"}}"##,
+            ),
+            ("/app/self/index.js", ""),
+            ("/app/self/dep.js", ""),
+            ("/app/self/main.js", ""),
+        ]);
+        let search = |specifier: &str, parent: &str, path: &str| {
+            resolve_from_paths(
+                specifier,
+                Path::new(parent),
+                &[PathBuf::from(path)],
+                &fs,
+                &Conditions::require(),
+            )
+        };
+
+        // The supplied directory wins over the caller-relative package.
+        assert_eq!(
+            search("pkg", "/app/main.js", "/app/search").unwrap().path,
+            PathBuf::from("/app/search/node_modules/pkg/index.js")
+        );
+        assert_eq!(
+            search("legacy/feature", "/app/main.js", "/app/search")
+                .unwrap()
+                .path,
+            PathBuf::from("/app/node_modules/legacy/feature.js")
+        );
+        assert!(matches!(
+            search("exports-only/feature", "/app/main.js", "/app/search"),
+            Err(Error::NotExported { .. })
+        ));
+        // A directory without the package does not fall back to the caller.
+        assert!(matches!(
+            search("pkg", "/app/main.js", "/other/empty"),
+            Err(Error::NotFound)
+        ));
+        // An explicit empty list searches nothing.
+        assert!(matches!(
+            resolve_from_paths(
+                "pkg",
+                Path::new("/app/main.js"),
+                &[],
+                &fs,
+                &Conditions::require()
+            ),
+            Err(Error::NotFound)
+        ));
+        // Relative requests resolve against the supplied directory.
+        assert_eq!(
+            search("./local.js", "/app/main.js", "/app/search")
+                .unwrap()
+                .path,
+            PathBuf::from("/app/search/local.js")
+        );
+        // Self-references and # imports keep the caller's package scope.
+        assert_eq!(
+            search("self", "/app/self/main.js", "/other/empty")
+                .unwrap()
+                .path,
+            PathBuf::from("/app/self/index.js")
+        );
+        assert_eq!(
+            search("#dep", "/app/self/main.js", "/other/empty")
+                .unwrap()
+                .path,
+            PathBuf::from("/app/self/dep.js")
+        );
     }
 
     #[test]

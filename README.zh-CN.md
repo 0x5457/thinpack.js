@@ -37,7 +37,7 @@ Windows x64 用户，请下载并解压[对应的发布包](https://github.com/t
 
 在 [Linux x64 基准测试](docs/benchmarks.md)中，同一个 `tsc` 用 Thinpack 打包后为 **9.0 MiB**，用 Bun `--compile` 打包后为 **109.6 MiB**。Thinpack 使用 QuickJS，配合 `--rebuild` 只链接所需的内置模块。直接使用预构建模板，产物会更大；QuickJS 也可能用较慢的启动速度换取更小的体积。
 
-Thinpack 支持许多 Node.js API，但不能完全替代 Node.js，也不能加载 Node 原生扩展。额外资源文件或运行时才确定路径的本地导入，可以用 `--include <path>` 加入包内，路径相对于项目根目录。分发前，请在每个目标平台上验证常用命令。
+Thinpack 支持许多 Node.js API，但不能完全替代 Node.js，也不能加载 Node 原生扩展。额外资源文件或运行时才确定路径的本地导入，可以用 `--include <path>` 加入包内，路径相对于项目根目录。选择包的配置文件（例如 Babel 的 `.babelrc`）也需要一并加入包内；包内副本位于 `/app` 下，而不是当前目录。参见 [Babel 示例（英文）](docs/reference.md#commands)。分发前，请在每个目标平台上验证常用命令。
 
 - [下载、引擎选项与命令行参数（英文）](docs/reference.md)
 - [Node.js 兼容性限制（英文）](docs/reference.md#known-limits)
