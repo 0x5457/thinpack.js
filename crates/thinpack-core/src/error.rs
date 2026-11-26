@@ -14,9 +14,9 @@ impl Error {
     }
 
     pub(crate) fn esm_load(specifier: &Url, error: CoreError) -> Self {
-        // `module instantiation failed` is synthesized by
-        // `vendor/deno_core/modules/map.rs` when the engine reports no exception; the
-        // unit test below pins the literal so a vendored bump cannot reword it silently.
+        // `module instantiation failed` is synthesized by the forked `deno_core` when
+        // the engine reports no exception; the unit test below pins the literal so a
+        // fork bump cannot reword it silently.
         if let CoreErrorKind::Js(exception) = error.as_kind()
             && exception.name.as_deref() == Some("Error")
             && exception.message.as_deref() == Some("module instantiation failed")

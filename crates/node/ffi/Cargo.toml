@@ -9,7 +9,7 @@ license.workspace = true
 thinpack-js.workspace = true
 thinpack-core.workspace = true
 deno_core.workspace = true
-deno_ffi = { path = "../../../vendor/deno_ffi" }
+deno_ffi = { git = "https://github.com/thinpack-js/deno", rev = "894c3bbc9b5a16a43f8fc3c53fbd7698fa8f2eb9" }
 
 [lints]
 workspace = true

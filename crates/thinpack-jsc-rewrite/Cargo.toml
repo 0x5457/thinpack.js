@@ -1,9 +1,0 @@
-[package]
-name = "thinpack-jsc-rewrite"
-description = "Token-aware ES module rewriting for the JavaScriptCore backend"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-
-[lints]
-workspace = true

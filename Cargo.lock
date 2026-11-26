@@ -847,6 +847,7 @@ dependencies = [
 [[package]]
 name = "deno_core"
 version = "0.413.0"
+source = "git+https://github.com/thinpack-js/deno?rev=894c3bbc9b5a16a43f8fc3c53fbd7698fa8f2eb9#894c3bbc9b5a16a43f8fc3c53fbd7698fa8f2eb9"
 dependencies = [
  "anyhow",
  "base64",
@@ -912,6 +913,7 @@ dependencies = [
 [[package]]
 name = "deno_ffi"
 version = "0.247.0"
+source = "git+https://github.com/thinpack-js/deno?rev=894c3bbc9b5a16a43f8fc3c53fbd7698fa8f2eb9#894c3bbc9b5a16a43f8fc3c53fbd7698fa8f2eb9"
 dependencies = [
  "cranelift",
  "cranelift-native",
@@ -974,6 +976,7 @@ dependencies = [
 [[package]]
 name = "deno_v8"
 version = "0.5.0"
+source = "git+https://github.com/thinpack-js/deno?rev=894c3bbc9b5a16a43f8fc3c53fbd7698fa8f2eb9#894c3bbc9b5a16a43f8fc3c53fbd7698fa8f2eb9"
 dependencies = [
  "v8",
  "v8x",
@@ -4420,6 +4423,7 @@ dependencies = [
 [[package]]
 name = "thinpack-jsc-rewrite"
 version = "0.2.0"
+source = "git+https://github.com/thinpack-js/v8x?rev=f1f4c537e66fdaf8a4a922e36e5441542fe671a7#f1f4c537e66fdaf8a4a922e36e5441542fe671a7"
 
 [[package]]
 name = "thinpack-loader"
@@ -5285,6 +5289,7 @@ dependencies = [
 [[package]]
 name = "v8x"
 version = "149.4.0-rc.4"
+source = "git+https://github.com/thinpack-js/v8x?rev=f1f4c537e66fdaf8a4a922e36e5441542fe671a7#f1f4c537e66fdaf8a4a922e36e5441542fe671a7"
 dependencies = [
  "bindgen 0.70.1",
  "bitflags",

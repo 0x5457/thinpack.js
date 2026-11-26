@@ -146,8 +146,12 @@ crates/
   thinpack-cli/      the thinpack CLI, links no JS engine
   thinpack-rt/       the thinpack-rt runtime binary
   node/<name>/       one crate per Node built-in module
-vendor/              patched copies of upstream crates (deno_core, deno_ffi, deno_v8, v8x)
 ```
+
+The engine crates — `deno_core`, `deno_v8`, `deno_ffi` and `v8x` — are thinpack forks consumed
+as pinned git dependencies (`thinpack-js/deno` and `thinpack-js/v8x`). Each fork branch carries
+a `THINPACK.md` with its delta from upstream and its upgrade procedure; there is no copy of
+their sources in this repository.
 
 The engine appears only in `thinpack-core`; module crates declare their own
 `deno_core::Extension` and never depend on a backend; `capabilities.toml` is the single source
