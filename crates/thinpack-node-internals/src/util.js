@@ -211,7 +211,15 @@
 
   const isError = (value) => types.isNativeError(value) || value instanceof Error;
 
-  const getSystemErrorMap = () => new Map(systemErrors);
+  // Each call hands out fresh tuples so rewriting a returned entry cannot
+  // change later results or the shared table.
+  const getSystemErrorMap = () => {
+    const map = new Map();
+    for (const [code, [name, message]] of systemErrors) {
+      map.set(code, [name, message]);
+    }
+    return map;
+  };
 
   const getSystemErrorName = (error) => {
     const entry = systemErrors.get(error);
