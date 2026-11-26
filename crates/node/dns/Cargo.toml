@@ -12,9 +12,12 @@ deno_error.workspace = true
 tokio.workspace = true
 hickory-resolver = "0.26"
 
-# Only the unix getaddrinfo path calls into the host libc directly.
+# The unix lookup path and the exported AI_* constants read the host headers.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock"] }
 
 [lints]
 workspace = true
