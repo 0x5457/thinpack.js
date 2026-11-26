@@ -173,12 +173,13 @@ fn measure_all(config: &Config) -> Result<(), String> {
     let hello = config.only.is_none().then(measure_hello).transpose()?;
     let apps: Vec<&'static App> = config.only.clone().unwrap_or_else(|| APPS.iter().collect());
     let mut measurements = Vec::with_capacity(apps.len());
-    for app in apps {
+    let measured = apps.into_iter().try_for_each(|app| {
         // Template builds take minutes and their output is captured; one line per app keeps
         // a CI log readable while the measurement runs.
         eprintln!("measuring {}", app.name);
         measurements.push((app, measure(app)?));
-    }
+        Ok::<(), String>(())
+    });
 
     let baseline = if config.write_baseline {
         None
@@ -202,6 +203,7 @@ fn measure_all(config: &Config) -> Result<(), String> {
     if let Some(summary) = &config.summary {
         append_summary(summary, &markdown)?;
     }
+    measured?;
     if config.write_baseline {
         write_baseline(&config.baseline, &host, &measurements)?;
     }
