@@ -51,30 +51,35 @@ const APPS: &[App] = &[
         package: "typescript",
         entry: None,
         includes: &[],
+        compile: Some("input.ts"),
     },
     App {
         name: "prettier",
         package: "prettier",
         entry: None,
         includes: &["node_modules/prettier/internal"],
+        compile: None,
     },
     App {
         name: "eslint",
         package: "eslint",
         entry: None,
         includes: &[],
+        compile: None,
     },
     App {
         name: "terser",
         package: "terser",
         entry: None,
         includes: &[],
+        compile: None,
     },
     App {
         name: "js-yaml",
         package: "js-yaml",
         entry: None,
         includes: &[],
+        compile: None,
     },
     App {
         name: "pi",
@@ -83,6 +88,7 @@ const APPS: &[App] = &[
         // `dist/cli.js` is the statically linked CLI and the closure the README reports.
         entry: Some("dist/cli.js"),
         includes: &[],
+        compile: None,
     },
 ];
 
@@ -95,6 +101,8 @@ struct App {
     entry: Option<&'static str>,
     /// Paths under the fixture that hold data the analyzer cannot see.
     includes: &'static [&'static str],
+    /// Source under the fixture that the packed app must compile to the `.js` file beside it.
+    compile: Option<&'static str>,
 }
 
 struct Config {
@@ -246,6 +254,9 @@ fn measure(app: &'static App) -> Result<Record, String> {
     let includes = include_paths(app, &fixture);
     pack(&fixture, &package.entry, &artifact, &includes)?;
     verify(&artifact, &package.version)?;
+    if let Some(source) = app.compile {
+        verify_compile(&fixture, &artifact, app.name, source)?;
+    }
     measure_artifact(&artifact, app.package.to_owned(), package.version)
 }
 
@@ -435,6 +446,51 @@ impl PackSummary {
             payload_bytes: payload_len as u64,
         })
     }
+}
+
+fn verify_compile(fixture: &Path, artifact: &Path, name: &str, source: &str) -> Result<(), String> {
+    let source = fixture.join(source);
+    let expected = source.with_extension("js");
+    let output_dir = artifact_root().join(format!("{name}-compile"));
+    if output_dir.exists() {
+        fs::remove_dir_all(&output_dir)
+            .map_err(|error| format!("{}: {error}", output_dir.display()))?;
+    }
+    let output = Command::new(artifact)
+        .args(["--pretty", "false", "--target", "ES2020", "--outDir"])
+        .arg(&output_dir)
+        .arg(&source)
+        .output()
+        .map_err(|error| format!("cannot run {}: {error}", artifact.display()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "{} did not compile {} ({}):\n{}{}",
+            artifact.display(),
+            source.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    let emitted = output_dir.join(
+        expected
+            .file_name()
+            .ok_or_else(|| format!("{}: no file name", expected.display()))?,
+    );
+    let expected =
+        fs::read(&expected).map_err(|error| format!("{}: {error}", expected.display()))?;
+    let actual = fs::read(&emitted).map_err(|error| format!("{}: {error}", emitted.display()))?;
+    if actual != expected {
+        return Err(format!(
+            "{} compiled {} to:\n{}\nexpected:\n{}",
+            artifact.display(),
+            source.display(),
+            String::from_utf8_lossy(&actual).trim_end(),
+            String::from_utf8_lossy(&expected).trim_end()
+        ));
+    }
+    Ok(())
 }
 
 fn verify(artifact: &Path, version: &str) -> Result<(), String> {
