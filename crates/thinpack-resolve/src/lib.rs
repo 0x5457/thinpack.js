@@ -367,9 +367,21 @@ fn load_package(
                 .collect()
         },
     );
-    let directory = find_package(name, &directories, fs).ok_or(Error::NotFound)?;
-    let manifest = Manifest::read(&directory.join("package.json"), fs)?;
-    resolve_package(&directory, &manifest, subpath, conditions, fs)
+    for directory in directories {
+        let directory = directory.join(name);
+        if !fs.is_dir(&directory) {
+            continue;
+        }
+        let manifest = Manifest::read(&directory.join("package.json"), fs)?;
+        let result = resolve_package(&directory, &manifest, subpath, conditions, fs);
+        // A legacy miss may fall through to the next explicit directory.
+        if search.is_some() && manifest.exports.is_none() && matches!(result, Err(Error::NotFound))
+        {
+            continue;
+        }
+        return result;
+    }
+    Err(Error::NotFound)
 }
 
 /// Node's package self-reference: the nearest package scope may import its own
@@ -425,13 +437,6 @@ fn resolve_package(
     }
 
     load_path(&directory.join(subpath), fs)
-}
-
-fn find_package(name: &str, directories: &[PathBuf], fs: &impl FileSystem) -> Option<PathBuf> {
-    directories.iter().find_map(|directory| {
-        let candidate = directory.join(name);
-        fs.is_dir(&candidate).then_some(candidate)
-    })
 }
 
 fn split_package(specifier: &str) -> (&str, &str) {
@@ -710,6 +715,13 @@ mod tests {
             ("/app/main.js", ""),
             ("/app/node_modules/pkg/index.js", ""),
             ("/app/search/node_modules/pkg/index.js", ""),
+            ("/app/search/node_modules/legacy/index.js", ""),
+            ("/app/node_modules/legacy/feature.js", ""),
+            (
+                "/app/search/node_modules/exports-only/package.json",
+                r#"{"exports":"./index.js"}"#,
+            ),
+            ("/app/node_modules/exports-only/feature.js", ""),
             ("/app/search/local.js", ""),
             ("/other/empty/.keep", ""),
             (
@@ -735,6 +747,16 @@ mod tests {
             search("pkg", "/app/main.js", "/app/search").unwrap().path,
             PathBuf::from("/app/search/node_modules/pkg/index.js")
         );
+        assert_eq!(
+            search("legacy/feature", "/app/main.js", "/app/search")
+                .unwrap()
+                .path,
+            PathBuf::from("/app/node_modules/legacy/feature.js")
+        );
+        assert!(matches!(
+            search("exports-only/feature", "/app/main.js", "/app/search"),
+            Err(Error::NotExported { .. })
+        ));
         // A directory without the package does not fall back to the caller.
         assert!(matches!(
             search("pkg", "/app/main.js", "/other/empty"),
