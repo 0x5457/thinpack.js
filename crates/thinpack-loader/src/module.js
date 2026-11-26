@@ -25,6 +25,11 @@
   const fail = (code, message) => {
     const error = new Error(message);
     error.code = code;
+    // Mark the property for deno_core's exception conversion, which carries only
+    // the additional properties named by this symbol across a worker boundary.
+    Object.defineProperty(error, Symbol.for("errorAdditionalPropertyKeys"), {
+      value: ["code"],
+    });
     return error;
   };
 

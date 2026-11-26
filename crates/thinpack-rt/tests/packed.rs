@@ -350,6 +350,68 @@ parentPort.postMessage('worker loaded from the packed VFS');
         error: None,
     },
     PackedTest {
+        name: "packed::worker-missing-entry-code",
+        directory: "worker-missing-entry-code",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r#"
+const { Worker } = require('node:worker_threads');
+
+const events = [];
+const worker = new Worker('./not-there.cjs');
+worker.on('error', (error) => events.push(['error', error.code ?? null]));
+worker.on('exit', (code) => {
+  events.push(['exit', code]);
+  const observed = JSON.stringify(events);
+  if (observed !== '[["error","MODULE_NOT_FOUND"],["exit",1]]') {
+    throw new Error(`unexpected worker events: ${observed}`);
+  }
+  console.log(observed);
+});
+"#,
+        )],
+        capabilities: &["worker_threads"],
+        error: None,
+    },
+    PackedTest {
+        name: "packed::worker-error-message-control",
+        directory: "worker-error-message-control",
+        entry: "/app/main.js",
+        files: &[
+            (
+                "/app/main.js",
+                r"
+const { Worker } = require('node:worker_threads');
+
+const events = [];
+const worker = new Worker('/app/worker.js');
+worker.on('error', (error) => events.push(['error', error.message, error.code ?? null]));
+worker.on('exit', (code) => {
+  events.push(['exit', code]);
+  const [kind, message, errorCode] = events[0];
+  const observed = JSON.stringify(events);
+  if (kind !== 'error' || errorCode !== null || !message.includes('worker\u0000message')) {
+    throw new Error(`unexpected worker error: ${observed}`);
+  }
+  if (events[1][0] !== 'exit' || events[1][1] !== 1) {
+    throw new Error(`unexpected worker exit: ${observed}`);
+  }
+  console.log(observed);
+});
+",
+            ),
+            (
+                "/app/worker.js",
+                r"
+throw new Error('worker\u0000message');
+",
+            ),
+        ],
+        capabilities: &["worker_threads"],
+        error: None,
+    },
+    PackedTest {
         name: "packed::fs-main-and-worker-mount",
         directory: "fs-main-and-worker-mount",
         entry: "/app/main.js",

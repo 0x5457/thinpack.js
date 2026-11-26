@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::task::{Poll, Waker};
 
 use deno_core::SharedArrayBufferStore;
+use deno_core::serde::Serialize;
 
 use crate::Error;
 
@@ -196,12 +197,29 @@ pub fn install_boot(boot: impl Fn(WorkerSpec) -> Result<(), Error> + Send + Sync
 #[derive(Default)]
 struct WorkerState {
     parent_port: PortId,
-    outcome: Mutex<Option<Result<(), String>>>,
+    outcome: Mutex<Option<Result<(), WorkerError>>>,
     waiters: Mutex<Vec<Waker>>,
 }
 
+/// A worker failure, as the parent's `error` event observes it.
+#[derive(Clone, Debug, Serialize)]
+#[serde(crate = "deno_core::serde")]
+pub struct WorkerError {
+    pub message: String,
+    pub code: Option<String>,
+}
+
+impl WorkerError {
+    fn new(error: &Error) -> Self {
+        Self {
+            message: error.to_string(),
+            code: error.code(),
+        }
+    }
+}
+
 impl WorkerState {
-    fn finish(&self, outcome: Result<(), String>) {
+    fn finish(&self, outcome: Result<(), WorkerError>) {
         *self.outcome.lock().expect("worker outcome") = Some(outcome);
         for waker in drain_waiters(&self.waiters) {
             waker.wake();
@@ -221,10 +239,10 @@ impl WorkerState {
         .await;
     }
 
-    fn error(&self) -> String {
+    fn error(&self) -> Option<WorkerError> {
         match &*self.outcome.lock().expect("worker outcome") {
-            Some(Ok(())) | None => String::new(),
-            Some(Err(message)) => message.clone(),
+            Some(Err(error)) => Some(error.clone()),
+            Some(Ok(())) | None => None,
         }
     }
 
@@ -267,7 +285,7 @@ pub fn spawn(spec: WorkerSpec) -> Result<WorkerId, Error> {
         .spawn(move || {
             let outcome = match boot(spec) {
                 Ok(()) => Ok(()),
-                Err(error) => Err(error.to_string()),
+                Err(error) => Err(WorkerError::new(&error)),
             };
             child.finish(outcome);
         })
@@ -291,11 +309,8 @@ pub async fn wait_exit(id: WorkerId) -> bool {
 }
 
 #[must_use]
-pub fn worker_error(id: WorkerId) -> String {
-    workers()
-        .get(&id)
-        .map(|state| state.error())
-        .unwrap_or_default()
+pub fn worker_error(id: WorkerId) -> Option<WorkerError> {
+    workers().get(&id).and_then(|state| state.error())
 }
 
 pub fn terminate(id: WorkerId) {

@@ -1,7 +1,7 @@
 use std::error::Error as StdError;
 use std::fmt;
 
-use deno_core::error::{CoreError, CoreErrorKind};
+use deno_core::error::{CoreError, CoreErrorKind, JsError};
 use deno_core::url::Url;
 use deno_error::{JsErrorClass, PropertyValue};
 
@@ -11,6 +11,21 @@ pub struct Error(Box<dyn StdError + Send + Sync>);
 impl Error {
     pub fn new(error: impl Into<Box<dyn StdError + Send + Sync>>) -> Self {
         Self(error.into())
+    }
+
+    /// The JavaScript error's `code` property, when the failure came from one.
+    #[must_use]
+    pub fn code(&self) -> Option<String> {
+        if let Some(error) = self.0.downcast_ref::<JsError>() {
+            return additional_code(&error.additional_properties);
+        }
+        match self.0.downcast_ref::<CoreError>()?.as_kind() {
+            CoreErrorKind::Js(error) => additional_code(&error.additional_properties),
+            CoreErrorKind::JsBox(error) => error
+                .get_additional_properties()
+                .find_map(|(key, value)| (key == "code").then(|| value.to_string())),
+            _ => None,
+        }
     }
 
     pub(crate) fn esm_load(specifier: &Url, error: CoreError) -> Self {
@@ -28,6 +43,13 @@ impl Error {
         }
         Self::from(error)
     }
+}
+
+fn additional_code(properties: &[(String, String)]) -> Option<String> {
+    properties
+        .iter()
+        .find(|(key, _)| key == "code")
+        .map(|(_, value)| value.clone())
 }
 
 impl fmt::Display for Error {
@@ -52,7 +74,7 @@ impl StdError for Error {
 
 impl From<Box<deno_core::error::JsError>> for Error {
     fn from(error: Box<deno_core::error::JsError>) -> Self {
-        Self::new(error)
+        Self(error)
     }
 }
 
