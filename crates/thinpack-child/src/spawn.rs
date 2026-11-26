@@ -15,6 +15,7 @@ enum Stream {
     Inherit,
     Ignore,
     /// A descriptor in this process, moved to the stream's own number in the child.
+    #[cfg(unix)]
     Descriptor(i32),
 }
 
@@ -63,8 +64,6 @@ impl Stream {
             Self::Ignore => ProcessStdio::null(),
             #[cfg(unix)]
             Self::Descriptor(fd) => duplicate_stdio(fd)?,
-            #[cfg(not(unix))]
-            Self::Descriptor(_) => unreachable!("stdio descriptors are rejected by the parser"),
         })
     }
 }
