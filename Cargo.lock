@@ -4423,7 +4423,7 @@ dependencies = [
 [[package]]
 name = "thinpack-jsc-rewrite"
 version = "0.2.0"
-source = "git+https://github.com/thinpack-js/v8x?rev=5cff7ff752e2f8dfecd3e2b2acb33342d087f028#5cff7ff752e2f8dfecd3e2b2acb33342d087f028"
+source = "git+https://github.com/thinpack-js/v8x?rev=0b06c5644b73a684b716d6af54da413d8ea6165a#0b06c5644b73a684b716d6af54da413d8ea6165a"
 
 [[package]]
 name = "thinpack-loader"
@@ -5289,7 +5289,7 @@ dependencies = [
 [[package]]
 name = "v8x"
 version = "149.4.0-rc.4"
-source = "git+https://github.com/thinpack-js/v8x?rev=5cff7ff752e2f8dfecd3e2b2acb33342d087f028#5cff7ff752e2f8dfecd3e2b2acb33342d087f028"
+source = "git+https://github.com/thinpack-js/v8x?rev=0b06c5644b73a684b716d6af54da413d8ea6165a#0b06c5644b73a684b716d6af54da413d8ea6165a"
 dependencies = [
  "bindgen 0.70.1",
  "bitflags",
