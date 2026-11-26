@@ -712,10 +712,15 @@ fn is_create_require_call(expression: &Expression<'_>, semantic: &Semantic<'_>) 
     let Expression::CallExpression(call) = expression else {
         return false;
     };
-    let Some(callee) = call.callee.without_parentheses().get_identifier_reference() else {
+    is_create_require(&call.callee, semantic)
+}
+
+/// Whether `callee` is the `createRequire` imported from `node:module`.
+fn is_create_require(callee: &Expression<'_>, semantic: &Semantic<'_>) -> bool {
+    let Some(identifier) = callee.without_parentheses().get_identifier_reference() else {
         return false;
     };
-    let Some(symbol) = referenced_symbol(callee, semantic.scoping()) else {
+    let Some(symbol) = referenced_symbol(identifier, semantic.scoping()) else {
         return false;
     };
     let declaration = semantic.symbol_declaration(symbol);
@@ -723,6 +728,54 @@ fn is_create_require_call(expression: &Expression<'_>, semantic: &Semantic<'_>) 
         if specifier.imported.name() == "createRequire")
         && matches!(semantic.nodes().parent_kind(declaration.id()),
             AstKind::ImportDeclaration(import) if matches!(import.source.value.as_str(), Some("node:module" | "module")))
+}
+
+/// Whether `call` is a direct call of the named `createRequire` import with the
+/// importing module's own URL as its base:
+/// `createRequire(import.meta.url)(<specifier>)`.
+///
+/// A relative specifier resolves against the file `createRequire` names, so the
+/// call is a dependency edge of this module only when the base is this module's
+/// `import.meta.url`. Another base, or a same-name helper, is never a direct
+/// require; [`importer_url_is_stable`] decides whether that URL is provably
+/// unchanged.
+pub(super) fn is_importer_require_call(call: &CallExpression<'_>, semantic: &Semantic<'_>) -> bool {
+    if !is_create_require(&call.callee, semantic) {
+        return false;
+    }
+    let Some(argument) = call.arguments.first().and_then(Argument::as_expression) else {
+        return false;
+    };
+    let Expression::StaticMemberExpression(member) = argument.without_parentheses() else {
+        return false;
+    };
+    member.property.name == "url" && matches!(&member.object, Expression::ImportMeta(_))
+}
+
+/// Whether every `import.meta` in the module is the `.url` member passed straight
+/// to a proven `createRequire` call.
+///
+/// `import.meta.url` is an ordinary writable property, so a syntactic member read
+/// is only the module URL while no other expression can write it or expose
+/// `import.meta` to code that does. `import.meta` has no symbol or reference for
+/// the existing mutation helpers, so every AST use is checked directly: passing the
+/// string to a proven `createRequire` copies it and cannot change the URL.
+pub(super) fn importer_url_is_stable(semantic: &Semantic<'_>) -> bool {
+    let nodes = semantic.nodes();
+    nodes.iter().all(|node| {
+        if !matches!(node.kind(), AstKind::ImportMeta(_)) {
+            return true;
+        }
+        let AstKind::StaticMemberExpression(member) = nodes.parent_kind(node.id()) else {
+            return false;
+        };
+        member.property.name == "url"
+            && matches!(&member.object, Expression::ImportMeta(_))
+            && matches!(
+                nodes.parent_kind(nodes.parent_id(node.id())),
+                AstKind::CallExpression(call) if is_create_require(&call.callee, semantic)
+            )
+    })
 }
 
 fn is_esbuild_wrapper(expression: &Expression<'_>, semantic: &Semantic<'_>) -> bool {
