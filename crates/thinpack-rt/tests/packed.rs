@@ -1461,6 +1461,63 @@ console.log('module.parent ok');
         error: None,
     },
     PackedTest {
+        name: "packed::module-compile",
+        directory: "module-compile",
+        entry: "/app/main.js",
+        files: &[
+            (
+                "/app/main.js",
+                r#"
+const assert = require('node:assert/strict');
+const Module = require('node:module');
+
+const filename = '/app/sub/generated.cjs';
+const generated = new Module(filename, module);
+generated.filename = filename;
+const initial = generated.exports;
+generated._compile(
+  `"use strict";
+const assert = require('node:assert/strict');
+const initial = exports;
+module.initialExports = initial;
+module.compiledThis = this;
+assert.equal(this, initial);
+assert.equal(module.exports, initial);
+assert.equal(require('./dep.cjs'), 42);
+assert.equal(require('./dep.cjs'), 42);
+assert.equal(require.cache['/app/sub/dep.cjs'].exports, 42);
+assert.equal(require.cache['/app/sub/generated.cjs'], undefined);
+module.exports = {
+  value: require('./dep.cjs'),
+  filename: __filename,
+  dirname: __dirname,
+  sameThis: this === initial,
+};
+module.compiledThisAfter = this;`,
+  filename,
+);
+
+assert.equal(generated.initialExports, initial);
+assert.equal(generated.compiledThis, initial);
+assert.equal(generated.compiledThisAfter, initial);
+assert.deepEqual(generated.exports, {
+  value: 42,
+  filename,
+  dirname: '/app/sub',
+  sameThis: true,
+});
+assert.equal(generated.loaded, false);
+assert.equal(Module._cache[filename], undefined);
+assert.equal(Module._cache['/app/sub/dep.cjs'].exports, 42);
+console.log('module compile ok');
+"#,
+            ),
+            ("/app/sub/dep.cjs", "module.exports = 42;\n"),
+        ],
+        capabilities: &["assert", "module"],
+        error: None,
+    },
+    PackedTest {
         name: "packed::process-env-export",
         directory: "process-env-export",
         entry: "/app/main.mjs",
