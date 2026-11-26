@@ -91,12 +91,23 @@ thinpack pack node_modules/node-red/red.js \
 ```
 
 A package selected by a config file may also need an explicit include. For Babel 8
-with `@babel/preset-typescript` in `.babelrc`:
+with `@babel/preset-typescript` in `.babelrc`, include both the config and the preset:
 
 ```sh
 thinpack pack node_modules/@babel/cli/bin/babel.js \
-  --include node_modules/@babel/preset-typescript -o babel
+  --include node_modules/@babel/preset-typescript \
+  --include .babelrc -o babel
 ```
+
+The same `.babelrc` works under Node. A packed executable reads it from the payload at
+`/app/.babelrc`, because its working directory is on the host:
+
+```sh
+./babel --config-file /app/.babelrc input.ts
+```
+
+If the working directory has a `.babelrc` of its own, add `--no-babelrc` so Babel reads only
+the packed config.
 
 For Marp CLI 4.5.1 HTML output, include its runtime-selected `bespoke.js`.
 Marp also has a fallback that references `emitter` but is not used by this workflow:

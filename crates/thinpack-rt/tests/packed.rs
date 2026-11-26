@@ -1423,6 +1423,100 @@ console.log('require.resolve errors ok');
         error: None,
     },
     PackedTest {
+        name: "packed::require-resolve-paths",
+        directory: "require-resolve-paths",
+        entry: "/app/main.js",
+        files: &[
+            (
+                "/app/main.js",
+                r"
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+// The ordinary lookup still uses the caller.
+assert.equal(require.resolve('caller-dep'), '/app/node_modules/caller-dep/index.js');
+assert.equal(
+  require.resolve('caller-dep', { paths: undefined }),
+  '/app/node_modules/caller-dep/index.js',
+);
+
+// A supplied list replaces the caller's search paths and can point at the payload.
+assert.equal(
+  require.resolve('sub-dep', { paths: ['/app/sub'] }),
+  '/app/sub/node_modules/sub-dep/index.js',
+);
+assert.equal(
+  require.resolve('sub-dep', { paths: ['/app/sub/../sub'] }),
+  '/app/sub/node_modules/sub-dep/index.js',
+);
+assert.equal(require.resolve('./local.js', { paths: ['/app/sub'] }), '/app/sub/local.js');
+
+// A host directory outside the payload is read from the machine, not /app.
+const host = process.cwd();
+const empty = path.join(host, 'empty');
+fs.mkdirSync(empty);
+fs.mkdirSync(path.join(host, 'node_modules/hostdep'), { recursive: true });
+fs.writeFileSync(path.join(host, 'node_modules/hostdep/index.js'), 'module.exports = 1;\n');
+assert.equal(
+  require.resolve('hostdep', { paths: ['.'] }),
+  path.join(host, 'node_modules/hostdep/index.js'),
+);
+
+// A missing explicit target does not fall back to the package beside the caller.
+assert.throws(
+  () => require.resolve('caller-dep', { paths: [empty] }),
+  { code: 'MODULE_NOT_FOUND' },
+);
+assert.throws(() => require.resolve('caller-dep', { paths: [] }), { code: 'MODULE_NOT_FOUND' });
+assert.throws(() => require.resolve('caller-dep', { paths: ['.'] }), { code: 'MODULE_NOT_FOUND' });
+
+assert.throws(
+  () => require.resolve('caller-dep', { paths: '/app/sub' }),
+  { code: 'ERR_INVALID_ARG_VALUE' },
+);
+assert.throws(
+  () => require.resolve('caller-dep', { paths: [undefined] }),
+  { code: 'ERR_INVALID_ARG_TYPE' },
+);
+assert.throws(
+  () => require.resolve('caller-dep', { paths: [,] }),
+  { code: 'ERR_INVALID_ARG_TYPE' },
+);
+// A bare request validates the whole list before resolving.
+assert.throws(
+  () => require.resolve('sub-dep', { paths: ['/app/sub', 5] }),
+  { code: 'ERR_INVALID_ARG_TYPE' },
+);
+// A relative request walks the list, so a later invalid entry is never read.
+assert.equal(
+  require.resolve('./local.js', { paths: ['/app/sub', 5] }),
+  '/app/sub/local.js',
+);
+assert.throws(
+  () => require.resolve('./missing.js', { paths: ['/app/sub', 5] }),
+  { code: 'ERR_INVALID_ARG_TYPE' },
+);
+// Node returns a builtin before validating the options object.
+assert.equal(require.resolve('node:path', { paths: '/app/sub' }), 'node:path');
+assert.equal(require.resolve('node:path', { paths: [,] }), 'node:path');
+console.log('require.resolve paths ok');
+",
+            ),
+            (
+                "/app/node_modules/caller-dep/index.js",
+                "module.exports = 'caller';\n",
+            ),
+            (
+                "/app/sub/node_modules/sub-dep/index.js",
+                "module.exports = 'sub';\n",
+            ),
+            ("/app/sub/local.js", "module.exports = 'local';\n"),
+        ],
+        capabilities: &["assert", "fs", "path"],
+        error: None,
+    },
+    PackedTest {
         name: "packed::node-test-only",
         directory: "node-test-only",
         entry: "/app/main.js",
