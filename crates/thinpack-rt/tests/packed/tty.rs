@@ -35,6 +35,11 @@ assert.deepEqual(process.stdout.getWindowSize(), [100, 30]);
 assert.equal(process.stderr.columns, 100);
 assert.equal(process.stdin.isRaw, false);
 
+// The color methods are shared with tty.WriteStream.prototype and load on use;
+// a packed runtime must not require them during extension startup.
+assert.equal(process.stdout.getColorDepth({ FORCE_COLOR: '3' }), 24);
+assert.equal(process.stdout.hasColors(256, { FORCE_COLOR: '2' }), true);
+
 process.stdin.setRawMode(true);
 assert.equal(process.stdin.isRaw, true);
 console.log('raw-on');
