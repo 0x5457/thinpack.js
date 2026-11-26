@@ -92,6 +92,12 @@ the divergence, why it exists, and where it lives.
   promises there; the local async-local case is skipped on JSC
   (`thinpack-js/v8x`, `src/jsc/isolate.rs`).
 
+## HTTP
+
+- `server.timeout` is an idle socket timeout. `headersTimeout`, `requestTimeout`
+  and `keepAliveTimeout` are accepted but do not enforce deadlines or close idle
+  keep-alive sockets yet (`crates/node/http/src/http.js`, tracked in #212).
+
 ## TLS
 
 - rustls performs real hostname verification, but the peer certificate never

@@ -108,144 +108,226 @@
     }
   }
 
-  class ServerResponse extends Writable {
-    #headers = new Map();
-    #sent = false;
-    #chunked = false;
+  const kHeaders = Symbol("headers");
+  const kChunked = Symbol("chunked");
 
-    constructor(socket, req) {
-      super();
+  const headersSent = (action) => {
+    const error = new Error(`Cannot ${action} headers after they are sent to the client`);
+    error.code = "ERR_HTTP_HEADERS_SENT";
+    return error;
+  };
+
+  // Node's ServerResponse is a function constructor: injectors inherit from it with
+  // util.inherits() and call `http.ServerResponse.call(this, req)`.
+  function ServerResponse(req) {
+    Writable.call(this);
+    this.socket = null;
+    this.req = req;
+    this.statusCode = 200;
+    this.statusMessage = undefined;
+    this.headersSent = false;
+    this.sendDate = true;
+    // A standalone response is keep-alive until the server applies the request's
+    // connection policy.
+    this._keepAlive = true;
+    this._hasBody = req?.method !== "HEAD";
+    this._header = null;
+    this._headerSent = false;
+    this[kHeaders] = new Map();
+    this[kChunked] = false;
+  }
+
+  Object.setPrototypeOf(ServerResponse.prototype, Writable.prototype);
+  Object.setPrototypeOf(ServerResponse, Writable);
+
+  Object.defineProperty(ServerResponse.prototype, "connection", {
+    get() {
+      return this.socket;
+    },
+    set(socket) {
       this.socket = socket;
-      this.req = req;
-      this.statusCode = 200;
-      this.statusMessage = undefined;
-      this.headersSent = false;
-      this.sendDate = true;
+    },
+  });
+
+  ServerResponse.prototype.setHeader = function setHeader(name, value) {
+    if (this._header !== null) throw headersSent("set");
+    this[kHeaders].set(String(name).toLowerCase(), value);
+    return this;
+  };
+
+  ServerResponse.prototype.getHeader = function getHeader(name) {
+    return this[kHeaders].get(String(name).toLowerCase());
+  };
+
+  ServerResponse.prototype.getHeaders = function getHeaders() {
+    return Object.fromEntries(this[kHeaders]);
+  };
+
+  ServerResponse.prototype.hasHeader = function hasHeader(name) {
+    return this[kHeaders].has(String(name).toLowerCase());
+  };
+
+  ServerResponse.prototype.removeHeader = function removeHeader(name) {
+    if (this._header !== null) throw headersSent("remove");
+    this[kHeaders].delete(String(name).toLowerCase());
+  };
+
+  ServerResponse.prototype.writeHead = function writeHead(statusCode, statusMessage, headers) {
+    if (this._header !== null) throw headersSent("write");
+    this.statusCode = statusCode;
+    if (typeof statusMessage === "string") {
+      this.statusMessage = statusMessage;
+    } else if (statusMessage !== undefined) {
+      headers = statusMessage;
+    }
+    if (headers) {
+      const entries = Array.isArray(headers) || typeof headers[Symbol.iterator] === "function"
+        ? headers
+        : Object.entries(headers);
+      for (const [name, value] of entries) {
+        this.setHeader(name, value);
+      }
+    }
+    this.statusMessage ??= STATUS_CODES[this.statusCode] ?? "Unknown";
+    this._storeHeader();
+    return this;
+  };
+
+  ServerResponse.prototype._storeHeader = function _storeHeader() {
+    if (String(this.getHeader("connection") ?? "").toLowerCase() === "close") {
       this._keepAlive = false;
     }
+    const length = this.getHeader("content-length");
+    this[kChunked] = length === undefined && this._hasBody && this.req?.httpVersion === "1.1";
 
-    setHeader(name, value) {
-      this.#headers.set(String(name).toLowerCase(), value);
-      return this;
-    }
-
-    getHeader(name) {
-      return this.#headers.get(String(name).toLowerCase());
-    }
-
-    getHeaders() {
-      return Object.fromEntries(this.#headers);
-    }
-
-    hasHeader(name) {
-      return this.#headers.has(String(name).toLowerCase());
-    }
-
-    removeHeader(name) {
-      this.#headers.delete(String(name).toLowerCase());
-    }
-
-    writeHead(statusCode, statusMessage, headers) {
-      this.statusCode = statusCode;
-      if (typeof statusMessage === "string") {
-        this.statusMessage = statusMessage;
-      } else if (statusMessage !== undefined) {
-        headers = statusMessage;
+    const lines = [];
+    for (const [name, value] of this[kHeaders]) {
+      if (name === "content-length" || name === "transfer-encoding" || name === "connection") {
+        continue;
       }
-      if (headers) {
-        const entries = Array.isArray(headers) || typeof headers[Symbol.iterator] === "function"
-          ? headers
-          : Object.entries(headers);
-        for (const [name, value] of entries) {
-          this.setHeader(name, value);
-        }
-      }
-      return this;
-    }
-
-    #head() {
-      if (this.#sent) return;
-      if (String(this.getHeader("connection") ?? "").toLowerCase() === "close") {
-        this._keepAlive = false;
-      }
-      const length = this.getHeader("content-length");
-      this.#chunked =
-        length === undefined && this.req.method !== "HEAD" && this.req.httpVersion === "1.1";
-
-      const lines = [];
-      for (const [name, value] of this.#headers) {
-        if (name === "content-length" || name === "transfer-encoding" || name === "connection") {
-          continue;
-        }
-        if (Array.isArray(value)) {
-          for (const entry of value) lines.push(`${name}: ${entry}`);
-        } else {
-          lines.push(`${name}: ${value}`);
-        }
-      }
-      if (length !== undefined) {
-        lines.push(`Content-Length: ${length}`);
-      } else if (this.#chunked) {
-        lines.push("Transfer-Encoding: chunked");
-      } else if (this.req.method === "HEAD") {
-        lines.push("Content-Length: 0");
-      }
-      if (this.sendDate && !this.#headers.has("date")) {
-        lines.push(`Date: ${new Date().toUTCString()}`);
-      }
-      lines.push(`Connection: ${this._keepAlive ? "keep-alive" : "close"}`);
-
-      this.#sent = true;
-      this.headersSent = true;
-      const statusMessage =
-        this.statusMessage ?? STATUS_CODES[this.statusCode] ?? "Unknown";
-      this.socket.write(
-        `HTTP/1.1 ${this.statusCode} ${statusMessage}\r\n${lines.join("\r\n")}\r\n\r\n`,
-      );
-    }
-
-    flushHeaders() {
-      this.#head();
-    }
-
-    _write(chunk, encoding, callback) {
-      try {
-        this.#head();
-        if (this.req.method !== "HEAD" && chunk.length > 0) {
-          if (this.#chunked) {
-            this.socket.write(`${chunk.length.toString(16)}\r\n`);
-            this.socket.write(chunk);
-            this.socket.write("\r\n");
-          } else {
-            this.socket.write(chunk);
-          }
-        }
-        callback();
-      } catch (error) {
-        callback(error);
+      if (Array.isArray(value)) {
+        for (const entry of value) lines.push(`${name}: ${entry}`);
+      } else {
+        lines.push(`${name}: ${value}`);
       }
     }
-
-    _final(callback) {
-      try {
-        this.#head();
-        if (this.#chunked) this.socket.write("0\r\n\r\n");
-        this.headersSent = true;
-        if (!this._keepAlive) this.socket.end();
-        callback();
-      } catch (error) {
-        callback(error);
-      }
+    if (length !== undefined) {
+      lines.push(`Content-Length: ${length}`);
+    } else if (this[kChunked]) {
+      lines.push("Transfer-Encoding: chunked");
+    } else if (!this._hasBody) {
+      lines.push("Content-Length: 0");
     }
-  }
+    if (this.sendDate && !this[kHeaders].has("date")) {
+      lines.push(`Date: ${new Date().toUTCString()}`);
+    }
+    lines.push(`Connection: ${this._keepAlive ? "keep-alive" : "close"}`);
+
+    const statusMessage = this.statusMessage ?? STATUS_CODES[this.statusCode] ?? "Unknown";
+    this._header = `HTTP/1.1 ${this.statusCode} ${statusMessage}\r\n` +
+      `${lines.join("\r\n")}\r\n\r\n`;
+    this.headersSent = true;
+  };
+
+  ServerResponse.prototype._sendHead = function _sendHead() {
+    if (this._header === null) this._storeHeader();
+    if (this._headerSent) return;
+    this._headerSent = true;
+    this.socket.write(this._header);
+  };
+
+  ServerResponse.prototype._writeChunk = function _writeChunk(chunk) {
+    if (!this._hasBody || chunk.length === 0) return;
+    if (this[kChunked]) {
+      this.socket.write(`${chunk.length.toString(16)}\r\n`);
+      this.socket.write(chunk);
+      this.socket.write("\r\n");
+    } else {
+      this.socket.write(chunk);
+    }
+  };
+
+  ServerResponse.prototype._finish = function _finish() {
+    this._sendHead();
+    if (this[kChunked]) this.socket.write("0\r\n\r\n");
+    if (!this._keepAlive) this.socket.end();
+  };
+
+  ServerResponse.prototype.assignSocket = function assignSocket(socket) {
+    if (socket._httpMessage) {
+      const error = new Error("ServerResponse has an already assigned socket");
+      error.code = "ERR_HTTP_SOCKET_ASSIGNED";
+      throw error;
+    }
+    socket._httpMessage = this;
+    this.socket = socket;
+    this.emit("socket", socket);
+    if (this._header !== null) this._sendHead();
+  };
+
+  ServerResponse.prototype.detachSocket = function detachSocket(socket) {
+    if (socket._httpMessage === this) socket._httpMessage = null;
+    this.socket = null;
+  };
+
+  ServerResponse.prototype.flushHeaders = function flushHeaders() {
+    if (this.socket === null) {
+      if (this._header === null) this._storeHeader();
+      return;
+    }
+    this._sendHead();
+  };
+
+  ServerResponse.prototype._write = function _write(chunk, encoding, callback) {
+    try {
+      this._sendHead();
+      this._writeChunk(chunk);
+      callback();
+    } catch (error) {
+      callback(error);
+    }
+  };
+
+  ServerResponse.prototype._final = function _final(callback) {
+    try {
+      this._finish();
+      callback();
+    } catch (error) {
+      callback(error);
+    }
+  };
+
+  // A socket timeout is advisory until the request, response, and server all ignore
+  // it; this mirrors Node's socketOnTimeout.
+  const socketOnTimeout = (socket, request) => {
+    const requestHandled =
+      request !== null && !request.complete && request.emit("timeout", socket);
+    const responseHandled = socket._httpMessage?.emit("timeout", socket);
+    const serverHandled = socket.server.emit("timeout", socket);
+    if (!requestHandled && !responseHandled && !serverHandled) socket.destroy();
+  };
 
   class Server extends net.Server {
     constructor(options, requestListener) {
+      if (typeof options === "function") {
+        requestListener = options;
+        options = {};
+      }
       super();
+      // Node's defaults and option values. The connection timeout is enforced;
+      // header, request, and keep-alive deadlines are follow-up work.
       this.timeout = 0;
-      this.keepAliveTimeout = 5000;
+      this.keepAliveTimeout = options?.keepAliveTimeout ?? 5000;
+      this.requestTimeout = options?.requestTimeout ?? 300000;
+      this.headersTimeout = options?.headersTimeout ?? Math.min(60000, this.requestTimeout);
       this.on("connection", (socket) => this.#connection(socket));
       if (requestListener) this.on("request", requestListener);
+    }
+
+    setTimeout(msecs, callback) {
+      this.timeout = msecs;
+      if (callback) this.on("timeout", callback);
+      return this;
     }
 
     #connection(socket) {
@@ -254,6 +336,21 @@
       let request = null;
       let upgrade = false;
       let upgraded = false;
+      const pending = [];
+
+      socket.server = server;
+      if (server.timeout > 0) socket.setTimeout(server.timeout);
+      const onTimeout = () => socketOnTimeout(socket, request);
+      socket.on("timeout", onTimeout);
+
+      const startResponse = (request, response) => {
+        response.assignSocket(socket);
+        response.once("finish", () => {
+          response.detachSocket(socket);
+          if (response._keepAlive) pending.shift()?.();
+        });
+        server.emit("request", request, response);
+      };
 
       const parser = new Parser(REQUEST, {
         onMessageBegin() {
@@ -281,11 +378,15 @@
             return 2;
           }
 
-          const response = new ServerResponse(socket, request);
+          const response = new ServerResponse(request);
           response._keepAlive = parser.keepAlive;
           request.shouldKeepAlive = parser.keepAlive;
           request.res = response;
-          server.emit("request", request, response);
+          if (socket._httpMessage) {
+            pending.push(() => startResponse(request, response));
+          } else {
+            startResponse(request, response);
+          }
           return 0;
         },
         onBody: (piece) => request.push(piece),
@@ -308,6 +409,9 @@
         if (rest === null) return;
         upgraded = true;
         parser.destroy();
+        // The socket belongs to the upgrade handler now; Node removes its HTTP timeout
+        // listener at this handoff.
+        socket.removeListener("timeout", onTimeout);
         if (server.listenerCount("upgrade") === 0) {
           socket.destroy();
         } else {
@@ -438,6 +542,18 @@
 
     abort() {
       this.destroy();
+    }
+
+    setTimeout(milliseconds, callback) {
+      if (callback) this.once("timeout", callback);
+      const arm = (socket) => {
+        const apply = () => socket.setTimeout(milliseconds, () => this.emit("timeout"));
+        if (socket.connecting) socket.once("connect", apply);
+        else apply();
+      };
+      if (this.socket !== null) arm(this.socket);
+      else this.once("socket", arm);
+      return this;
     }
 
     destroy(error) {
@@ -600,11 +716,26 @@
     socket.on("close", cleanup);
   };
 
-  const request = (options, callback, secure = false) =>
-    new ClientRequest(options, callback, secure);
+  const request = (input, options, callback, secure = false) => {
+    if (typeof options === "function") {
+      callback = options;
+      options = undefined;
+    }
+    if (typeof input !== "string" && !(input instanceof URL)) {
+      return new ClientRequest(input, callback, secure);
+    }
+    const url = new URL(String(input));
+    return new ClientRequest({
+      protocol: url.protocol,
+      hostname: url.hostname,
+      port: url.port || undefined,
+      path: url.pathname + url.search,
+      ...options,
+    }, callback, secure);
+  };
 
-  const get = (options, callback, secure = false) => {
-    const req = new ClientRequest(options, callback, secure);
+  const get = (input, options, callback, secure = false) => {
+    const req = request(input, options, callback, secure);
     req.end();
     return req;
   };

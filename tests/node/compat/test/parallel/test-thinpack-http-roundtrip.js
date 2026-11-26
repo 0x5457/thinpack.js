@@ -37,7 +37,9 @@ const request = (port, options, body) => new Promise((resolve, reject) => {
     req.on('data', (chunk) => chunks.push(chunk));
     req.on('end', () => {
       const body = Buffer.concat(chunks).toString();
-      res.setHeader('x-request-header', req.headers['x-request-header']);
+      if (req.headers['x-request-header'] !== undefined) {
+        res.setHeader('x-request-header', req.headers['x-request-header']);
+      }
       res.setHeader('x-method', req.method);
       res.setHeader('x-split-name', req.headers['x-split-name'] ?? '');
       if (req.url === '/fixed') {
@@ -96,6 +98,35 @@ const request = (port, options, body) => new Promise((resolve, reject) => {
     await new Promise((resolve) => raw.once('close', resolve));
     assert.match(rawResponse, /\r\nx-split-name: joined\r\n/i);
     assert.match(rawResponse, /\r\n\r\nabc$/);
+
+    // Two requests in one write are answered in order on one connection.
+    const pipelined = net.connect(port, '127.0.0.1');
+    await new Promise((resolve) => pipelined.once('connect', resolve));
+    let pipelinedResponse = '';
+    pipelined.setEncoding('utf8');
+    pipelined.on('data', (chunk) => {
+      pipelinedResponse += chunk;
+    });
+    pipelined.write(
+      'GET /fixed HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n' +
+      'GET /fixed HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n',
+    );
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error('pipelined response timed out'));
+      }, 2000);
+      pipelined.once('close', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+    assert.equal(pipelinedResponse.match(/HTTP\/1\.1 200/g).length, 2);
+    assert.match(
+      pipelinedResponse,
+      /Connection: keep-alive[\s\S]*HTTP\/1\.1 200[\s\S]*Connection: close/,
+    );
+    assert.match(pipelinedResponse, /GET HTTP\/1\.1 200/);
+    assert.match(pipelinedResponse, /GET $/);
 
     const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
     connections = 0;
