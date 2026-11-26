@@ -90,6 +90,23 @@ thinpack pack node_modules/node-red/red.js \
   --include node_modules/@node-red/nodes -o node-red
 ```
 
+A package selected by a config file may also need an explicit include. For Babel 8
+with `@babel/preset-typescript` in `.babelrc`:
+
+```sh
+thinpack pack node_modules/@babel/cli/bin/babel.js \
+  --include node_modules/@babel/preset-typescript -o babel
+```
+
+For Marp CLI 4.5.1 HTML output, include its runtime-selected `bespoke.js`.
+Marp also has a fallback that references `emitter` but is not used by this workflow:
+
+```sh
+thinpack pack node_modules/@marp-team/marp-cli/marp-cli.js \
+  --include node_modules/@marp-team/marp-cli/lib/bespoke.js \
+  --allow-missing emitter -o marp
+```
+
 The optionality of a guarded `require`/`import()` or an `optionalDependencies` entry extends
 through the static dependencies it reaches: a missing module there becomes a warning, and the
 handled import fails at run time as it does under Node. A file also reached by a required edge
