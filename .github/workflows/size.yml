@@ -66,22 +66,3 @@ jobs:
       # exits, so a failed run still shows what moved.
       - name: Pack and measure
         run: cargo xtask apps --summary "$GITHUB_STEP_SUMMARY"
-
-      # Keep the minimal runtime measurement visible even if an app regresses.
-      - name: Measure hello
-        if: ${{ !cancelled() }}
-        shell: bash
-        run: |
-          cargo build --release --locked -p thinpack-cli
-          artifact="$RUNNER_TEMP/thinpack-hello"
-          target/release/thinpack pack tests/apps/hello/main.js --rebuild --source "$PWD" -o "$artifact"
-          test "$("$artifact")" = "hello"
-          raw=$(wc -c < "$artifact")
-          compressed=$(gzip -9 -n -c "$artifact" | wc -c)
-          {
-            echo "### Minimal packed executable"
-            echo
-            echo '| Program | Artifact (bytes) | gzip (bytes) |'
-            echo '| --- | ---: | ---: |'
-            printf '| `console.log("hello")` | %s | %s |\n' "$raw" "$compressed"
-          } >> "$GITHUB_STEP_SUMMARY"
