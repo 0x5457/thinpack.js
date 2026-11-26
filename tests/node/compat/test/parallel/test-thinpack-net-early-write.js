@@ -16,6 +16,7 @@ const listen = (server) => new Promise((resolve, reject) => {
 const closeServer = (server) => new Promise((resolve) => server.close(resolve));
 const record = (callbacks) => (error) => callbacks.push(error?.code ?? 'ok');
 const BEFORE = 'ERR_SOCKET_CLOSED_BEFORE_CONNECTION';
+const REFUSED_ERRNO = { win32: -4078, darwin: -61 }[process.platform] ?? -111;
 
 const client = (socket) => {
   const state = { data: '', finish: 0, end: 0, error: null };
@@ -119,8 +120,9 @@ async function destroyedAndRefused() {
 
   assert.deepEqual(
     [[destroyed.state.error, destroyed.callbacks],
-     [refused.state.error.code, refused.callbacks]],
-    [[null, [BEFORE, BEFORE]], ['ECONNREFUSED', [BEFORE, 'ECONNREFUSED']]],
+     [refused.state.error.code, refused.state.error.errno, refused.callbacks]],
+    [[null, [BEFORE, BEFORE]],
+     ['ECONNREFUSED', REFUSED_ERRNO, [BEFORE, 'ECONNREFUSED']]],
   );
 }
 
