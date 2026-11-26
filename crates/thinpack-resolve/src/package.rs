@@ -211,7 +211,11 @@ fn lookup_star(
         if key.len() < prefix.len() + suffix.len() {
             continue;
         }
-        if best.is_none_or(|(best_prefix, _, _)| prefix.len() > best_prefix.len()) {
+        // Node compares the prefix first, then the whole pattern, so
+        // `./x/*.js` wins over `./x/*` for `./x/a.js`.
+        if best.is_none_or(|(best_prefix, best_suffix, _)| {
+            (prefix.len(), suffix.len()) > (best_prefix.len(), best_suffix.len())
+        }) {
             best = Some((prefix, suffix, target));
         }
     }
@@ -348,6 +352,15 @@ mod tests {
         assert_eq!(
             resolve_subpath(&value, "other", &Conditions::require()),
             None
+        );
+    }
+
+    #[test]
+    fn prefers_the_longer_pattern_when_prefixes_match() {
+        let value = exports(r#"{"./x/*": "./old/*.js", "./x/*.js": "./new/*.js"}"#);
+        assert_eq!(
+            resolve_subpath(&value, "x/a.js", &Conditions::require()).as_deref(),
+            Some("new/a.js")
         );
     }
 
