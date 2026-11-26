@@ -403,6 +403,65 @@ mod unix {
     }
 
     #[test]
+    fn a_missing_resolve_only_target_packs_with_a_warning() {
+        let directory = TempDir::new("missing-resolve-only-target");
+        fs::write(
+            directory.path().join("package.json"),
+            r#"{ "name": "app", "type": "commonjs" }"#,
+        )
+        .expect("write package manifest");
+        let entry = directory.path().join("main.cjs");
+        fs::write(&entry, "console.log(require.resolve('./missing.js'));\n").expect("write entry");
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let output = directory.path().join("packed-app");
+
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            directory.path(),
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+            ],
+        );
+        assert!(
+            result.status.success(),
+            "pack failed:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            error.contains("resolve-only target `./missing.js` is missing"),
+            "{error}"
+        );
+
+        let pack = thinpack_pack::read_from_executable(&output)
+            .expect("read packed executable")
+            .expect("packed payload");
+        assert!(
+            pack.manifest
+                .files
+                .iter()
+                .any(|file| file.path == "/app/main.cjs"),
+            "{:?}",
+            pack.manifest.files
+        );
+        assert!(
+            pack.manifest
+                .files
+                .iter()
+                .all(|file| file.path != "/app/missing.js"),
+            "{:?}",
+            pack.manifest.files
+        );
+    }
+
+    #[test]
     fn a_strict_pack_refuses_an_unproven_object_require_target() {
         for (name, source) in [
             (
