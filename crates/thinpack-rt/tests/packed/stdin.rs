@@ -36,6 +36,24 @@ process.stdin.on('end', () => {
 });
 ";
 
+const CONSUMER_SOURCE: &str = r"
+const { buffer } = require('node:stream/consumers');
+buffer(process.stdin).then((bytes) => {
+  console.log(`bytes=${bytes.length} text=${bytes.toString('utf8')}`);
+});
+";
+
+const ITERATOR_SOURCE: &str = r"
+(async () => {
+  let text = '';
+  for await (const chunk of process.stdin) {
+    if (!Buffer.isBuffer(chunk)) throw new Error('stdin chunk is not a Buffer');
+    text += chunk.toString('utf8');
+  }
+  console.log(`async=${text}`);
+})();
+";
+
 /// One write above Node's 65,536-byte pipe high-water mark.
 static LARGE_INPUT: [u8; 100_000] = [b'a'; 100_000];
 
@@ -56,6 +74,7 @@ pub(super) struct PullTest {
     /// Written one at a time, so the program reads them separately.
     fragments: &'static [&'static [u8]],
     expected: &'static str,
+    capabilities: &'static [&'static str],
 }
 
 impl PullTest {
@@ -71,6 +90,7 @@ const TESTS: &[PullTest] = &[
         source: SOURCE,
         fragments: &[],
         expected: FALLBACK,
+        capabilities: &[],
     },
     PullTest {
         name: "packed::stdin-pull-utf8-fragments",
@@ -81,6 +101,7 @@ const TESTS: &[PullTest] = &[
         // read ends inside a character, and EOF has to flush the last one.
         fragments: &[b"A\xe7", b"\xb3\x96\xf0\x9f", b"\x8d\xaaZ\xe7"],
         expected: "A糖🍪Z\u{FFFD}",
+        capabilities: &[],
     },
     PullTest {
         name: "packed::stdin-pull-above-high-water-mark",
@@ -88,6 +109,31 @@ const TESTS: &[PullTest] = &[
         source: SIZED_SOURCE,
         fragments: &[&LARGE_INPUT],
         expected: "100000",
+        capabilities: &[],
+    },
+    PullTest {
+        name: "packed::stdin-consumer",
+        directory: "stdin-consumer",
+        source: CONSUMER_SOURCE,
+        fragments: &[b"hello ", b"world"],
+        expected: "bytes=11 text=hello world",
+        capabilities: &["stream"],
+    },
+    PullTest {
+        name: "packed::stdin-consumer-empty",
+        directory: "stdin-consumer-empty",
+        source: CONSUMER_SOURCE,
+        fragments: &[],
+        expected: "bytes=0 text=",
+        capabilities: &["stream"],
+    },
+    PullTest {
+        name: "packed::stdin-async-iterator",
+        directory: "stdin-async-iterator",
+        source: ITERATOR_SOURCE,
+        fragments: &[b"ab", b"cd"],
+        expected: "async=abcd",
+        capabilities: &[],
     },
 ];
 
@@ -107,12 +153,13 @@ pub(super) fn run_test(test: &'static PullTest) -> Outcome {
         Err(error) => return Outcome::Failed(format!("cannot create test directory: {error}")),
     };
     let files = [("/app/main.js", test.source)];
-    let binary = match build_packed_payload("/app/main.js", &files, &[], directory.path()) {
-        Ok(binary) => binary,
-        Err(error) => {
-            return Outcome::Failed(format!("cannot build packed test executable: {error}"));
-        }
-    };
+    let binary =
+        match build_packed_payload("/app/main.js", &files, test.capabilities, directory.path()) {
+            Ok(binary) => binary,
+            Err(error) => {
+                return Outcome::Failed(format!("cannot build packed test executable: {error}"));
+            }
+        };
 
     let mut command = Command::new(binary);
     command

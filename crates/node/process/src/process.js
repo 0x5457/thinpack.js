@@ -428,7 +428,7 @@
         if (amount === 0) return null;
         if (amount <= queue[0].length) return take(amount);
         const text = typeof queue[0] === "string";
-        let chunk = text ? "" : new Uint8Array(amount);
+        let chunk = text ? "" : Buffer.allocUnsafe(amount);
         let offset = 0;
         while (amount > 0) {
           const piece = take(Math.min(amount, queue[0].length));
@@ -510,7 +510,11 @@
               else signalReadable();
               return;
             }
-            deliver(decoder === null ? bytes : decoder.decode(bytes, { stream: true }));
+            deliver(
+              decoder === null
+                ? Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+                : decoder.decode(bytes, { stream: true }),
+            );
             more();
           },
           // Only the read op rejects here. A throwing listener rejects the
@@ -589,6 +593,41 @@
             if (chunk !== null) signalReadable();
           }
           return chunk;
+        },
+        // Node's stdin is a Readable; this object is not, so `for await` and
+        // `node:stream/consumers` need the pull loop here. The generator
+        // serializes next() calls and runs its finally block on early return.
+        async *[Symbol.asyncIterator]() {
+          try {
+            for (;;) {
+              const chunk = this.read();
+              if (chunk !== null) {
+                yield chunk;
+                continue;
+              }
+              if (ended && queuedLength === 0) return;
+              await new Promise((resolve, reject) => {
+                const settle = () => {
+                  this.removeListener("readable", settle);
+                  this.removeListener("end", settle);
+                  this.removeListener("error", fail);
+                  resolve();
+                };
+                const fail = (error) => {
+                  this.removeListener("readable", settle);
+                  this.removeListener("end", settle);
+                  this.removeListener("error", fail);
+                  reject(error);
+                };
+                this.on("error", fail);
+                this.on("end", settle);
+                this.on("readable", settle);
+              });
+            }
+          } finally {
+            paused = true;
+            if (pending !== null) Deno.core.unrefOpPromise(pending);
+          }
         },
         pause() {
           paused = true;
