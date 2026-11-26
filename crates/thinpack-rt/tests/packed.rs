@@ -1908,6 +1908,19 @@ server.bind(0, '127.0.0.1', () => {
         error: None,
     },
     PackedTest {
+        name: "packed::net-early-write",
+        directory: "net-early-write",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            include_str!(
+                "../../../tests/node/compat/test/parallel/test-thinpack-net-early-write.js"
+            ),
+        )],
+        capabilities: &["assert", "net"],
+        error: None,
+    },
+    PackedTest {
         name: "packed::fs-watch",
         directory: "fs-watch",
         entry: "/app/main.js",
