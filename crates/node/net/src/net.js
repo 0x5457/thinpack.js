@@ -181,6 +181,7 @@
             }
             this.bytesRead += chunk.length;
             this.push(chunk);
+            this.#refreshTimeout();
             pump();
           })
           .catch((error) => {
@@ -196,6 +197,7 @@
     }
 
     _write(chunk, encoding, callback) {
+      this.#refreshTimeout();
       Deno.core.ops
         .op_net_write(this.#id, chunk)
         .then((written) => {
@@ -248,18 +250,27 @@
       for (const resolve of waiters) resolve();
     }
 
-    setTimeout(milliseconds, callback) {
-      this.#timeoutDuration = milliseconds;
+    // Node's socket timeout is idle-based: each read or write re-arms it, and a
+    // timeout is advisory unless someone destroys the socket.
+    #refreshTimeout() {
       if (this.#timeout) clearTimeout(this.#timeout);
-      if (milliseconds > 0) {
+      this.#timeout = null;
+      if (this.#timeoutDuration > 0) {
         this.#timeout = setTimeout(() => {
           this.#timeout = null;
           this.emit("timeout");
-          if (callback) callback();
-          else this.destroy(new Error("Timeout"));
-        }, milliseconds);
+        }, this.#timeoutDuration);
         this.#timeout.unref?.();
       }
+    }
+
+    setTimeout(milliseconds, callback) {
+      this.#timeoutDuration = milliseconds;
+      if (callback) {
+        if (milliseconds > 0) this.once("timeout", callback);
+        else this.removeListener("timeout", callback);
+      }
+      this.#refreshTimeout();
       return this;
     }
     setNoDelay(noDelay = true) {
