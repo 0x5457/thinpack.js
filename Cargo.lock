@@ -4565,6 +4565,7 @@ dependencies = [
  "libc",
  "thinpack-js",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

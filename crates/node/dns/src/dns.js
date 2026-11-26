@@ -3,6 +3,13 @@
 
   const notImplemented = (api) => new codes.ERR_NOT_IMPLEMENTED(api);
 
+  // Node re-exports the platform's getaddrinfo flags. `lookup` does not
+  // forward `options.hints` yet (docs/gaps.md).
+  const [V4MAPPED, ADDRCONFIG, ALL] = Deno.core.ops
+    .op_dns_flags()
+    .split("\0")
+    .map(Number);
+
   // libuv-style getaddrinfo errno codes; the ops layer translates the
   // platform's EAI_* values into these. Node reports them as `error.errno`
   // and derives `error.code` the same way its DNSException does: ENOTFOUND
@@ -223,6 +230,9 @@
 
   module.exports = {
     lookup,
+    V4MAPPED,
+    ADDRCONFIG,
+    ALL,
     promises,
     setDefaultResultOrder,
     getDefaultResultOrder: () => dnsOrder,

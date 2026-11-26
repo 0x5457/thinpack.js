@@ -235,6 +235,32 @@ console.log('module global paths ok');
         error: None,
     },
     PackedTest {
+        name: "packed::dns-flags",
+        directory: "dns-flags",
+        entry: "/app/main.mjs",
+        files: &[(
+            "/app/main.mjs",
+            r"
+import assert from 'node:assert/strict';
+import dns, { promises, lookup, V4MAPPED, ADDRCONFIG, ALL } from 'node:dns';
+
+assert.equal(typeof promises.lookup, 'function');
+assert.equal(typeof lookup, 'function');
+
+// Node re-exports the platform's AI_* values: glibc/musl number the flags
+// differently from the BSD and Winsock headers.
+const expected = process.platform === 'linux'
+  ? [8, 32, 16]
+  : [0x800, 0x400, 0x100];
+assert.deepEqual([V4MAPPED, ADDRCONFIG, ALL], expected);
+assert.deepEqual([dns.V4MAPPED, dns.ADDRCONFIG, dns.ALL], expected);
+console.log('dns flags ok');
+",
+        )],
+        capabilities: &["assert", "dns"],
+        error: None,
+    },
+    PackedTest {
         name: "packed::lexical-scope-lookup-semantics",
         directory: "lexical-scope-lookup-semantics",
         entry: "/app/main.js",
