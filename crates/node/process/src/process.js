@@ -467,13 +467,102 @@
     pid,
     stdin: (() => {
       const listeners = new Map();
+      // Node 26 reports this for a pipe-backed socket. Pull readers stop at
+      // this many buffered units and resume the read op from `read()`.
+      let highWaterMark = 64 * 1024;
+      const queue = [];
+      let queuedLength = 0;
       let decoder = null;
+      // A readable listener pulls chunks, a data listener consumes all of them.
+      let demand = false;
+      let flowing = false;
+      let paused = false;
       let reading = false;
-      let paused = true;
       let ended = false;
+      let endEmitted = false;
+      let readableScheduled = false;
       let pending = null;
       const emit = (event, ...args) => {
         for (const listener of listeners.get(event) ?? []) listener(...args);
+      };
+      const listening = (event) => (listeners.get(event)?.length ?? 0) > 0;
+      const take = (size) => {
+        const chunk = queue[0];
+        if (size >= chunk.length) {
+          queue.shift();
+          queuedLength -= chunk.length;
+          return chunk;
+        }
+        queue[0] = chunk.slice(size);
+        queuedLength -= size;
+        return chunk.slice(0, size);
+      };
+      // A multi-piece read allocates its result once instead of recopying the
+      // prefix for every chunk it joins.
+      const collect = (amount) => {
+        if (amount === 0) return null;
+        if (amount <= queue[0].length) return take(amount);
+        const text = typeof queue[0] === "string";
+        let chunk = text ? "" : new Uint8Array(amount);
+        let offset = 0;
+        while (amount > 0) {
+          const piece = take(Math.min(amount, queue[0].length));
+          if (text) chunk += piece;
+          else {
+            chunk.set(piece, offset);
+            offset += piece.length;
+          }
+          amount -= piece.length;
+        }
+        return chunk;
+      };
+      const finish = () => {
+        if (endEmitted) return;
+        endEmitted = true;
+        nextTick(() => emit("end"));
+      };
+      const drain = () => {
+        while (flowing && queue.length > 0) {
+          const chunk = queue.shift();
+          queuedLength -= chunk.length;
+          emit("data", chunk);
+        }
+        if (ended && queuedLength === 0) finish();
+      };
+      const deliver = (chunk) => {
+        if (chunk.length === 0) return;
+        queue.push(chunk);
+        queuedLength += chunk.length;
+        if (listening("readable")) emit("readable");
+        drain();
+      };
+      // A sized read can leave data buffered; Node signals another `readable`
+      // for it instead of waiting for more bytes from the pipe.
+      const signalReadable = () => {
+        if (readableScheduled || flowing || paused || !demand || queuedLength === 0) return;
+        readableScheduled = true;
+        nextTick(() => {
+          readableScheduled = false;
+          if (queuedLength > 0 && demand && !flowing && !paused) emit("readable");
+        });
+      };
+      // Node raises the high-water mark to the next power of two when a sized
+      // read asks for more, so the pump keeps pulling until it can satisfy it.
+      const MAX_HWM = 0x40000000;
+      const demandFor = (size) => {
+        if (size <= highWaterMark) return;
+        if (size > MAX_HWM) {
+          const { codes } = internalErrors();
+          throw new codes.ERR_OUT_OF_RANGE("size", "<= 1GiB", size);
+        }
+        let bound = 1;
+        while (bound < size) bound *= 2;
+        highWaterMark = bound;
+      };
+      const more = () => {
+        if (ended || paused || !(flowing || demand)) return;
+        if (!flowing && queuedLength >= highWaterMark) return;
+        pump();
       };
       const pump = () => {
         if (reading || ended) return;
@@ -481,23 +570,33 @@
         const read = ops.op_thinpack_io_read_stdin();
         pending = read;
         if (paused) Deno.core.unrefOpPromise(read);
-        read
-          .then((bytes) => {
+        read.then(
+          (bytes) => {
             reading = false;
             pending = null;
             if (bytes.length === 0) {
               ended = true;
-              emit("end");
+              // A trailing partial character is only decodable at EOF.
+              if (decoder !== null) {
+                const tail = decoder.decode();
+                if (tail.length > 0) deliver(tail);
+              }
+              if (queuedLength === 0) finish();
+              else signalReadable();
               return;
             }
-            emit("data", decoder === null ? bytes : decoder.decode(bytes, { stream: true }));
-            if (!paused) pump();
-          })
-          .catch((error) => {
+            deliver(decoder === null ? bytes : decoder.decode(bytes, { stream: true }));
+            more();
+          },
+          // Only the read op rejects here. A throwing listener rejects the
+          // promise from the fulfilled handler and must stay an uncaught
+          // consumer error, not a stream `error` event.
+          (error) => {
             reading = false;
             pending = null;
             emit("error", error);
-          });
+          },
+        );
       };
       return {
         fd: 0,
@@ -507,8 +606,17 @@
           if (!listeners.has(event)) listeners.set(event, []);
           listeners.get(event).push(listener);
           if (event === "data") {
+            flowing = true;
             paused = false;
-            pump();
+            if (pending !== null) Deno.core.refOpPromise(pending);
+            drain();
+            more();
+          } else if (event === "readable") {
+            demand = true;
+            paused = false;
+            if (pending !== null) Deno.core.refOpPromise(pending);
+            if (queuedLength > 0) emit("readable");
+            else more();
           }
           return this;
         },
@@ -528,18 +636,47 @@
           return this.removeListener(event, listener);
         },
         setEncoding(encoding) {
-          decoder = new TextDecoder(String(encoding));
+          // Node's StringDecoder keeps a leading BOM, unlike a default
+          // TextDecoder.
+          decoder = new TextDecoder(String(encoding), { ignoreBOM: true });
           return this;
+        },
+        read(size) {
+          let requested = size;
+          if (requested === undefined) requested = NaN;
+          else if (!Number.isInteger(requested)) requested = Number.parseInt(requested, 10);
+          const all = Number.isNaN(requested);
+          const wanted = all ? queuedLength : Math.max(requested, 0);
+          if (!all) demandFor(wanted);
+          // Node's read() starts the stream even before a listener is attached.
+          demand = true;
+          if (!paused && pending !== null) Deno.core.refOpPromise(pending);
+          // Node returns null until the requested size is buffered, except
+          // at EOF, where it returns what is left.
+          if (!all && wanted > queuedLength && !ended) {
+            more();
+            return null;
+          }
+          const chunk = collect(Math.min(wanted, queuedLength));
+          if (ended && queuedLength === 0) finish();
+          else {
+            more();
+            if (chunk !== null) signalReadable();
+          }
+          return chunk;
         },
         pause() {
           paused = true;
+          flowing = false;
           if (pending !== null) Deno.core.unrefOpPromise(pending);
           return this;
         },
         resume() {
           paused = false;
+          flowing = true;
           if (pending !== null) Deno.core.refOpPromise(pending);
-          pump();
+          drain();
+          more();
           return this;
         },
         get isRaw() {

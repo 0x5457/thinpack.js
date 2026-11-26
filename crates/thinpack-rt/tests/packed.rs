@@ -3,12 +3,14 @@ use std::fmt::Write as _;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use thinpack_pack::{Compression, FileRecord, Manifest, Template};
+
+mod stdin;
 
 #[cfg(unix)]
 mod tty;
@@ -1840,6 +1842,7 @@ pub(super) fn print_list(cli: &super::Cli) {
     }
     #[cfg(unix)]
     tty::print_list(cli);
+    stdin::print_list(cli);
 }
 
 pub(super) fn execute(cli: &super::Cli) -> bool {
@@ -1853,9 +1856,10 @@ pub(super) fn execute(cli: &super::Cli) -> bool {
         .filter(|test| cli.matches(test.name))
         .collect();
     #[cfg(unix)]
-    let test_count = selected.len() + startup.len() + tty::selected(cli).len();
+    let tty_count = tty::selected(cli).len();
     #[cfg(not(unix))]
-    let test_count = selected.len() + startup.len();
+    let tty_count = 0;
+    let test_count = selected.len() + startup.len() + stdin::selected(cli).len() + tty_count;
     if test_count == 0 {
         return true;
     }
@@ -1886,6 +1890,16 @@ pub(super) fn execute(cli: &super::Cli) -> bool {
         report(
             test.name,
             tty::run_test(test),
+            started,
+            &mut passed,
+            &mut failed,
+        );
+    }
+    for test in stdin::selected(cli) {
+        let started = Instant::now();
+        report(
+            test.name(),
+            stdin::run_test(test),
             started,
             &mut passed,
             &mut failed,
@@ -2087,11 +2101,19 @@ fn run_binary(
     expected_stdout: Option<&str>,
 ) -> super::Outcome {
     let mut command = Command::new(binary);
-    command
-        .current_dir(directory)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    command.current_dir(directory).stdin(Stdio::null());
+    run_command(command, expected, expected_stdout, None)
+}
+
+type StdinWriter = Box<dyn FnOnce(ChildStdin) -> io::Result<()> + Send>;
+
+fn run_command(
+    mut command: Command,
+    expected: Option<&[&str]>,
+    expected_stdout: Option<&str>,
+    write_stdin: Option<StdinWriter>,
+) -> super::Outcome {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
     super::configure_process_group(&mut command);
     let mut child = match command.spawn() {
         Ok(child) => child,
@@ -2100,6 +2122,10 @@ fn run_binary(
         }
     };
     let pid = child.id();
+    let writer = write_stdin.map(|write| {
+        let input = child.stdin.take().expect("test stdin is piped");
+        thread::spawn(move || write(input))
+    });
     let Some(stdout) = child.stdout.take() else {
         return super::Outcome::Failed("packed executable stdout is not piped".to_owned());
     };
@@ -2156,7 +2182,7 @@ fn run_binary(
             None if status.success()
                 && expected_stdout.is_none_or(|fragment| stdout.contains(fragment)) =>
             {
-                return super::Outcome::Passed;
+                return finish_stdin(writer);
             }
             _ => {}
         }
@@ -2184,6 +2210,14 @@ fn run_binary(
         report.push_str(&super::truncate(&stderr));
     }
     super::Outcome::Failed(report)
+}
+
+fn finish_stdin(writer: Option<thread::JoinHandle<io::Result<()>>>) -> super::Outcome {
+    match writer.map(thread::JoinHandle::join) {
+        None | Some(Ok(Ok(()))) => super::Outcome::Passed,
+        Some(Ok(Err(error))) => super::Outcome::Failed(format!("cannot write test stdin: {error}")),
+        Some(Err(_)) => super::Outcome::Failed("test stdin writer panicked".to_owned()),
+    }
 }
 
 struct TempDir {
