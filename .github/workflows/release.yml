@@ -74,35 +74,40 @@ jobs:
           version=$(cargo pkgid -p thinpack-cli | sed 's/.*[#@]//')
           test "v${version}" = "${GITHUB_REF_NAME}"
 
-      # musl-gcc compiles with -nostdinc, so the kernel uapi headers have to be added back or
-      # libffi's tramp.c cannot find linux/limits.h; linux/types.h then pulls asm/types.h from
-      # the multiarch directory, which `gcc -dumpmachine` names for the runner's own architecture.
-      - name: Install musl
+      # musl-tools supplies a C wrapper, but the CommonJS lexer needs C++20.
+      - name: Install the musl C and C++ toolchain
         if: matrix.musl
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes musl-tools linux-libc-dev
-          echo "CFLAGS=-idirafter /usr/include -idirafter /usr/include/$(gcc -dumpmachine)" >> "$GITHUB_ENV"
+          case "$TARGET" in
+            x86_64-unknown-linux-musl)
+              arch=x86_64
+              checksum=eb1db6f0f3c2bdbdbfb993d7ef7e2eeef82ac1259f6a6e1757c33a97dbcef3ad
+              ;;
+            aarch64-unknown-linux-musl)
+              arch=aarch64
+              checksum=daf336cafa2c3c7daf42f6a46edc960f10a181fcf15ab9f1c43b192e8ad2a069
+              ;;
+            *) exit 1 ;;
+          esac
+          cd "$RUNNER_TEMP"
+          toolchain="$arch-linux-musl-native"
+          curl --fail --location --retry 3 --output "$toolchain.tgz" \
+            "https://github.com/musl-cc/musl.cc/releases/download/v0.0.1/$toolchain.tgz"
+          printf '%s  %s\n' "$checksum" "$toolchain.tgz" | sha256sum -c -
+          tar -xzf "$toolchain.tgz"
+          bin="$RUNNER_TEMP/$toolchain/bin"
+          linker_var="CARGO_TARGET_${TARGET^^}_LINKER"
+          printf 'CC=%s/gcc\nCXX=%s/g++\nAR=%s/ar\n%s=%s/gcc\n' \
+            "$bin" "$bin" "$bin" "${linker_var//-/_}" "$bin" >> "$GITHUB_ENV"
 
-      # `cc` and `cmake` both build C here (QuickJS/WAMR, sqlite, libffi): point them at musl-gcc
-      # so the objects match the static musl libc the target links against. `musl-gcc` compiles
-      # with -nostdinc, so the kernel uapi headers under /usr/include have to be added back or
-      # libffi's tramp.c cannot find linux/limits.h.
       - name: Build, verify, and archive (static)
         if: matrix.musl
         shell: bash
         env:
-          # `cc` reads CC_<target>; cmake and autotools (WAMR, libffi) read the unqualified
-          # variables, and a C object compiled by the glibc compiler links against
-          # __snprintf_chk and libgcc helpers that a static musl link does not have. Nothing here
-          # builds C++, and `musl-tools` ships no musl-g++ anyway.
-          CC: musl-gcc
-          CC_x86_64_unknown_linux_musl: musl-gcc
-          CC_aarch64_unknown_linux_musl: musl-gcc
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-          # aarch64 GCC lowers `__builtin___clear_cache` and the atomic swap libffi's
-          # dlmalloc uses into libgcc calls, and rustc's link line leaves libgcc out.
+          # The Rust link line leaves out libgcc; arm64 C objects use its helpers.
           RUSTFLAGS: -C link-arg=-lgcc
         run: |
           cargo xtask dist --target ${{ matrix.target }} --out dist
