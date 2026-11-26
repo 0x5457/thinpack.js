@@ -1342,6 +1342,9 @@ module = "async_hooks"
 [tests."parallel/test-thinpack-async-resource.js"]
 module = "async_hooks"
 
+[tests."parallel/test-thinpack-process-max-listeners.js"]
+module = "process"
+
 [tests."parallel/test-thinpack-messageport-peer-close.js"]
 module = "worker_threads"
 timeout_ms = 5000
