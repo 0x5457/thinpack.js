@@ -249,9 +249,10 @@ fn measure(app: &'static App) -> Result<Record, String> {
 
 fn measure_hello() -> Result<Record, String> {
     eprintln!("measuring hello");
-    let fixture = crate::repo_root().join(FIXTURES).join("hello");
+    let root = crate::repo_root();
     let artifact = artifact_root().join(format!("hello{}", env::consts::EXE_SUFFIX));
-    pack(&fixture, &fixture.join("main.js"), &artifact, &[])?;
+    let entry = Path::new(FIXTURES).join("hello/main.js");
+    pack(&root, &entry, &artifact, &[])?;
     let output = Command::new(&artifact)
         .output()
         .map_err(|error| format!("cannot run {}: {error}", artifact.display()))?;
