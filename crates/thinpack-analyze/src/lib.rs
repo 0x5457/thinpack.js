@@ -321,7 +321,7 @@ pub fn analyze_roots_with(
             };
             let Some(resolved) = resolve_dependency(
                 &specifier,
-                optional_edge,
+                usage.with_optional(optional_edge),
                 &path,
                 &fs,
                 &conditions,
@@ -436,12 +436,14 @@ fn include_selected_bin(
     Ok(())
 }
 
-/// Resolves one dependency edge. `None` means an optional or `--allow-missing`
-/// target is absent: both warn because the app owns the failure. Any other
+/// Resolves one dependency edge. `None` means an optional, `--allow-missing`, or
+/// resolve-only target is absent: each warns because the app owns the failure. A
+/// resolve-only reference locates a path without loading it, so a missing target
+/// needs no bytes and fails at run time exactly as it does under Node. Any other
 /// resolution error fails the pack.
 fn resolve_dependency(
     specifier: &str,
-    optional: bool,
+    usage: Usage,
     from: &Path,
     fs: &impl FileSystem,
     conditions: &Conditions,
@@ -450,7 +452,7 @@ fn resolve_dependency(
 ) -> Result<Option<PathBuf>, Error> {
     match thinpack_resolve::resolve_path_with_conditions(specifier, from, fs, conditions) {
         Ok(resolved) => Ok(Some(resolved)),
-        Err(error) if optional => {
+        Err(error) if usage.optional => {
             warnings.push(Warning {
                 message: format!(
                     "{}: optional dependency `{specifier}` is missing ({error}); the app must handle the error",
@@ -464,6 +466,16 @@ fn resolve_dependency(
             warnings.push(Warning {
                 message: format!(
                     "{}: dependency `{specifier}` is missing ({error}); excluded by --allow-missing",
+                    from.display()
+                ),
+                strict: false,
+            });
+            Ok(None)
+        }
+        Err(error) if usage.resolve_only && matches!(error, thinpack_resolve::Error::NotFound) => {
+            warnings.push(Warning {
+                message: format!(
+                    "{}: resolve-only target `{specifier}` is missing ({error}); the reference is kept and fails at run time if reached",
                     from.display()
                 ),
                 strict: false,
@@ -520,12 +532,20 @@ impl<F: FileSystem> FileSystem for ManifestRecorder<'_, F> {
 /// How the module graph uses a specifier.
 #[derive(Clone, Copy, Debug)]
 struct Usage {
-    /// Every reference is guarded (a `try` block or `process.getBuiltinModule`), so a
-    /// failed lookup is the app's to handle.
+    /// The app owns a failed lookup: every reference is guarded (a `try` block or
+    /// `process.getBuiltinModule`), or the edge is optional by dependency or subtree.
     optional: bool,
     /// Every reference only locates the target, so it joins the payload as data
     /// instead of being parsed as a module.
     resolve_only: bool,
+}
+
+impl Usage {
+    /// The same usage for an edge that is optional because of a guard, an optional
+    /// dependency, or an optional subtree.
+    const fn with_optional(self, optional: bool) -> Self {
+        Self { optional, ..self }
+    }
 }
 
 type Specifiers = BTreeMap<(String, bool), Usage>;
@@ -2239,6 +2259,42 @@ mod tests {
                 .any(|path| path == Path::new("/app/tool"))
         );
         assert_eq!(fs.reads.borrow().get(Path::new("/app/tool")), None);
+    }
+
+    #[test]
+    fn a_missing_resolve_only_target_only_warns() {
+        let fs = MemoryFs::new(&[
+            ("/app/package.json", r#"{"type":"commonjs"}"#),
+            (
+                "/app/main.cjs",
+                "console.log(require.resolve('./missing.js'));\n",
+            ),
+        ]);
+        let analysis = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+        assert!(analysis.data_files.is_empty(), "{:?}", analysis.data_files);
+        assert!(
+            analysis.warnings.iter().any(|warning| !warning.strict
+                && warning
+                    .message
+                    .contains("resolve-only target `./missing.js` is missing")),
+            "{:?}",
+            analysis.warnings
+        );
+    }
+
+    #[test]
+    fn a_missing_target_still_fails_when_a_resolve_only_reference_also_loads_it() {
+        let fs = MemoryFs::new(&[
+            ("/app/package.json", r#"{"type":"commonjs"}"#),
+            (
+                "/app/main.cjs",
+                "console.log(require.resolve('./missing.js'));\nrequire('./missing.js');\n",
+            ),
+        ]);
+        assert!(matches!(
+            analyze(Path::new("/app/main.cjs"), &fs),
+            Err(Error::Resolve { specifier, .. }) if specifier == "./missing.js"
+        ));
     }
 
     #[test]
