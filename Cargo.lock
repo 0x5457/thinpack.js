@@ -4343,7 +4343,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-analyze"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "oxc_allocator",
  "oxc_ast",
@@ -4361,11 +4361,11 @@ dependencies = [
 
 [[package]]
 name = "thinpack-caps"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "thinpack-child"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -4378,14 +4378,14 @@ dependencies = [
 
 [[package]]
 name = "thinpack-cjs-lexer"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cc",
 ]
 
 [[package]]
 name = "thinpack-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "brotli 9.1.3",
  "thinpack-analyze",
@@ -4396,7 +4396,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -4407,7 +4407,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-io"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "tokio",
@@ -4415,7 +4415,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-js"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "brotli 9.1.3",
 ]
@@ -4427,7 +4427,7 @@ source = "git+https://github.com/thinpack-js/v8x?rev=0b06c5644b73a684b716d6af54d
 
 [[package]]
 name = "thinpack-loader"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -4443,7 +4443,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-assert"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4451,7 +4451,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-async-hooks"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4459,7 +4459,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-buffer"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4467,7 +4467,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-child-process"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -4477,7 +4477,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-cluster"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -4488,7 +4488,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-console"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4496,7 +4496,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-constants"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4504,7 +4504,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-crypto"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -4538,7 +4538,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-dgram"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -4551,7 +4551,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-diagnostics-channel"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4559,7 +4559,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-dns"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -4572,7 +4572,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-domain"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4580,7 +4580,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-events"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4588,7 +4588,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-fetch"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4596,7 +4596,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-ffi"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "deno_ffi",
@@ -4606,7 +4606,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-fs"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -4622,7 +4622,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-http"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4630,7 +4630,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-http2"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bytes",
  "deno_core",
@@ -4646,7 +4646,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-https"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4654,7 +4654,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-inspector"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4662,7 +4662,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-internals"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "libc",
@@ -4671,7 +4671,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-module"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4680,7 +4680,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-net"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -4693,7 +4693,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-os"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -4705,7 +4705,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-path"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4714,7 +4714,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-perf-hooks"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4722,7 +4722,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-process"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -4733,7 +4733,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-punycode"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4741,7 +4741,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-querystring"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4749,7 +4749,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-readline"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4757,7 +4757,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-sea"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "thinpack-core",
@@ -4766,7 +4766,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-sqlite"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -4776,7 +4776,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-stream"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4784,7 +4784,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-string-decoder"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4792,7 +4792,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-test"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4800,7 +4800,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-timers"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4808,7 +4808,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-tls"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -4824,7 +4824,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-tty"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4832,7 +4832,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-url"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4841,7 +4841,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-util"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4849,7 +4849,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-v8"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "thinpack-js",
@@ -4857,7 +4857,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-vm"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -4866,7 +4866,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-worker-threads"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -4876,7 +4876,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-node-zlib"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "brotli 8.0.4",
  "deno_core",
@@ -4888,7 +4888,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-pack"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "brotli-decompressor 6.3.2",
  "thinpack-resolve",
@@ -4896,11 +4896,11 @@ dependencies = [
 
 [[package]]
 name = "thinpack-resolve"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "thinpack-rt"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deno_core",
  "libc",
@@ -4964,7 +4964,7 @@ dependencies = [
 
 [[package]]
 name = "thinpack-vfs"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "thinpack-core",
  "thinpack-pack",
@@ -5748,7 +5748,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "flate2",
  "serde",

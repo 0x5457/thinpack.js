@@ -90,7 +90,7 @@ thinpack pack node_modules/node-red/red.js \
   --include node_modules/@node-red/nodes -o node-red
 ```
 
-A package selected by a config file may also need an explicit include. For Babel 8
+A package selected by a config file may also need an explicit include. For Babel 7 or 8
 with `@babel/preset-typescript` in `.babelrc`, include both the config and the preset:
 
 ```sh
