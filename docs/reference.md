@@ -100,21 +100,36 @@ thinpack pack node_modules/node-red/red.js \
 A headless HTTP-only flow needs only `node_modules/@node-red/nodes/core` and
 `node_modules/@node-red/nodes/examples`; the full package also carries the editor's locales and icons.
 
-A package selected by a config file may also need an explicit include. For Babel 7 or 8
-with `@babel/preset-typescript` in `.babelrc`, include both the config and the preset:
+A config file can also select a package. For Babel 7 or 8, import
+`@babel/preset-typescript` statically from a standard `babel.config.mjs` and include
+only the config:
+
+```js
+// babel.config.mjs
+import typescript from '@babel/preset-typescript';
+
+export default { presets: [typescript] };
+```
 
 ```sh
 thinpack pack node_modules/@babel/cli/bin/babel.js \
-  --include node_modules/@babel/preset-typescript \
-  --include .babelrc -o babel
+  --include babel.config.mjs -o babel
 ```
 
-Run the same `.babelrc` under Node with `--config-file ./.babelrc`; the packed app
-reads it at `/app/.babelrc` instead. The input path stays relative to the host
-working directory. `--no-babelrc` stops Babel from also loading a `.babelrc` next
-to the input:
+The packed app reads the config at `/app/babel.config.mjs`; the input file stays on
+the host, relative to the working directory. Pass the packed path with `--no-babelrc`
+so Babel does not also look for a `.babelrc` beside the input:
 
 ```sh
+./babel --no-babelrc --config-file /app/babel.config.mjs input.ts
+```
+
+If you keep a JSON `.babelrc`, its preset names are resolved at run time. Include
+both the config and the selected preset directory, and pass the packed config path:
+
+```sh
+thinpack pack node_modules/@babel/cli/bin/babel.js \
+  --include .babelrc --include node_modules/@babel/preset-typescript -o babel
 ./babel --no-babelrc --config-file /app/.babelrc input.ts
 ```
 
