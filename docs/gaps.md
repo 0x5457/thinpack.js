@@ -94,9 +94,11 @@ the divergence, why it exists, and where it lives.
 
 ## HTTP
 
-- `server.timeout` is an idle socket timeout. `headersTimeout`, `requestTimeout`
-  and `keepAliveTimeout` are accepted but do not enforce deadlines or close idle
-  keep-alive sockets yet (`crates/node/http/src/http.js`, tracked in #212).
+- `server.timeout`, `headersTimeout`, `requestTimeout` and `keepAliveTimeout`
+  are enforced on ordinary connections. Header and request deadlines use direct
+  per-request timers rather than Node's sampled `connectionsCheckingInterval`,
+  and the advisory `Keep-Alive` header and `res.setTimeout` are still absent
+  (`crates/node/http/src/http.js`, tracked in #212).
 
 ## TLS
 

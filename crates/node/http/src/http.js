@@ -314,10 +314,11 @@
         options = {};
       }
       super();
-      // Node's defaults and option values. The connection timeout is enforced;
-      // header, request, and keep-alive deadlines are follow-up work.
+      // Node's connection and message deadlines. The socket timeout is idle-based;
+      // headers and request deadlines cover the request currently being parsed.
       this.timeout = 0;
       this.keepAliveTimeout = options?.keepAliveTimeout ?? 5000;
+      this.keepAliveTimeoutBuffer = options?.keepAliveTimeoutBuffer ?? 1000;
       this.requestTimeout = options?.requestTimeout ?? 300000;
       this.headersTimeout = options?.headersTimeout ?? Math.min(60000, this.requestTimeout);
       this.on("connection", (socket) => this.#connection(socket));
@@ -336,7 +337,64 @@
       let request = null;
       let upgrade = false;
       let upgraded = false;
+      let activeRequests = 0;
+      let idle = false;
+      let headersTimer = null;
+      let requestTimer = null;
       const pending = [];
+
+      const clearRequestTimers = () => {
+        if (headersTimer !== null) clearTimeout(headersTimer);
+        if (requestTimer !== null) clearTimeout(requestTimer);
+        headersTimer = null;
+        requestTimer = null;
+      };
+
+      const requestTimedOut = () => {
+        clearRequestTimers();
+        if (socket.destroyed) return;
+        // A response already on the wire cannot be replaced by an error page.
+        if (socket._httpMessage?._headerSent) {
+          socket.destroy();
+          return;
+        }
+        socket.write(
+          "HTTP/1.1 408 Request Timeout\r\nConnection: close\r\n\r\n",
+          () => socket.destroy(),
+        );
+      };
+
+      const startRequestTimers = () => {
+        clearRequestTimers();
+        if (server.headersTimeout > 0) {
+          headersTimer = setTimeout(requestTimedOut, server.headersTimeout);
+          headersTimer.unref?.();
+        }
+        if (server.requestTimeout > 0) {
+          requestTimer = setTimeout(requestTimedOut, server.requestTimeout);
+          requestTimer.unref?.();
+        }
+      };
+
+      // Keep the idle deadline for a connection with no request in progress and no
+      // response waiting to be written.
+      const armIdleTimeout = () => {
+        if (idle || socket.destroyed || activeRequests !== 0 || pending.length !== 0 ||
+            socket._httpMessage !== null || !(server.keepAliveTimeout > 0)) {
+          return;
+        }
+        socket.setTimeout(server.keepAliveTimeout + server.keepAliveTimeoutBuffer);
+        idle = true;
+      };
+
+      // The first bytes of the next request end the idle phase. Do not leave the
+      // keep-alive deadline armed while that request is being parsed.
+      const startRequest = () => {
+        activeRequests += 1;
+        if (!idle) return;
+        socket.setTimeout(server.timeout);
+        idle = false;
+      };
 
       socket.server = server;
       if (server.timeout > 0) socket.setTimeout(server.timeout);
@@ -347,7 +405,10 @@
         response.assignSocket(socket);
         response.once("finish", () => {
           response.detachSocket(socket);
-          if (response._keepAlive) pending.shift()?.();
+          if (!response._keepAlive) return;
+          const next = pending.shift();
+          if (next !== undefined) next();
+          else armIdleTimeout();
         });
         server.emit("request", request, response);
       };
@@ -356,11 +417,17 @@
         onMessageBegin() {
           head = new Head();
           request = null;
+          startRequest();
+          startRequestTimers();
         },
         onUrl: (piece) => head.onUrl(piece),
         onHeaderField: (piece) => head.onField(piece),
         onHeaderValue: (piece) => head.onValue(piece),
         onHeadersComplete() {
+          if (headersTimer !== null) {
+            clearTimeout(headersTimer);
+            headersTimer = null;
+          }
           head.end();
           request = new IncomingMessage(
             socket,
@@ -375,6 +442,7 @@
           }
           if (/^websocket$/i.test(head.headers.upgrade ?? "")) {
             upgrade = true;
+            clearRequestTimers();
             return 2;
           }
 
@@ -391,8 +459,12 @@
         },
         onBody: (piece) => request.push(piece),
         onMessageComplete() {
+          clearRequestTimers();
+          activeRequests -= 1;
           request.complete = true;
           if (!upgrade) request.push(null);
+          // A response may finish before the request body; arm its idle deadline now.
+          if (request.res?.writableFinished && request.res._keepAlive) armIdleTimeout();
         },
       }, http.maxHeaderSize);
 
@@ -427,7 +499,10 @@
           socket.destroy();
         }
       });
-      socket.on("close", () => parser.destroy());
+      socket.on("close", () => {
+        clearRequestTimers();
+        parser.destroy();
+      });
       socket.on("error", () => socket.destroy());
     }
   }
