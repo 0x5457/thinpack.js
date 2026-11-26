@@ -14,6 +14,8 @@ enum Stream {
     Piped,
     Inherit,
     Ignore,
+    /// A descriptor in this process, moved to the stream's own number in the child.
+    Descriptor(i32),
 }
 
 impl Stream {
@@ -22,6 +24,7 @@ impl Stream {
             Some("pipe") => Ok(Self::Piped),
             Some("inherit") => Ok(Self::Inherit),
             Some("ignore") => Ok(Self::Ignore),
+            Some(word) if word.starts_with("fd:") => Self::descriptor(word),
             Some(other) => Err(ChildError::new(
                 "ERR_INVALID_ARG_VALUE",
                 format!("unknown stdio {other:?}"),
@@ -33,13 +36,36 @@ impl Stream {
         }
     }
 
-    /// The value `std::process::Command` accepts; tokio's command reuses it.
-    fn process(self) -> ProcessStdio {
-        match self {
+    #[cfg(unix)]
+    fn descriptor(word: &str) -> Result<Self, ChildError> {
+        let fd = word
+            .strip_prefix("fd:")
+            .and_then(|value| value.parse::<i32>().ok())
+            .filter(|fd| *fd >= 0)
+            .ok_or_else(|| {
+                ChildError::new("ERR_INVALID_ARG_VALUE", format!("unknown stdio {word:?}"))
+            })?;
+        Ok(Self::Descriptor(fd))
+    }
+
+    #[cfg(not(unix))]
+    fn descriptor(_word: &str) -> Result<Self, ChildError> {
+        Err(ChildError::new(
+            "ERR_NOT_IMPLEMENTED",
+            "explicit stdio descriptors are not supported on Windows",
+        ))
+    }
+
+    fn process(self) -> std::io::Result<ProcessStdio> {
+        Ok(match self {
             Self::Piped => ProcessStdio::piped(),
             Self::Inherit => ProcessStdio::inherit(),
             Self::Ignore => ProcessStdio::null(),
-        }
+            #[cfg(unix)]
+            Self::Descriptor(fd) => duplicate_stdio(fd)?,
+            #[cfg(not(unix))]
+            Self::Descriptor(_) => unreachable!("stdio descriptors are rejected by the parser"),
+        })
     }
 }
 
@@ -68,11 +94,12 @@ impl Stdio {
         }
     }
 
-    /// Parses the three `\0`-joined `pipe`/`inherit`/`ignore` words the modules send.
+    /// Parses the three `\0`-joined `pipe`/`inherit`/`ignore`/`fd:N` words the modules send.
     ///
     /// # Errors
     ///
-    /// Returns `ERR_INVALID_ARG_VALUE` unless exactly three known words are present.
+    /// Returns `ERR_INVALID_ARG_VALUE` for an unknown word or a count other than three;
+    /// explicit descriptors are `ERR_NOT_IMPLEMENTED` on Windows.
     pub fn parse(spec: &str) -> Result<Self, ChildError> {
         let mut words = spec.split('\0');
         let stdio = Self {
@@ -99,6 +126,9 @@ pub struct Spawn {
     program: String,
     args: Vec<String>,
     env: Vec<(String, String)>,
+    /// The module supplied no environment, so the child inherits this process's. The flag is
+    /// fixed during parsing: `with_env` adds one variable to an inherited environment.
+    inherit_env: bool,
     cwd: Option<String>,
 }
 
@@ -122,6 +152,7 @@ impl Spawn {
                 .filter_map(|entry| entry.split_once('='))
                 .map(|(key, value)| (key.to_owned(), value.to_owned()))
                 .collect(),
+            inherit_env: env.is_empty(),
             cwd: (!cwd.is_empty()).then(|| cwd.to_owned()),
         })
     }
@@ -137,23 +168,28 @@ impl Spawn {
     /// The command both spawn paths start from.
     ///
     /// An empty environment inherits the parent's; a supplied one replaces it, matching the
-    /// `env` option both modules implement.
-    fn command(&self, stdio: Stdio) -> std::process::Command {
+    /// `env` option both modules implement. Entries added by `with_env` are layered on
+    /// either.
+    fn command(
+        &self,
+        stdio: Stdio,
+        inherit: Option<InheritedFd>,
+    ) -> std::io::Result<std::process::Command> {
         let mut command = std::process::Command::new(&self.program);
         command
             .args(&self.args)
-            .stdin(stdio.stdin.process())
-            .stdout(stdio.stdout.process())
-            .stderr(stdio.stderr.process());
-        if !self.env.is_empty() {
-            command
-                .env_clear()
-                .envs(self.env.iter().map(|(key, value)| (key, value)));
+            .stdin(stdio.stdin.process()?)
+            .stdout(stdio.stdout.process()?)
+            .stderr(stdio.stderr.process()?);
+        inherit_fd(&mut command, inherit);
+        if !self.inherit_env {
+            command.env_clear();
         }
+        command.envs(self.env.iter().map(|(key, value)| (key, value)));
         if let Some(cwd) = &self.cwd {
             command.current_dir(cwd);
         }
-        command
+        Ok(command)
     }
 }
 
@@ -175,6 +211,22 @@ pub struct InheritedFd {
     pub source: i32,
     /// The descriptor number it has to have in the child.
     pub target: i32,
+}
+
+/// Duplicate before spawning so redirecting one stream cannot change another's source.
+#[cfg(unix)]
+fn duplicate_stdio(fd: i32) -> std::io::Result<ProcessStdio> {
+    use std::os::fd::{FromRawFd as _, OwnedFd};
+
+    // SAFETY: fcntl checks the descriptor and returns a newly owned duplicate.
+    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+    if duplicate == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: the successful fcntl returned an open descriptor not owned elsewhere.
+    Ok(ProcessStdio::from(unsafe {
+        OwnedFd::from_raw_fd(duplicate)
+    }))
 }
 
 /// Makes the child keep `fd` open, as `fd.target`, across `exec`.
@@ -215,8 +267,7 @@ pub fn spawn(
     stdio: Stdio,
     inherit: Option<InheritedFd>,
 ) -> Result<Spawned, ChildError> {
-    let mut command = request.command(stdio);
-    inherit_fd(&mut command, inherit);
+    let command = request.command(stdio, inherit).map_err(ChildError::spawn)?;
     let mut command = tokio::process::Command::from(command);
     // The table owns the child, not the op call that spawned it: dropping the future must not
     // kill a process the program is still waiting on.
@@ -253,7 +304,11 @@ pub fn run_to_completion(
     stdio: Stdio,
     input: Vec<u8>,
 ) -> Result<Completed, ChildError> {
-    let mut child = request.command(stdio).spawn().map_err(ChildError::spawn)?;
+    let mut child = request
+        .command(stdio, None)
+        .map_err(ChildError::spawn)?
+        .spawn()
+        .map_err(ChildError::spawn)?;
     let pid = child.id();
     let input_pipe = child.stdin.take();
     // Writing stdin in-line would deadlock with a child that fills an output pipe while the

@@ -39,6 +39,7 @@
       this.exitCode = undefined;
       this.signalCode = null;
       this.killed = false;
+      this.connected = false;
       this.stdin = null;
       this.stdout = null;
       this.stderr = null;

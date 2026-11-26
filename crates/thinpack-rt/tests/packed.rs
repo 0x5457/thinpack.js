@@ -1442,6 +1442,97 @@ test('skipped sibling', () => {
         error: None,
     },
     PackedTest {
+        name: "packed::child-process-ipc",
+        directory: "child-process-ipc",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r"
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const { spawn } = require('node:child_process');
+
+if (process.argv[2] === 'child') {
+  process.on('message', (message) => {
+    fs.writeSync(1, 'out line\n');
+    fs.writeSync(2, 'err line\n');
+    process.send({
+      from: 'child',
+      echo: message.ping,
+      connected: process.connected,
+      channelFd: process.channel.fd,
+    });
+    process.disconnect();
+  });
+} else {
+  // Windows has no descriptor sharing in this runtime yet, so the same round trip uses
+  // pipes there; unix covers the descriptor slots the issue reports.
+  const windows = process.platform === 'win32';
+  let outFd;
+  let errFd;
+  let stdio;
+  if (windows) {
+    stdio = [null, 'pipe', 'pipe', 'ipc'];
+  } else {
+    fs.writeFileSync('child.out', '');
+    fs.writeFileSync('child.err', '');
+    outFd = fs.openSync('child.out', 'a');
+    errFd = fs.openSync('child.err', 'a');
+    stdio = [null, outFd, errFd, 'ipc'];
+  }
+  const messages = [];
+  let disconnected = false;
+  let stdout = '';
+  let stderr = '';
+  const child = spawn(process.execPath, ['child'], { stdio });
+  child.stdout?.setEncoding('utf8');
+  child.stderr?.setEncoding('utf8');
+  child.stdout?.on('data', (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr?.on('data', (chunk) => {
+    stderr += chunk;
+  });
+  const timer = setTimeout(() => {
+    console.error('IPC round trip timed out');
+    child.kill('SIGKILL');
+    process.exit(1);
+  }, 5000);
+  child.on('message', (message) => messages.push(message));
+  child.on('disconnect', () => {
+    disconnected = true;
+  });
+  child.on('error', (error) => {
+    console.error(error);
+    process.exit(1);
+  });
+  child.on('close', (code, signal) => {
+    clearTimeout(timer);
+    if (!windows) {
+      fs.closeSync(outFd);
+      fs.closeSync(errFd);
+    }
+    assert.equal(code, 0);
+    assert.equal(signal, null);
+    assert.equal(disconnected, true);
+    assert.equal(child.connected, false);
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0].from, 'child');
+    assert.equal(messages[0].echo, 'hello');
+    assert.equal(messages[0].connected, true);
+    assert.equal(typeof messages[0].channelFd, 'number');
+    assert.equal(windows ? stdout : fs.readFileSync('child.out', 'utf8'), 'out line\n');
+    assert.equal(windows ? stderr : fs.readFileSync('child.err', 'utf8'), 'err line\n');
+    console.log('child_process ipc ok');
+  });
+  child.send({ ping: 'hello' });
+}
+",
+        )],
+        capabilities: &["assert", "child_process", "fs"],
+        error: None,
+    },
+    PackedTest {
         name: "packed::module-parent",
         directory: "module-parent",
         entry: "/app/main.js",

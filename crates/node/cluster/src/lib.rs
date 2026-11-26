@@ -29,10 +29,6 @@ pub fn init() -> Extension {
             thinpack_js::js!("worker.js"),
         ),
         ExtensionFileSource::new_compressed(
-            "node:thinpack/internal/cluster/channel",
-            thinpack_js::js!("channel.js"),
-        ),
-        ExtensionFileSource::new_compressed(
             "node:thinpack/internal/cluster/worker_process",
             thinpack_js::js!("worker_process.js"),
         ),

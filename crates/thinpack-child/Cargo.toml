@@ -1,6 +1,6 @@
 [package]
 name = "thinpack-child"
-description = "Spawned-process table and stdio pipes shared by node:child_process and node:cluster"
+description = "Spawned-process table, stdio pipes and IPC channel shared by node:child_process and node:cluster"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

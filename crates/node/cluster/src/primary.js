@@ -146,8 +146,8 @@
       throw error;
     }
 
-    const [entryId, pid] = payload.split("\0").map(Number);
-    const child = new WorkerProcess(entryId, pid, settings.silent === true);
+    const [entryId, pid, channelId] = payload.split("\0").map(Number);
+    const child = new WorkerProcess(entryId, pid, channelId, settings.silent === true);
     child.spawnargs = [process.execPath, ...args];
     return new Worker({ id, process: child });
   }

@@ -165,6 +165,12 @@ pub(crate) fn run(
             }
             runtime.install_assets(assets);
             runtime.execute_script(
+                "<child-ipc>",
+                "if (typeof globalThis.__thinpack_child_ipc_bootstrap__ === \"function\") \
+                 globalThis.__thinpack_child_ipc_bootstrap__();"
+                    .to_owned(),
+            )?;
+            runtime.execute_script(
                 "<cluster>",
                 "if (typeof globalThis.__thinpack_cluster_bootstrap__ === \"function\") \
                  globalThis.__thinpack_cluster_bootstrap__();"
