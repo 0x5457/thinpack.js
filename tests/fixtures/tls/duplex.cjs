@@ -20,9 +20,17 @@ for (let index = 0; index < delayedPayload.length; index += 1) {
 
 const deferred = () => {
   let resolve;
-  const promise = new Promise((done) => (resolve = done));
-  return { promise, resolve };
+  let reject;
+  const promise = new Promise((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
 };
+
+// Every phase prints as it starts, so a hosted run that hangs names the phase
+// it stopped in instead of only reaching the harness timeout.
+const phase = (name) => console.error(`duplex: ${name}`);
 
 const waitFor = async (predicate, what) => {
   const deadline = Date.now() + 10000;
@@ -32,16 +40,22 @@ const waitFor = async (predicate, what) => {
   }
 };
 
-// One ordinary trusted fixture: a TLS server behind a normal TCP relay. Every
-// connection opens with an eager greeting; its first plaintext byte selects an
-// echo reply or the 192 KiB delayed reply.
+// One ordinary trusted fixture: the plain TCP sockets the byte-mode Duplex
+// wraps talk straight to the TLS server. A relay hop would only forward the same
+// bytes through a second `net.connect` whose writable side is live before it
+// connects. Every connection opens with an eager greeting; its first plaintext
+// byte selects an echo reply or the 192 KiB delayed reply.
 const startTrustedFixture = async (files) => {
   const sockets = new Set();
+  const track = (socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+    return socket;
+  };
   const server = tls.createServer(
     { key: files.key, cert: files.cert, ALPNProtocols: ['h1'] },
     (socket) => {
-      sockets.add(socket);
-      socket.once('close', () => sockets.delete(socket));
+      track(socket);
       socket.on('error', () => {});
       socket.write(greeting);
       let mode = null;
@@ -67,37 +81,17 @@ const startTrustedFixture = async (files) => {
   server.on('error', (error) => { throw error; });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
-  const relaySockets = new Set();
-  const relay = net.createServer({ allowHalfOpen: true }, (client) => {
-    const upstream = net.connect(server.address().port, '127.0.0.1');
-    for (const socket of [client, upstream]) {
-      relaySockets.add(socket);
-      socket.once('close', () => relaySockets.delete(socket));
-    }
-    client.pipe(upstream);
-    upstream.pipe(client);
-    client.on('error', (error) => upstream.destroy(error));
-    upstream.on('error', (error) => client.destroy(error));
-  });
-  relay.on('error', (error) => { throw error; });
-  relay.listen(0, '127.0.0.1');
-  await once(relay, 'listening');
+  const { port } = server.address();
   return {
-    connect: () => net.connect({
-      port: relay.address().port,
-      host: '127.0.0.1',
-      allowHalfOpen: true,
-    }),
+    connect: () => track(net.connect({ port, host: '127.0.0.1', allowHalfOpen: true })),
     close: async () => {
       for (const socket of sockets) socket.destroy();
-      for (const socket of relaySockets) socket.destroy();
-      await new Promise((resolve) => relay.close(resolve));
       await new Promise((resolve) => server.close(resolve));
     },
   };
 };
 
-// A byte-mode Duplex over the relayed TCP socket. ignorePause() models a
+// A byte-mode Duplex over the fixture's TCP socket. ignorePause() models a
 // transport whose peer response and close_notify are already in memory.
 const openTransport = async (fixture) => {
   const tcp = fixture.connect();
@@ -183,6 +177,10 @@ const openClient = (transport, ca) => {
   let dataBeforeSecure = false;
   let clientError = null;
   const secure = deferred();
+  // The handshake promise rejects when the handshake cannot finish, so a stalled
+  // phase reports its error instead of the harness timeout; the catch keeps a
+  // rejection nobody awaits from escaping as unhandled.
+  secure.promise.catch(() => {});
   const finished = deferred();
   const ended = deferred();
   const closed = deferred();
@@ -200,8 +198,16 @@ const openClient = (transport, ca) => {
   });
   client.on('finish', () => { counts.finish += 1; finished.resolve(); });
   client.on('end', () => { counts.end += 1; ended.resolve(); });
-  client.on('close', () => { counts.close += 1; closed.resolve(); });
-  client.on('error', (error) => { counts.error += 1; clientError = error; });
+  client.on('close', () => {
+    counts.close += 1;
+    closed.resolve();
+    secure.reject(new Error('client closed before secureConnect'));
+  });
+  client.on('error', (error) => {
+    counts.error += 1;
+    clientError = error;
+    secure.reject(error);
+  });
   return {
     client,
     counts,
@@ -318,6 +324,7 @@ const runWriteFailure = async (fixture, files) => {
 };
 
 const runThinpackLifetime = async (files) => {
+  phase('lifetime: wrapper');
   const probe = new tls.TLSSocket(new PassThrough());
   const JSStreamSocket = probe._handle._parentWrap.constructor;
   assert.ok(JSStreamSocket.prototype instanceof net.Socket);
@@ -334,6 +341,7 @@ const runThinpackLifetime = async (files) => {
   await echoClosed;
   peer.destroy();
 
+  phase('lifetime: lazy start');
   let idleReads = 0;
   let idleWrites = 0;
   let idleEnds = 0;
@@ -359,6 +367,7 @@ const runThinpackLifetime = async (files) => {
   assert.equal(idleDestroys, 1);
   assert.equal(idleEnds, 0);
 
+  phase('lifetime: early failure');
   const earlySource = new PassThrough();
   const early = new tls.TLSSocket(earlySource, { ca: files.ca, servername: 'localhost' });
   let earlyErrors = 0;
@@ -388,6 +397,7 @@ const runThinpackLifetime = async (files) => {
   await earlyClosedOnce;
   assert.equal(earlyCloseErrors, 0);
 
+  phase('lifetime: rejected server');
   const rejectedServer = new tls.TLSSocket(new PassThrough(), { isServer: true });
   const rejectedServerError = once(rejectedServer, 'error');
   rejectedServer._start();
@@ -405,12 +415,16 @@ const main = async (root = process.argv[2] ?? '/app') => {
     cert: readFileSync(`${root}/server.pem`),
   };
   if (thinpack) await runThinpackLifetime(files);
+  phase('fixture');
   const fixture = await startTrustedFixture(files);
   try {
+    phase('echo');
     await runEcho(fixture, files);
     console.log('gated write, eager greeting, echo EOF ok');
+    phase('delayed');
     await runDelayed(fixture, files);
     console.log('delayed read ok');
+    phase('write failure');
     await runWriteFailure(fixture, files);
     console.log('transport write error ok');
     console.log('tls duplex client ok');
