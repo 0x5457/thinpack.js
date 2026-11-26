@@ -25,6 +25,8 @@
   };
   const internalErrors = () =>
     globalThis.__thinpack_require__("node:thinpack/internal/errors");
+  const internalValidators = () =>
+    globalThis.__thinpack_require__("node:thinpack/internal/validators");
   const COLORS_2 = 1;
   const COLORS_16 = 4;
   const COLORS_256 = 8;
@@ -354,6 +356,13 @@
     };
     return addProcessListener(event, wrapper, prepend);
   };
+  // Node's process is an EventEmitter, so an unset limit follows the live
+  // `EventEmitter.defaultMaxListeners`. `events` is optional: probe the builtin
+  // list before loading it, and keep Node's initial default when it is absent.
+  const defaultMaxListeners = () => {
+    if (!globalThis.__thinpack_builtin_modules.includes("node:events")) return 10;
+    return globalThis.__thinpack_require__("node:events").defaultMaxListeners;
+  };
 
   const process = {
     argv,
@@ -412,6 +421,16 @@
     },
     listeners: (event) => (processListeners.get(event) ?? []).slice(),
     listenerCount: (event) => (processListeners.get(event) ?? []).length,
+    _maxListeners: undefined,
+    getMaxListeners() {
+      if (this._maxListeners !== undefined) return this._maxListeners;
+      return defaultMaxListeners();
+    },
+    setMaxListeners(n) {
+      internalValidators().validateNumber(n, "setMaxListeners", 0);
+      this._maxListeners = n;
+      return this;
+    },
     features: {
       inspector: false,
       debug: false,
