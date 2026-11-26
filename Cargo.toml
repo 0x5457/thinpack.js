@@ -148,5 +148,5 @@ panic = "abort"
 [patch.crates-io]
 # The forks carry the patches that used to live in `vendor/`; each branch's THINPACK.md records
 # its delta from upstream and how to rebase it onto a new release.
-v8x = { git = "https://github.com/thinpack-js/v8x", rev = "5cff7ff752e2f8dfecd3e2b2acb33342d087f028" }
+v8x = { git = "https://github.com/thinpack-js/v8x", rev = "0b06c5644b73a684b716d6af54da413d8ea6165a" }
 deno_v8 = { git = "https://github.com/thinpack-js/deno", rev = "894c3bbc9b5a16a43f8fc3c53fbd7698fa8f2eb9" }
