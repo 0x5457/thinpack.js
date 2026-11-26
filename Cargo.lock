@@ -4423,7 +4423,7 @@ dependencies = [
 [[package]]
 name = "thinpack-jsc-rewrite"
 version = "0.2.0"
-source = "git+https://github.com/thinpack-js/v8x?rev=f1f4c537e66fdaf8a4a922e36e5441542fe671a7#f1f4c537e66fdaf8a4a922e36e5441542fe671a7"
+source = "git+https://github.com/thinpack-js/v8x?rev=5cff7ff752e2f8dfecd3e2b2acb33342d087f028#5cff7ff752e2f8dfecd3e2b2acb33342d087f028"
 
 [[package]]
 name = "thinpack-loader"
@@ -5289,18 +5289,22 @@ dependencies = [
 [[package]]
 name = "v8x"
 version = "149.4.0-rc.4"
-source = "git+https://github.com/thinpack-js/v8x?rev=f1f4c537e66fdaf8a4a922e36e5441542fe671a7#f1f4c537e66fdaf8a4a922e36e5441542fe671a7"
+source = "git+https://github.com/thinpack-js/v8x?rev=5cff7ff752e2f8dfecd3e2b2acb33342d087f028#5cff7ff752e2f8dfecd3e2b2acb33342d087f028"
 dependencies = [
  "bindgen 0.70.1",
  "bitflags",
+ "brotli-decompressor 6.3.2",
  "cc",
  "icu_collator",
  "icu_locale",
+ "icu_normalizer",
+ "icu_provider",
  "paste",
  "temporal_capi",
  "temporal_rs",
  "thinpack-jsc-rewrite",
  "timezone_provider",
+ "zoneinfo64",
 ]
 
 [[package]]
