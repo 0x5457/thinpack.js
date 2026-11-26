@@ -33,7 +33,7 @@ Windows x64 用户，请下载并解压[对应的发布包](https://github.com/t
 
 ## 体积与兼容性
 
-一行 `console.log("hello")` 在 [Linux x64 CI](https://github.com/thinpack-js/thinpack.js/actions/runs/45674940548) 上用 QuickJS 和 `--rebuild` 打包后为 **5.36 MiB**（5,615,289 字节）。这是包含运行时的独立可执行文件。
+一行 `console.log("hello")` 在 [Linux x64 CI](https://github.com/thinpack-js/thinpack.js/actions/runs/45758437086) 上用 QuickJS 和 `--rebuild` 打包后为 **4.03 MiB**（4,230,361 字节）。这是包含运行时的独立可执行文件。
 
 在 [Linux x64 基准测试](docs/benchmarks.md)中，同一个 `tsc` 用 Thinpack 打包后为 **9.0 MiB**，用 Bun `--compile` 打包后为 **109.6 MiB**。Thinpack 使用 QuickJS，配合 `--rebuild` 只链接所需的内置模块。直接使用预构建模板，产物会更大；QuickJS 也可能用较慢的启动速度换取更小的体积。
 
