@@ -788,6 +788,7 @@ fn parse_specifiers(
         late_import_bindings,
         late_import_factories,
         manifest_bindings: BTreeMap::new(),
+        importer_url_stable: None,
         warnings: &mut output.warnings,
         data_files: &mut output.data_files,
         static_dirs: &mut output.static_dirs,
@@ -854,6 +855,9 @@ struct SpecifierCollector<'a, 's> {
     /// Bindings assigned by `require.resolve`/`import.meta.resolve` to a literal
     /// package manifest.
     manifest_bindings: BTreeMap<SymbolId, BTreeSet<String>>,
+    /// Lazily proven once per module: whether no `import.meta` use can change the
+    /// module URL.
+    importer_url_stable: Option<bool>,
     warnings: &'s mut Vec<Warning>,
     data_files: &'s mut BTreeSet<PathBuf>,
     static_dirs: &'s mut BTreeMap<PathBuf, StaticDir>,
@@ -909,6 +913,15 @@ impl SpecifierCollector<'_, '_> {
                 .is_some_and(|symbol| self.require_bindings.contains(&symbol))
     }
 
+    /// Whether this module's `import.meta.url` provably stays its own URL. The
+    /// proof scans the module once and is cached for the remaining calls.
+    fn importer_url_is_stable(&mut self) -> bool {
+        let semantic = self.semantic;
+        *self
+            .importer_url_stable
+            .get_or_insert_with(|| require::importer_url_is_stable(semantic))
+    }
+
     /// A call through a stable `Function`-built import factory names its target the
     /// same way `import(...)` does.
     fn late_import_call(&mut self, call: &CallExpression<'_>) {
@@ -958,6 +971,25 @@ impl SpecifierCollector<'_, '_> {
         let target = match call.callee.without_parentheses() {
             Expression::Identifier(identifier) if self.is_require_binding(identifier) => {
                 Some((identifier.name.as_str(), "", false, false, false))
+            }
+            // `createRequire(import.meta.url)(<specifier>)` names a target of this
+            // module, exactly like a bound `require`, while the module URL is
+            // provably unchanged.
+            Expression::CallExpression(create_require)
+                if require::is_importer_require_call(create_require, self.semantic) =>
+            {
+                if self.importer_url_is_stable() {
+                    Some(("createRequire(import.meta.url)", "", false, false, false))
+                } else {
+                    self.warnings.push(Warning {
+                        message: format!(
+                            "{}: `createRequire(import.meta.url)(...)` may use a changed URL because this module also uses `import.meta`; add computed local files with `--include <path>` (relative to the project root)",
+                            self.path.display()
+                        ),
+                        strict: true,
+                    });
+                    None
+                }
             }
             Expression::StaticMemberExpression(member) => match &member.object {
                 Expression::ImportMeta(_) if member.property.name == "resolve" => {
@@ -2780,6 +2812,92 @@ mod tests {
                 "{source} did not pull {expected}: {capabilities:?}"
             );
         }
+    }
+
+    /// Analyze `/app/main.mjs` against the files the direct-load cases name: the
+    /// literal `cli-runtime.js` target, a lookalike helper module, and another base.
+    fn analyze_importer(source: &str) -> Analysis {
+        let fs = MemoryFs::new(&[
+            ("/app/main.mjs", source),
+            (
+                "/app/helper.js",
+                "module.exports.createRequire = () => () => {};\n",
+            ),
+            ("/app/other.js", ""),
+            ("/app/cli-runtime.js", "module.exports = 1;\n"),
+        ]);
+        analyze(Path::new("/app/main.mjs"), &fs).unwrap()
+    }
+
+    fn followed(analysis: &Analysis) -> bool {
+        analysis
+            .files
+            .contains(&PathBuf::from("/app/cli-runtime.js"))
+    }
+
+    #[test]
+    fn follows_only_a_proven_direct_create_require_of_the_importer() {
+        // The named import, an import alias, and a module that also binds a
+        // require from the same import.
+        for source in [
+            "import { createRequire } from 'node:module';\ncreateRequire(import.meta.url)('./cli-runtime.js');\n",
+            "import { createRequire as cr } from 'module';\ncr(import.meta.url)('./cli-runtime.js');\n",
+            "import { createRequire } from 'node:module';\nconst bound = createRequire(import.meta.url);\nconsole.log(bound);\ncreateRequire(import.meta.url)('./cli-runtime.js');\n",
+        ] {
+            let analysis = analyze_importer(source);
+            assert!(
+                followed(&analysis) && analysis.warnings.is_empty(),
+                "{source}: {analysis:?}"
+            );
+        }
+        // A local helper, shadowed binding, local re-export, another base, or a
+        // computed member is not the named import.
+        for source in [
+            "function createRequire(name) { return require; }\ncreateRequire(import.meta.url)('./cli-runtime.js');\n",
+            "import { createRequire } from 'node:module';\nfunction wrap(createRequire) { createRequire(import.meta.url)('./cli-runtime.js'); }\nwrap(() => () => {});\n",
+            "import { createRequire } from './helper.js';\ncreateRequire(import.meta.url)('./cli-runtime.js');\n",
+            "import { createRequire } from 'node:module';\ncreateRequire('/app/other.js')('./cli-runtime.js');\n",
+            "import { createRequire } from 'node:module';\ncreateRequire(import.meta['url'])('./cli-runtime.js');\n",
+        ] {
+            assert!(!followed(&analyze_importer(source)), "{source}");
+        }
+    }
+
+    #[test]
+    fn a_changed_importer_url_is_not_followed() {
+        // A write or an escape makes every `import.meta.url` read unproven.
+        for source in [
+            "import { createRequire } from 'node:module';\nimport.meta.url = '/app/other.js';\ncreateRequire(import.meta.url)('./cli-runtime.js');\n",
+            "import { createRequire } from 'node:module';\nconst meta = import.meta;\nmeta.url = '/app/other.js';\ncreateRequire(import.meta.url)('./cli-runtime.js');\n",
+        ] {
+            let analysis = analyze_importer(source);
+            assert!(
+                !followed(&analysis)
+                    && analysis.warnings.iter().any(|warning| warning.strict
+                        && warning.message.contains("changed URL")
+                        && warning.message.contains("--include")),
+                "{source}: {analysis:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_computed_direct_create_require_is_a_strict_warning() {
+        let analysis = analyze_importer(
+            "import { createRequire } from 'node:module';\ncreateRequire(import.meta.url)(process.argv[2]);\n",
+        );
+        let [warning] = analysis.warnings.as_slice() else {
+            panic!("expected one warning, got {:?}", analysis.warnings);
+        };
+        assert!(
+            warning.strict
+                && warning
+                    .message
+                    .contains("`createRequire(import.meta.url)(...)`")
+                && warning.message.contains("--include"),
+            "{}",
+            warning.message
+        );
     }
 
     #[test]
