@@ -34,16 +34,6 @@ const exchange = (port, payload) => new Promise((resolve, reject) => {
   });
 });
 
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const waitUntil = async (predicate, message, timeout = 1000) => {
-  const deadline = Date.now() + timeout;
-  while (!predicate()) {
-    if (Date.now() > deadline) throw new Error(message);
-    await delay(5);
-  }
-};
-
 (async () => {
   const defaults = http.createServer();
   assert.deepEqual(
@@ -196,9 +186,12 @@ const waitUntil = async (predicate, message, timeout = 1000) => {
     await close(incomplete);
   }
 
-  // A keep-alive connection handles another request, then closes after its idle deadline.
+  // A keep-alive connection handles another request, then closes after its idle
+  // deadline. The deadline leaves ample margin for the client to observe the first
+  // response and send the second request before the server closes the idle socket.
+  const keepAliveTimeout = 1000;
   const withKeepAlive = http.createServer({
-    keepAliveTimeout: 100,
+    keepAliveTimeout,
     keepAliveTimeoutBuffer: 0,
     connectionsCheckingInterval: 10,
   }, (req, res) => {
@@ -208,28 +201,67 @@ const waitUntil = async (predicate, message, timeout = 1000) => {
   const keepAlivePort = await listen(withKeepAlive);
   const keepAliveSocket = net.connect(keepAlivePort, '127.0.0.1');
   let keepAliveData = '';
-  let keepAliveClosed = false;
+  let keepAliveClosedAt;
   keepAliveSocket.setEncoding('utf8');
   keepAliveSocket.on('data', (chunk) => { keepAliveData += chunk; });
   keepAliveSocket.on('error', () => {});
-  keepAliveSocket.once('close', () => { keepAliveClosed = true; });
+  keepAliveSocket.once('close', () => { keepAliveClosedAt = process.hrtime.bigint(); });
+  const keepAliveResponses = () => keepAliveData.split('\r\n\r\nok').length - 1;
+
+  // Wait on socket events rather than a polling timer, so a delayed poll cannot be
+  // mistaken for a delayed response.
+  const waitForResponses = (count, message) => new Promise((resolve, reject) => {
+    if (keepAliveClosedAt !== undefined && keepAliveResponses() < count) {
+      reject(new Error(`${message} (socket closed first)`));
+      return;
+    }
+    let timeout;
+    const finish = (error) => {
+      clearTimeout(timeout);
+      keepAliveSocket.off('data', check);
+      keepAliveSocket.off('close', onClose);
+      if (error) reject(error); else resolve();
+    };
+    const check = () => {
+      if (keepAliveResponses() >= count) finish();
+    };
+    const onClose = () => finish(new Error(`${message} (socket closed first)`));
+    keepAliveSocket.on('data', check);
+    keepAliveSocket.once('close', onClose);
+    timeout = setTimeout(() => finish(new Error(message)), 5000);
+    check();
+  });
   try {
     await new Promise((resolve, reject) => {
       keepAliveSocket.once('connect', resolve);
       keepAliveSocket.once('error', reject);
     });
     keepAliveSocket.write('GET /1 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n');
-    await waitUntil(
-      () => keepAliveData.split('\r\n\r\nok').length > 1,
-      'first keep-alive response missing',
-    );
+    await waitForResponses(1, 'first keep-alive response missing');
+    const secondRequestAt = process.hrtime.bigint();
     keepAliveSocket.write('GET /2 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n');
-    await waitUntil(
-      () => keepAliveData.split('\r\n\r\nok').length > 2,
-      'second keep-alive response missing',
-    );
+    await waitForResponses(2, 'second keep-alive response missing');
+    assert.equal(keepAliveResponses(), 2);
     assert.equal((keepAliveData.match(/HTTP\/1\.1 200 OK/g) ?? []).length, 2);
-    await waitUntil(() => keepAliveClosed, 'keep-alive socket did not close');
+    assert.equal((keepAliveData.match(/Connection: keep-alive/g) ?? []).length, 2);
+    await new Promise((resolve, reject) => {
+      if (keepAliveClosedAt !== undefined) {
+        resolve();
+        return;
+      }
+      const timeout = setTimeout(
+        () => reject(new Error('keep-alive socket did not close')),
+        keepAliveTimeout + 5000,
+      );
+      keepAliveSocket.once('close', () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+    });
+    // The idle deadline is armed after the second request, so a slow scheduler can
+    // only make this interval longer. The tolerance covers timer granularity.
+    const idle = Number((keepAliveClosedAt - secondRequestAt) / 1000000n);
+    assert.ok(idle >= keepAliveTimeout - 50, `closed after ${idle}ms of idle time`);
   } finally {
     keepAliveSocket.destroy();
     await close(withKeepAlive);
