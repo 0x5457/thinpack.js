@@ -81,6 +81,32 @@ one final computed segment, or whose argument is a template literal naming
 ``./commands/${command}.js``, packs that directory's files matching the segment's literal suffix,
 or JavaScript modules when it has none; other computed module paths still need `--include`.
 
+
+If an app scans a package path only known at run time, include that directory explicitly. For
+Node-RED 5.0.10, include all of `@node-red/nodes` so its built-in nodes register:
+
+```sh
+thinpack pack node_modules/node-red/red.js \
+  --include node_modules/@node-red/nodes -o node-red
+```
+
+A package selected by a config file may also need an explicit include. For Babel 8
+with `@babel/preset-typescript` in `.babelrc`:
+
+```sh
+thinpack pack node_modules/@babel/cli/bin/babel.js \
+  --include node_modules/@babel/preset-typescript -o babel
+```
+
+For Marp CLI 4.5.1 HTML output, include its runtime-selected `bespoke.js`.
+Marp also has a fallback that references `emitter` but is not used by this workflow:
+
+```sh
+thinpack pack node_modules/@marp-team/marp-cli/marp-cli.js \
+  --include node_modules/@marp-team/marp-cli/lib/bespoke.js \
+  --allow-missing emitter -o marp
+```
+
 The optionality of a guarded `require`/`import()` or an `optionalDependencies` entry extends
 through the static dependencies it reaches: a missing module there becomes a warning, and the
 handled import fails at run time as it does under Node. A file also reached by a required edge
@@ -192,6 +218,8 @@ for adding a module.
   bundle at startup. Omitting the capability omits both globals. [Compatibility gaps](gaps.md) records what
   remains different.
 - No N-API or native addon loading; code that needs native code goes through `node:ffi`.
+  Jest 30.2.0 uses the `unrs-resolver` native addon; run Jest under Node. Including
+  the test environment explicitly does not fix the native resolver.
 - `crypto` key material covers RSA/RSA-PSS, EC (P-256/P-384/P-521/secp256k1), Ed25519 and
   X25519, plus secret keys from `createSecretKey` for HMAC, ciphers and HKDF. DSA, DH,
   Ed448 and X448 keys are rejected; encrypted PKCS#1/SEC1 PEM is not supported (PKCS#8
