@@ -107,6 +107,14 @@ thinpack pack node_modules/@marp-team/marp-cli/marp-cli.js \
   --allow-missing emitter -o marp
 ```
 
+A worker script reached through a runtime path also needs an explicit include.
+For pnpm 10.34.9's offline install worker:
+
+```sh
+thinpack pack node_modules/pnpm/bin/pnpm.cjs \
+  --include node_modules/pnpm/dist/worker.js -o pnpm
+```
+
 The optionality of a guarded `require`/`import()` or an `optionalDependencies` entry extends
 through the static dependencies it reaches: a missing module there becomes a warning, and the
 handled import fails at run time as it does under Node. A file also reached by a required edge
