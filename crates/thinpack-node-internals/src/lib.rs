@@ -66,6 +66,7 @@ const BUILTINS: &[ExtensionFileSource] = &[
         "node:thinpack/internal/streams/utils",
         thinpack_js::js!("streams_utils.js"),
     ),
+    ExtensionFileSource::new_compressed("node:thinpack/internal/tty", thinpack_js::js!("tty.js")),
     ExtensionFileSource::new_compressed("node:thinpack/internal/util", thinpack_js::js!("util.js")),
     ExtensionFileSource::new_compressed(
         "node:thinpack/internal/util/colors",

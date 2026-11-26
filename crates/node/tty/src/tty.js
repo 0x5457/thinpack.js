@@ -38,6 +38,17 @@
 
   const writeTargets = new WeakMap();
 
+  // Node's color methods read only the environment and their arguments, never
+  // the stream. The shared implementation loads on first use so loading node:tty
+  // neither duplicates it nor pulls in the color tables for unrelated APIs.
+  let ttyColors;
+  const ttyColorSupport = () =>
+    ttyColors ??= require("node:thinpack/internal/tty");
+  const getColorDepth = (environment = process.env) =>
+    ttyColorSupport().getColorDepth(environment);
+  const hasColors = (count, environment) =>
+    ttyColorSupport().hasColors(count, environment);
+
   class WriteStream {
     constructor(fd = 1) {
       const target = ttyTarget(fd);
@@ -69,14 +80,6 @@
       return [this.columns, this.rows];
     }
 
-    getColorDepth(environment) {
-      return writeTargets.get(this).getColorDepth(environment);
-    }
-
-    hasColors(count = 16, environment) {
-      return writeTargets.get(this).hasColors(count, environment);
-    }
-
     cursorTo(x, y, callback) {
       return ansi("cursorTo")(this, x, y, callback);
     }
@@ -93,6 +96,11 @@
       return ansi("clearScreenDown")(this, callback);
     }
   }
+
+  // Node's color methods read only the environment and their arguments, never
+  // the stream, so the prototype exposes them without touching one.
+  WriteStream.prototype.getColorDepth = getColorDepth;
+  WriteStream.prototype.hasColors = hasColors;
 
   class ReadStream {
     #target;
