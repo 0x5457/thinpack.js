@@ -99,12 +99,23 @@ thinpack pack node_modules/@babel/cli/bin/babel.js \
 ```
 
 For Marp CLI 4.5.1 HTML output, include its runtime-selected `bespoke.js`.
-Marp also has a fallback that references `emitter` but is not used by this workflow:
+Marp references `emitter` in a fallback for `require('events')` that this workflow
+does not use. `--allow-missing emitter` lets packing proceed; it does not supply
+the module if that branch runs:
 
 ```sh
 thinpack pack node_modules/@marp-team/marp-cli/marp-cli.js \
   --include node_modules/@marp-team/marp-cli/lib/bespoke.js \
   --allow-missing emitter -o marp
+```
+
+For webpack 5.102.1 and webpack-cli 6.0.1, production and lazy-chunk builds
+need the CLI plugin and the worker script. The plugin pulls in webpack itself:
+
+```sh
+thinpack pack node_modules/webpack/bin/webpack.js \
+  --include node_modules/webpack-cli/lib/plugins/cli-plugin.js \
+  --include node_modules/jest-worker/build/workers/threadChild.js -o webpack
 ```
 
 A worker script reached through a runtime path also needs an explicit include.
