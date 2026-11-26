@@ -3,7 +3,7 @@
   const net = require("node:net");
   const { UVException } = require("node:thinpack/internal/errors");
   const Worker = require("node:thinpack/internal/cluster/worker");
-  const channel = require("node:thinpack/internal/cluster/channel");
+  const channel = require("node:thinpack/internal/child_process/channel");
 
   const cluster = new EventEmitter();
   cluster.isWorker = true;
@@ -39,7 +39,7 @@
     });
 
     net.Server[kClusterListen] = onListen;
-    channel.sendOnline();
+    channel.sendInternalSync({ act: "online" });
   };
 
   function onListen(server, options, bind) {

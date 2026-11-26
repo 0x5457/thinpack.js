@@ -4,6 +4,7 @@
     Child,
     signalName,
   } = require("node:thinpack/internal/child_process");
+  const ipc = require("node:thinpack/internal/child_process/channel");
 
   const notImplemented = (name) => new codes.ERR_NOT_IMPLEMENTED(`child_process.${name}`);
 
@@ -33,24 +34,74 @@
       .join("\0");
   };
 
-  // Node's `stdio` option, narrowed to the connections this runtime supports: each of the
-  // three standard streams is piped, inherited from the parent or ignored. An explicit
-  // descriptor is accepted in its own position, so `[0, 1, 2]` is the long form of
-  // `'inherit'`; streams and extra descriptors are not supported.
-  const stdioOf = (options) => {
-    const value = options.stdio || "pipe";
-    const entries = typeof value === "string" ? [value, value, value] : value;
-    if (!Array.isArray(entries) || entries.length > 3) {
+  const stdioError = (code, message) => {
+    const error = new Error(message);
+    error.code = code;
+    return error;
+  };
+
+  // Node's `stdio` option, narrowed to the connections this runtime supports. A standard
+  // slot is piped, inherited, ignored, or an explicit descriptor moved to that slot; one
+  // further slot may be `'ipc'`. Slots beyond stderr may only be ignored or `'ipc'`, since
+  // the runtime exposes no `child.stdio` array for extra pipes.
+  const stdioOf = (options, sync = false) => {
+    const value = options.stdio ?? "pipe";
+    let entries;
+    if (typeof value === "string") {
+      if (value === "inherit") entries = [0, 1, 2];
+      else if (value === "ignore" || value === "overlapped" || value === "pipe") {
+        entries = [value, value, value];
+      } else {
+        throw new codes.ERR_INVALID_ARG_VALUE("stdio", value);
+      }
+    } else if (Array.isArray(value)) {
+      entries = [...value];
+    } else {
       throw new codes.ERR_INVALID_ARG_VALUE("stdio", value);
     }
-    return [0, 1, 2].map((index) => {
+    while (entries.length < 3) entries.push(undefined);
+
+    const streams = [];
+    let ipcSlot = -1;
+    const useIpc = (index) => {
+      if (ipcSlot !== -1) {
+        throw stdioError("ERR_IPC_ONE_PIPE", "Child process can have only one IPC pipe");
+      }
+      ipcSlot = index;
+    };
+    for (let index = 0; index < 3; index += 1) {
       const entry = entries[index] ?? "pipe";
-      const mode = typeof entry === "number" && entry === index ? "inherit" : entry;
-      if (mode !== "pipe" && mode !== "inherit" && mode !== "ignore") {
+      if (entry === "pipe" || entry === "overlapped") {
+        streams.push("pipe");
+      } else if (entry === "ignore") {
+        streams.push("ignore");
+      } else if (entry === "inherit") {
+        streams.push("inherit");
+      } else if (entry === "ipc") {
+        useIpc(index);
+        // The IPC descriptor replaces this stream in the child.
+        streams.push("ignore");
+      } else if (typeof entry === "number") {
+        if (entry < 0) streams.push("pipe");
+        else if (entry === index) streams.push("inherit");
+        else streams.push(`fd:${entry}`);
+      } else {
         throw new codes.ERR_INVALID_ARG_VALUE("stdio", entry);
       }
-      return mode;
-    });
+    }
+    for (let index = 3; index < entries.length; index += 1) {
+      const entry = entries[index] ?? "ignore";
+      if (entry === "ignore") continue;
+      if (entry === "ipc") {
+        useIpc(index);
+        continue;
+      }
+      throw new codes.ERR_INVALID_ARG_VALUE("stdio", entry);
+    }
+    if (sync && ipcSlot !== -1) {
+      throw stdioError("ERR_IPC_SYNC_FORK", "IPC cannot be used with synchronous forks");
+    }
+    return { streams, ipc: ipcSlot };
   };
 
   class ChildProcess extends Child {
@@ -64,7 +115,16 @@
     }
 
     start() {
-      const stdio = stdioOf(this.#options);
+      const { streams, ipc: ipcSlot } = stdioOf(this.#options);
+      const serialization = this.#options.serialization;
+      if (serialization !== undefined && serialization !== "json") {
+        if (serialization !== "advanced") {
+          throw new codes.ERR_INVALID_ARG_VALUE("options.serialization", serialization);
+        }
+        if (ipcSlot !== -1) {
+          throw new codes.ERR_NOT_IMPLEMENTED("child_process serialization: advanced");
+        }
+      }
       const argv = [this.spawnfile, ...this.spawnargs.slice(1)].join("\0");
       let spawned;
       try {
@@ -72,18 +132,25 @@
           argv,
           envString(this.#options.env),
           this.#options.cwd ? String(this.#options.cwd) : "",
-          stdio.join("\0"),
+          streams.join("\0"),
+          ipcSlot,
         );
       } catch (error) {
         queueMicrotask(() => this.emit("error", spawnError(error, this.spawnfile)));
         return;
       }
-      const [id, pid] = spawned.split("\0").map(Number);
+      const [id, pid, channel, fd] = spawned.split("\0").map(Number);
       this._attach(id, pid, {
-        stdin: stdio[0] === "pipe",
-        stdout: stdio[1] === "pipe",
-        stderr: stdio[2] === "pipe",
+        stdin: streams[0] === "pipe",
+        stdout: streams[1] === "pipe",
+        stderr: streams[2] === "pipe",
       });
+      if (channel >= 0) {
+        ipc.attach(this, channel, {
+          fd,
+          connect: Deno.core.ops.op_child_channel_accept(channel, id),
+        });
+      }
       queueMicrotask(() => this.emit("spawn"));
     }
   }
@@ -148,7 +215,7 @@
   };
 
   const runSync = (file, args, options = {}) => {
-    const stdio = stdioOf(options);
+    const { streams } = stdioOf(options, true);
     const argv = [String(file), ...args.map(String)].join("\0");
     let payload;
     try {
@@ -156,7 +223,7 @@
         argv,
         envString(options.env),
         options.cwd ? String(options.cwd) : "",
-        stdio.join("\0"),
+        streams.join("\0"),
         options.input === undefined ? new Uint8Array() : toBytes(options.input),
       );
     } catch (error) {
@@ -170,10 +237,10 @@
     const pid = buffer.readUInt32LE(8);
     const stdoutLength = buffer.readUInt32LE(12);
     const stderrLength = buffer.readUInt32LE(16);
-    const stdout = stdio[1] === "pipe"
+    const stdout = streams[1] === "pipe"
       ? Buffer.from(buffer.subarray(20, 20 + stdoutLength))
       : null;
-    const stderr = stdio[2] === "pipe"
+    const stderr = streams[2] === "pipe"
       ? Buffer.from(buffer.subarray(20 + stdoutLength, 20 + stdoutLength + stderrLength))
       : null;
     const encoding = options.encoding;

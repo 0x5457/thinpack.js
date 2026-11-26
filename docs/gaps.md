@@ -199,6 +199,23 @@ the divergence, why it exists, and where it lives.
   `ERR_NOT_IMPLEMENTED` (`crates/node/http2/src/ops.rs`,
   `crates/node/net/src/ops.rs`).
 
+## Child processes
+
+- `child_process.spawn` accepts `'pipe'`, `'inherit'`, `'ignore'`, `null`/`undefined`, a
+  numeric parent descriptor in a standard slot, and one `'ipc'` entry in any slot.
+  `'overlapped'` is treated as `'pipe'`. Slots beyond stderr may only be ignored or the
+  single IPC slot; extra pipes and descriptors are rejected instead of silently dropped
+  (`crates/node/child-process/src/child_process.js`).
+- The IPC channel uses Node's newline-delimited JSON on unix, so a packed parent can talk
+  to a native Node child and a native Node parent can talk to a packed child.
+  `serialization: 'advanced'` with an IPC slot throws `ERR_NOT_IMPLEMENTED`, handle
+  passing is unsupported, and explicit descriptor slots are unix-only. On Windows the
+  channel is a loopback TCP connection rather than an inherited handle, so it connects
+  packed processes but not a native Node peer (`crates/thinpack-child/src/channel.js`,
+  `crates/thinpack-child/src/channel.rs`).
+- `child_process.fork` still throws `ERR_NOT_IMPLEMENTED`; a packed app can use `spawn`
+  with `'ipc'` (`crates/node/child-process/src/child_process.js`).
+
 ## Worker threads
 
 - Workers in a packed executable see the `/app` virtual file system, but a

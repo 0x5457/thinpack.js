@@ -10,8 +10,6 @@ thinpack-js.workspace = true
 thinpack-child.workspace = true
 deno_core.workspace = true
 deno_error.workspace = true
-thinpack-core.workspace = true
-tokio.workspace = true
 
 [lints]
 workspace = true

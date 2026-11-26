@@ -14,7 +14,9 @@ fn wire_error(error: ChildError) -> JsErrorBox {
     JsErrorBox::new("Error", error.to_wire())
 }
 
-/// Spawns the child and returns `id\0pid`, the two values the `ChildProcess` needs.
+/// Spawns the child and returns `id\0pid\0channel\0fd`.
+///
+/// `channel` and `fd` are `-1` when the stdio array has no IPC slot.
 #[op2]
 #[string]
 fn op_child_spawn(
@@ -22,12 +24,20 @@ fn op_child_spawn(
     #[string] env: &str,
     #[string] cwd: &str,
     #[string] stdio: &str,
+    ipc: i32,
 ) -> Result<String, JsErrorBox> {
     let request = Spawn::parse(argv, env, cwd).map_err(wire_error)?;
     let stdio = Stdio::parse(stdio).map_err(wire_error)?;
-    thinpack_child::spawn(&request, stdio, None)
-        .map(|spawned| format!("{}\0{}", spawned.id, spawned.pid))
-        .map_err(wire_error)
+    if ipc < 0 {
+        let spawned = thinpack_child::spawn(&request, stdio, None).map_err(wire_error)?;
+        return Ok(format!("{}\0{}\0-1\0-1", spawned.id, spawned.pid));
+    }
+    let spawned =
+        thinpack_child::channel::spawn_with_channel(request, stdio, ipc).map_err(wire_error)?;
+    Ok(format!(
+        "{}\0{}\0{}\0{}",
+        spawned.spawned.id, spawned.spawned.pid, spawned.channel, spawned.fd
+    ))
 }
 
 /// Runs a child to completion and returns `status`, `signal`, `pid` and both output lengths
