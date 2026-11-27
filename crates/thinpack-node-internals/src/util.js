@@ -55,6 +55,7 @@
   const customInspectSymbol = Symbol.for("nodejs.util.inspect.custom");
   const kCustomPromisifiedSymbol = Symbol.for("nodejs.util.promisify.custom");
   const kCustomPromisifyArgsSymbol = Symbol("customPromisifyArgs");
+  const connectionRefused = ["ECONNREFUSED", "connection refused"];
   const systemErrors = new Map([
     [-7, ["E2BIG", "argument list too long"]],
     [-13, ["EACCES", "permission denied"]],
@@ -82,7 +83,7 @@
     [-125, ["ECANCELED", "operation canceled"]],
     [-4080, ["ECHARSET", "invalid Unicode character"]],
     [-103, ["ECONNABORTED", "software caused connection abort"]],
-    [-111, ["ECONNREFUSED", "connection refused"]],
+    [-111, connectionRefused],
     [-104, ["ECONNRESET", "connection reset by peer"]],
     [-89, ["EDESTADDRREQ", "destination address required"]],
     [-17, ["EEXIST", "file already exists"]],
@@ -142,11 +143,17 @@
     [-49, ["EUNATCH", "protocol driver not attached"]],
     [-8, ["ENOEXEC", "exec format error"]],
   ]);
-  // The table holds Linux errno values; macOS and Windows use libuv's
-  // platform EMSGSIZE values, so map those to the same code.
+  // The table holds Linux errno values. macOS and Windows use libuv's platform
+  // values for EMSGSIZE and ECONNREFUSED, so project those entries to the same
+  // code and message instead of duplicating the complete platform tables.
+  // Provenance: pinned Deno 894c3bb ext/node/polyfills/internal_binding/uv.ts.
   if (process.platform === "win32") {
+    systemErrors.delete(-111);
+    systemErrors.set(-4078, connectionRefused);
     systemErrors.set(-4065, ["EMSGSIZE", "message too long"]);
   } else if (process.platform === "darwin") {
+    systemErrors.delete(-111);
+    systemErrors.set(-61, connectionRefused);
     systemErrors.set(-40, ["EMSGSIZE", "message too long"]);
   }
   const once = (callback, { preserveReturnValue = false } = kEmptyObject) => {

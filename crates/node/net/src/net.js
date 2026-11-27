@@ -56,6 +56,7 @@
     #releaseWaiters = [];
     #attempt = 0;
     #localFamily = undefined;
+    #pending = null;
 
     constructor(options = {}) {
       super({ ...options, allowHalfOpen: options.allowHalfOpen ?? false });
@@ -98,6 +99,7 @@
       this._thinpackConnectionId = id;
       const [kind, localRaw, remoteRaw] = Deno.core.ops.op_net_info(id).split("\0");
       this.connecting = false;
+      this.#connecting = false;
       if (kind !== "tcp") {
         this.#isStream = true;
       } else {
@@ -143,6 +145,7 @@
           this.#adopt(id);
           this.emit("connect");
           this.emit("ready");
+          this.#replayPending();
         })
         .catch((error) => {
           this.connecting = false;
@@ -150,6 +153,26 @@
           this.destroy(socketError(error, "connect", path ?? `${host}:${port}`));
         });
       return this;
+    }
+
+    // `Writable` serializes `_write` and `_final`, so at most one of them waits
+    // for the connection. Keep that one continuation instead of queueing data;
+    // the stream's own buffering holds everything behind it.
+    #defer(run, fail) {
+      this.#pending = { run, fail };
+    }
+
+    #replayPending() {
+      const pending = this.#pending;
+      this.#pending = null;
+      if (pending === null) return;
+      if (this.destroyed || this.#id === 0) {
+        // The socket was destroyed while 'connect' listeners ran. Node reports
+        // the closed handle to the write; an end just settles the stream.
+        if (pending.fail !== null) pending.fail(new codes.ERR_SOCKET_CLOSED());
+        return;
+      }
+      pending.run();
     }
 
     _read() {
@@ -197,6 +220,14 @@
     }
 
     _write(chunk, encoding, callback) {
+      if (this.#connecting) {
+        this.#defer(() => this.#writeNow(chunk, callback), callback);
+        return;
+      }
+      this.#writeNow(chunk, callback);
+    }
+
+    #writeNow(chunk, callback) {
       this.#refreshTimeout();
       Deno.core.ops
         .op_net_write(this.#id, chunk)
@@ -208,6 +239,17 @@
     }
 
     _final(callback) {
+      if (this.#connecting) {
+        // An empty end still waits for the connection; shutting down (or
+        // closing) the pending handle would fail, and the readable half has to
+        // stay open for the peer's response after the FIN.
+        this.#defer(() => this.#shutdownNow(callback), null);
+        return;
+      }
+      this.#shutdownNow(callback);
+    }
+
+    #shutdownNow(callback) {
       Deno.core.ops.op_net_shutdown(this.#id).then(
         () => callback(),
         (error) => callback(socketError(error, "shutdown", this.remoteAddress)),
@@ -219,11 +261,13 @@
         callback(error);
         return;
       }
+      const pending = this.#pending;
+      const connected = this.#id !== 0;
       if (this.#timeout) {
         clearTimeout(this.#timeout);
         this.#timeout = null;
       }
-      if (this.#id !== 0) {
+      if (connected) {
         // Cancel the pending read first, mirroring `_thinpackReleaseSocket`:
         // `op_net_close` only shuts the fd down (a no-op on a pipe-backed fd),
         // so a blocked read would keep the transport alive and the event loop
@@ -231,11 +275,24 @@
         Deno.core.ops.op_net_cancel_read(this.#id);
         Deno.core.ops.op_net_close(this.#id);
         this.#id = 0;
-      } else if (this.#attempt !== 0) {
-        Deno.core.ops.op_net_cancel_connect(this.#attempt);
+      } else {
+        this.#pending = null;
+        if (this.#attempt !== 0) {
+          Deno.core.ops.op_net_cancel_connect(this.#attempt);
+        }
       }
       this.connecting = false;
+      this.#connecting = false;
       callback(error);
+      // `Writable` only runs buffered callbacks once the in-flight write
+      // finishes. Report the closed connection to that write first, after the
+      // destroy notifications above, so the stream can then settle the rest.
+      if (pending !== null && !connected && pending.fail !== null) {
+        process.nextTick(
+          pending.fail,
+          new codes.ERR_SOCKET_CLOSED_BEFORE_CONNECTION(),
+        );
+      }
     }
     _thinpackReleaseSocket() {
       this.#released = true;

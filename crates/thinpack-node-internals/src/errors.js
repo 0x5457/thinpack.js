@@ -592,6 +592,14 @@
     "write after end",
     TypeError,
   );
+  const ERR_SOCKET_CLOSED = streamError(
+    "ERR_SOCKET_CLOSED",
+    "Socket is closed",
+  );
+  const ERR_SOCKET_CLOSED_BEFORE_CONNECTION = streamError(
+    "ERR_SOCKET_CLOSED_BEFORE_CONNECTION",
+    "Socket closed before the connection was established",
+  );
   const invalidState = (Base) =>
     class extends Base {
       constructor(...args) {
@@ -797,6 +805,8 @@
       ERR_STREAM_UNABLE_TO_PIPE,
       ERR_STREAM_UNSHIFT_AFTER_END_EVENT,
       ERR_STREAM_WRITE_AFTER_END,
+      ERR_SOCKET_CLOSED,
+      ERR_SOCKET_CLOSED_BEFORE_CONNECTION,
       ERR_OUT_OF_RANGE,
       ERR_UNHANDLED_ERROR,
       ERR_UNKNOWN_SIGNAL,
