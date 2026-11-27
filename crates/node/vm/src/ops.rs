@@ -197,6 +197,13 @@ fn op_vm_compile_function<'s>(
     } else if let Some(exception) = tc_scope.exception() {
         out.set_index(tc_scope, 0, v8::Boolean::new(tc_scope, true).into());
         out.set_index(tc_scope, 1, exception);
+    } else {
+        // V8 returns an empty result without an exception for an unparsable
+        // parameter list; report it in the parsing realm rather than as null.
+        let message = v8::String::new(tc_scope, "Invalid function parameters")
+            .expect("the message fits in a V8 string");
+        out.set_index(tc_scope, 0, v8::Boolean::new(tc_scope, true).into());
+        out.set_index(tc_scope, 1, v8::Exception::syntax_error(tc_scope, message));
     }
     Ok(out)
 }
