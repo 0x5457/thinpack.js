@@ -102,6 +102,11 @@ the divergence, why it exists, and where it lives.
 
 ## TLS
 
+- Client TLS works over any byte-mode `Duplex` (`tls.connect({ socket })` and
+  `new tls.TLSSocket(duplex)`), including an HTTP/2 CONNECT stream. A real
+  `JSStreamSocket` adapter moves ciphertext, while CA, SNI and ALPN checks stay
+  in the existing rustls client configuration. TLS servers still require a
+  native TCP socket; serving TLS over a `Duplex` is not implemented.
 - rustls performs real hostname verification, but the peer certificate never
   crosses into JavaScript: `getPeerCertificate()`, `getSession()` and
   `getCACertificates()` throw `ERR_NOT_IMPLEMENTED` instead of inventing

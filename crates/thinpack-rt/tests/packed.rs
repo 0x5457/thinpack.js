@@ -2113,6 +2113,41 @@ console.log('require.extensions ok');
         capabilities: &["assert"],
         error: None,
     },
+    PackedTest {
+        name: "packed::tls-duplex-client",
+        directory: "tls-duplex-client",
+        entry: "/app/main.js",
+        files: &[
+            (
+                "/app/main.js",
+                r"
+const { main } = require('./duplex.cjs');
+main('/app').catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+",
+            ),
+            (
+                "/app/duplex.cjs",
+                include_str!("../../../tests/fixtures/tls/duplex.cjs"),
+            ),
+            (
+                "/app/ca.pem",
+                include_str!("../../../tests/fixtures/tls/ca.pem"),
+            ),
+            (
+                "/app/server.key",
+                include_str!("../../../tests/fixtures/tls/server.key"),
+            ),
+            (
+                "/app/server.pem",
+                include_str!("../../../tests/fixtures/tls/server.pem"),
+            ),
+        ],
+        capabilities: &["assert", "events", "fs", "net", "stream", "tls"],
+        error: None,
+    },
 ];
 /// Packed startup cases whose source is generated because the payload is large.
 struct StartupTest {

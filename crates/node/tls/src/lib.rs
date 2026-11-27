@@ -15,7 +15,11 @@ pub fn init() -> Extension {
 
     Extension {
         name: "thinpack_node_tls",
-        deps: &["thinpack_node_internals", "thinpack_node_stream"],
+        deps: &[
+            "thinpack_node_internals",
+            "thinpack_node_stream",
+            "thinpack_node_net",
+        ],
         ops: Cow::Borrowed(ops::OPS),
         lazy_loaded_js_files: Cow::Borrowed(BUILTINS),
         ..Default::default()

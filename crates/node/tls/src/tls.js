@@ -1,5 +1,6 @@
 (() => {
   const { Duplex } = require("node:stream");
+  const { Socket } = require("node:net");
   const { EventEmitter } = require("node:events");
   const { codes, opErrorParts, UVException } = require("node:thinpack/internal/errors");
   const { parseAddress } = require("node:thinpack/internal/net/address");
@@ -13,6 +14,97 @@
   };
   const alpnOf = (options) =>
     Array.isArray(options.ALPNProtocols) ? options.ALPNProtocols.join(",") : "";
+  const clientAlpnOf = (options) =>
+    Array.isArray(options.ALPNProtocols)
+      ? options.ALPNProtocols.join(",")
+      : options.ALPNProtocols ?? "http/1.1";
+  const isDuplex = (value) =>
+    value !== null &&
+    typeof value === "object" &&
+    typeof value.on === "function" &&
+    typeof value.read === "function" &&
+    typeof value.write === "function" &&
+    typeof value.end === "function";
+  const streamWrapError = () => {
+    const error = new Error("JSStreamSocket requires a byte-mode Duplex");
+    error.code = "ERR_STREAM_WRAP";
+    return error;
+  };
+
+  // Adapted from Node's lib/internal/js_stream_socket.js (Copyright Joyent,
+  // Inc. and other Node contributors, MIT) and Deno's
+  // ext/node/polyfills/internal/js_stream_socket.js (MIT). It gives TLS a
+  // genuine stream handle and is also the class http2-wrapper recovers from
+  // `_handle._parentWrap.constructor`. I/O stays in JavaScript; no native
+  // handle is invented.
+  class JSStreamSocket extends Socket {
+    #stream;
+    #ended = false;
+    #released = false;
+
+    constructor(stream) {
+      super({ allowHalfOpen: stream.allowHalfOpen === true });
+      this.#stream = stream;
+      this.stream = stream;
+      this.encrypted = false;
+      // Node's handle is an extensible JSStream object; h1-over-h2 patches
+      // `getpeername` on it because a generic Duplex has no peer address.
+      this._handle = {};
+      stream.pause();
+      stream.on("data", (chunk) => {
+        if (typeof chunk === "string" || stream.readableObjectMode === true) {
+          stream.pause();
+          this.destroy(streamWrapError());
+          return;
+        }
+        if (!this.push(chunk)) stream.pause();
+      });
+      stream.once("end", () => {
+        this.#ended = true;
+        this.push(null);
+      });
+      stream.once("close", () => {
+        if (!this.destroyed) this.destroy();
+      });
+      stream.on("error", (error) => {
+        if (!this.destroyed) this.destroy(error);
+      });
+    }
+
+    _read() {
+      if (!this.#ended) this.#stream.resume();
+    }
+
+    _write(chunk, encoding, callback) {
+      try {
+        this.#stream.write(chunk, callback);
+      } catch (error) {
+        callback(error);
+      }
+    }
+
+    _final(callback) {
+      this.#stream.end(callback);
+    }
+
+    _destroy(error, callback) {
+      if (!this.#released) {
+        this.#released = true;
+        this.#stream.destroy(error);
+      }
+      callback(error);
+    }
+  }
+
+  // Shape of Node's TLSWrap for the JavaScript transport path: `_parentWrap` is
+  // the real adapter, and the rustls session lives in the ops table behind id.
+  class TlsStreamHandle {
+    constructor(adapter) {
+      this._parentWrap = adapter;
+      this.id = 0;
+    }
+  }
+
   class SecureContext {
     constructor(options = {}) {
       this.ca = options.ca;
@@ -31,6 +123,8 @@
     return failure;
   };
 
+  const STREAM_WRITE = 16 * 1024;
+
   class TLSSocket extends Duplex {
     #id = 0;
     #attempt = 0;
@@ -38,16 +132,52 @@
     #released = false;
     #releaseWaiters = [];
     #timeout = null;
-    #pendingWrites = [];
+    #pendingWrite = null;
     #pendingFinal = null;
+    #tlsOptions = {};
+    #transport = null;
+    #streamId = 0;
+    #started = false;
+    #earlyError = null;
+    #secureEstablished = false;
+    #peerClosed = false;
+    #transportEnded = false;
+    #readEnded = false;
+    #draining = false;
+    #activeDone = null;
+    #pumping = false;
+    #transportReleased = false;
 
-    constructor(options = {}) {
-      super({ ...options, allowHalfOpen: options.allowHalfOpen ?? false });
+    constructor(socketOrOptions = {}, tlsOptions) {
+      const socket = isDuplex(socketOrOptions) ? socketOrOptions : undefined;
+      const options = socket === undefined
+        ? socketOrOptions ?? tlsOptions ?? {}
+        : tlsOptions ?? {};
+      super({
+        ...options,
+        allowHalfOpen: socket?.allowHalfOpen ?? options.allowHalfOpen ?? false,
+      });
       this.encrypted = true;
       this.authorized = false;
       this.alpnProtocol = undefined;
       this.servername = undefined;
       this.connecting = false;
+      this.secureConnecting = false;
+      this.server = options.server;
+      this.#tlsOptions = options;
+      if (socket !== undefined) this.#attach(socket);
+    }
+
+    #attach(stream) {
+      this.#transport = new JSStreamSocket(stream);
+      this.#transport.on("error", (error) => {
+        if (!this.#started) {
+          this.#earlyError ??= error;
+          return;
+        }
+        if (!this.destroyed) this.destroy(error);
+      });
+      this._handle = new TlsStreamHandle(this.#transport);
     }
 
     #adopt(id) {
@@ -63,11 +193,13 @@
     }
 
     #flushWrites() {
-      for (const { chunk, callback } of this.#pendingWrites) {
+      if (this.#pendingWrite !== null) {
+        const { chunk, callback } = this.#pendingWrite;
+        this.#pendingWrite = null;
         this.#writeNow(chunk, callback);
+        return;
       }
-      this.#pendingWrites = [];
-      if (this.#pendingFinal) {
+      if (this.#pendingFinal !== null) {
         const callback = this.#pendingFinal;
         this.#pendingFinal = null;
         this.#shutdownNow(callback);
@@ -88,14 +220,370 @@
       );
     }
 
+    #startStream() {
+      if (this.#started || this.#transport === null || this.destroyed) return;
+      this.#started = true;
+      const options = this.#tlsOptions;
+      if (options.isServer === true) {
+        this.destroy(notImplemented("TLS server over a Duplex"));
+        return;
+      }
+      if (this.#earlyError !== null) {
+        this.destroy(this.#earlyError);
+        return;
+      }
+      if (this.#transport.destroyed) {
+        this.destroy();
+        return;
+      }
+      // rustls verifies the server name during the handshake; a custom identity
+      // hook cannot run on top because the peer certificate never reaches JS.
+      if ((options.checkServerIdentity ?? module.exports.checkServerIdentity) !==
+          checkServerIdentity) {
+        this.destroy(notImplemented(
+          "tls.connect with a custom checkServerIdentity (the peer certificate is not exposed by this TLS implementation)",
+        ));
+        return;
+      }
+      const context = options.secureContext ?? {};
+      const servername = options.servername ?? options.host ?? options.hostname ?? "localhost";
+      this.servername = servername;
+      this.connecting = true;
+      this.secureConnecting = true;
+      try {
+        this.#streamId = Deno.core.ops.op_tls_stream_client(
+          String(servername),
+          pem(options.ca ?? context.ca),
+          pem(options.cert ?? context.cert),
+          pem(options.key ?? context.key),
+          String(clientAlpnOf(options)),
+          options.rejectUnauthorized !== false,
+        );
+        this._handle.id = this.#streamId;
+      } catch (error) {
+        this.destroy(tlsError(error, "connect", this.servername));
+        return;
+      }
+      const transport = this.#transport;
+      transport.on("data", (chunk) => this.#onStreamData(chunk));
+      transport.once("end", () => this.#onStreamEnd());
+      transport.once("close", () => this.#onStreamClose());
+      transport.resume();
+      this.#pump();
+      this.#updateStreamState();
+      this.#flushPending();
+    }
+
+    #onStreamData(chunk) {
+      if (this.destroyed || this.#streamId === 0) return;
+      try {
+        Deno.core.ops.op_tls_stream_feed(this.#streamId, chunk);
+      } catch (error) {
+        this.destroy(tlsError(error, "read", this.servername));
+        return;
+      }
+      this.#drainStream();
+      if (this.destroyed) return;
+      this.#pump();
+      this.#flushPending();
+    }
+
+    #onStreamEnd() {
+      if (this.#transportEnded || this.destroyed) return;
+      this.#transportEnded = true;
+      if (!this.#started || this.#streamId === 0) {
+        if (!this.#readEnded) {
+          this.#readEnded = true;
+          this.push(null);
+        }
+        return;
+      }
+      try {
+        Deno.core.ops.op_tls_stream_eof(this.#streamId);
+      } catch (error) {
+        this.destroy(tlsError(error, "read", this.servername));
+        return;
+      }
+      this.#drainStream();
+      if (this.destroyed) return;
+      this.#pump();
+      this.#flushPending();
+    }
+
+    #onStreamClose() {
+      if (this.destroyed) return;
+      this.#onStreamEnd();
+      if (!this.destroyed && !this.#peerClosed) {
+        this.destroy(new Error("TLS transport closed"));
+      }
+    }
+
+    // Pull plaintext into the readable side. A full readable pauses the
+    // transport, but buffered rustls plaintext is drained first on every
+    // resume, and EOF is queued only after that buffer is empty.
+    #drainStream() {
+      if (this.#draining || this.#readEnded || this.destroyed || this.#streamId === 0) {
+        return false;
+      }
+      this.#draining = true;
+      try {
+        let stateUpdated = false;
+        for (;;) {
+          let chunk;
+          try {
+            chunk = Deno.core.ops.op_tls_stream_read(this.#streamId);
+          } catch (error) {
+            this.destroy(tlsError(error, "read", this.servername));
+            return false;
+          }
+          if (chunk.length === 0) break;
+          // The handshake can complete in the same feed as the peer's first
+          // application data. Publish authorized/secureConnect before that
+          // plaintext reaches user data handlers, and stop if one destroys us.
+          if (!stateUpdated) {
+            stateUpdated = true;
+            this.#updateStreamState();
+            if (this.destroyed) return false;
+          }
+          if (!this.push(chunk)) {
+            this.#transport.pause();
+            this.#updateStreamState();
+            return false;
+          }
+        }
+        this.#updateStreamState();
+        if (this.destroyed) return false;
+        if (this.#peerClosed && !this.#readEnded) {
+          this.#readEnded = true;
+          this.push(null);
+          return false;
+        }
+        return true;
+      } finally {
+        this.#draining = false;
+      }
+    }
+
+    #updateStreamState() {
+      if (this.#streamId === 0 || this.destroyed) return;
+      const [alpn, authorized, handshaking, peerClosed] = Deno.core.ops
+        .op_tls_stream_info(this.#streamId)
+        .split("\0");
+      this.alpnProtocol = alpn || false;
+      this.authorized = authorized === "1";
+      this.#peerClosed = peerClosed === "1";
+      if (handshaking === "1" || this.#secureEstablished) return;
+      this.#secureEstablished = true;
+      this.connecting = false;
+      this.secureConnecting = false;
+      this.emit("secureConnect");
+      this.emit("secure");
+    }
+
+    // One ciphertext write at a time. The next chunk is taken directly from
+    // rustls only after the transport reports the previous write complete, and
+    // completion arrives on a fresh microtask so a synchronous Duplex cannot
+    // re-enter the TLS engine.
+    #pump(done = null) {
+      if (done !== null) {
+        const previous = this.#activeDone;
+        this.#activeDone = previous === null
+          ? done
+          : (error) => {
+              previous(error);
+              done(error);
+            };
+      }
+      if (this.#transport === null || this.destroyed || this.#pumping) return;
+      if (this.#streamId === 0) {
+        if (this.#activeDone !== null) {
+          this.#finishPump(new Error("Connection closed"));
+        }
+        return;
+      }
+      this.#pumping = true;
+      this.#pumpOnce();
+    }
+
+    #pumpOnce() {
+      let chunk;
+      try {
+        chunk = Deno.core.ops.op_tls_stream_output(this.#streamId);
+      } catch (error) {
+        const failure = tlsError(error, "write", this.servername);
+        this.#finishPump(failure);
+        this.destroy(failure);
+        return;
+      }
+      if (chunk.length === 0) {
+        this.#finishPump();
+        return;
+      }
+      try {
+        this.#transport.write(chunk, (error) => {
+          queueMicrotask(() => {
+            if (this.destroyed) {
+              this.#pumping = false;
+              return;
+            }
+            if (error) {
+              this.#finishPump(error);
+              this.destroy(error);
+              return;
+            }
+            this.#pumpOnce();
+          });
+        });
+      } catch (error) {
+        this.#finishPump(error);
+        this.destroy(error);
+      }
+    }
+
+    #finishPump(error = null) {
+      this.#pumping = false;
+      const done = this.#activeDone;
+      this.#activeDone = null;
+      if (done !== null) done(error ?? undefined);
+    }
+
+    #writeStream(chunk, callback) {
+      const step = (offset) => {
+        if (this.destroyed || this.#streamId === 0) {
+          callback(new Error("Connection closed"));
+          return;
+        }
+        const end = Math.min(offset + STREAM_WRITE, chunk.length);
+        try {
+          Deno.core.ops.op_tls_stream_write(
+            this.#streamId,
+            chunk.subarray(offset, end),
+          );
+        } catch (error) {
+          callback(tlsError(error, "write", this.servername));
+          return;
+        }
+        if (end === chunk.length) {
+          this.#pump(callback);
+        } else {
+          // A transport error belongs to the user's write. Do not queue the
+          // remaining plaintext slices as though the previous one succeeded.
+          this.#pump((error) => {
+            if (error) callback(error);
+            else step(end);
+          });
+        }
+      };
+      step(0);
+    }
+
+    #shutdownStream(callback) {
+      if (this.#streamId === 0) {
+        callback();
+        return;
+      }
+      try {
+        Deno.core.ops.op_tls_stream_shutdown(this.#streamId);
+      } catch (error) {
+        callback(tlsError(error, "shutdown", this.servername));
+        return;
+      }
+      this.#pump((error) => {
+        if (error) {
+          callback(error);
+          return;
+        }
+        this.#endTransport(callback);
+      });
+    }
+
+    // close_notify and every prior write have reached the transport before its
+    // write half is closed; the read half stays open for the peer's response.
+    #endTransport(callback) {
+      if (this.#transport === null || this.#transportReleased) {
+        callback();
+        return;
+      }
+      let called = false;
+      const done = (error) => {
+        if (called) return;
+        called = true;
+        callback(error);
+      };
+      try {
+        this.#transport.end(done);
+      } catch (error) {
+        done(error);
+      }
+    }
+
+    #flushPending() {
+      if (!this.#secureEstablished || this.#streamId === 0 || this.destroyed) return;
+      if (this.#pendingWrite !== null) {
+        const { chunk, callback } = this.#pendingWrite;
+        this.#pendingWrite = null;
+        this.#writeStream(chunk, callback);
+        return;
+      }
+      if (this.#pendingFinal !== null) {
+        const callback = this.#pendingFinal;
+        this.#pendingFinal = null;
+        this.#shutdownStream(callback);
+      }
+    }
+
+    #releaseStream(error) {
+      const failure = error ?? new Error("Connection closed");
+      this.#pumping = false;
+      if (this.#streamId !== 0) {
+        Deno.core.ops.op_tls_stream_close(this.#streamId);
+        this.#streamId = 0;
+      }
+      if (this.#activeDone !== null) {
+        const done = this.#activeDone;
+        this.#activeDone = null;
+        done(failure);
+      }
+      if (this.#pendingWrite !== null) {
+        const { callback } = this.#pendingWrite;
+        this.#pendingWrite = null;
+        callback(failure);
+      }
+      if (this.#pendingFinal !== null) {
+        const callback = this.#pendingFinal;
+        this.#pendingFinal = null;
+        callback(failure);
+      }
+      if (!this.#transportReleased) {
+        this.#transportReleased = true;
+        this.#transport.destroy(error);
+      }
+      this._handle = null;
+      this.connecting = false;
+      this.secureConnecting = false;
+    }
+
     connect(options = {}) {
+      if (this.#transport !== null) {
+        if (this.#streamId === 0) {
+          this.#tlsOptions = { ...this.#tlsOptions, ...options };
+          this.#startStream();
+        }
+        return this;
+      }
       const port = Number(options.port ?? 443);
       const host = options.host ?? options.hostname ?? "localhost";
       const servername = options.servername ?? host;
       this.servername = servername;
       const upgrade = options.socket;
       if (upgrade !== undefined && upgrade._thinpackConnectionId === undefined) {
-        this.destroy(notImplemented("tls.connect with a non-thinpack socket"));
+        if (!isDuplex(upgrade)) {
+          this.destroy(notImplemented("tls.connect with a non-thinpack socket"));
+          return this;
+        }
+        this.#tlsOptions = { ...this.#tlsOptions, ...options };
+        this.#attach(upgrade);
+        this.#startStream();
         return this;
       }
       // rustls verifies the server name during the handshake; a custom identity
@@ -110,9 +598,7 @@
       }
       this.connecting = true;
       this.#attempt = (TLSSocket.nextAttempt = (TLSSocket.nextAttempt ?? 0) + 1);
-      const alpn = Array.isArray(options.ALPNProtocols)
-        ? options.ALPNProtocols.join(",")
-        : options.ALPNProtocols ?? "http/1.1";
+      const alpn = clientAlpnOf(options);
       const context = options.secureContext ?? {};
       const ca = pem(options.ca ?? context.ca);
       const cert = pem(options.cert ?? context.cert);
@@ -168,7 +654,17 @@
       this._read();
     }
 
+    _start() {
+      if (this.#transport !== null) this.#startStream();
+    }
+
     _read() {
+      if (this.#transport !== null) {
+        if (!this.#started || this.destroyed) return;
+        if (!this.#drainStream()) return;
+        if (!this.#transportEnded) this.#transport.resume();
+        return;
+      }
       if (this.#released || this.#reading || this.#id === 0) return;
       this.#reading = true;
       const pump = () => {
@@ -219,14 +715,33 @@
     }
 
     _write(chunk, encoding, callback) {
+      if (this.#transport !== null) {
+        if (!this.#secureEstablished || this.#streamId === 0) {
+          this.#pendingWrite = { chunk, callback };
+          return;
+        }
+        this.#writeStream(chunk, callback);
+        return;
+      }
       if (this.#id === 0) {
-        this.#pendingWrites.push({ chunk, callback });
+        this.#pendingWrite = { chunk, callback };
         return;
       }
       this.#writeNow(chunk, callback);
     }
 
     _final(callback) {
+      if (this.#transport !== null) {
+        if (!this.#secureEstablished || this.#streamId === 0) {
+          if (this.#pendingFinal !== null) {
+            this.#pendingFinal(new Error("Connection closed"));
+          }
+          this.#pendingFinal = callback;
+          return;
+        }
+        this.#shutdownStream(callback);
+        return;
+      }
       if (this.#id === 0) {
         this.#pendingFinal = callback;
         return;
@@ -235,19 +750,24 @@
     }
 
     _destroy(error, callback) {
-      const pending = this.#pendingWrites;
-      this.#pendingWrites = [];
-      for (const { callback: writeCallback } of pending) {
-        writeCallback(error ?? new Error("Connection closed"));
+      if (this.#timeout) {
+        clearTimeout(this.#timeout);
+        this.#timeout = null;
+      }
+      if (this.#transport !== null) {
+        this.#releaseStream(error);
+        callback(error);
+        return;
+      }
+      const pending = this.#pendingWrite;
+      this.#pendingWrite = null;
+      if (pending !== null) {
+        pending.callback(error ?? new Error("Connection closed"));
       }
       if (this.#pendingFinal) {
         const finalCallback = this.#pendingFinal;
         this.#pendingFinal = null;
         finalCallback(error ?? new Error("Connection closed"));
-      }
-      if (this.#timeout) {
-        clearTimeout(this.#timeout);
-        this.#timeout = null;
       }
       if (this.#released) {
         this.#id = 0;
@@ -315,6 +835,14 @@
       options = { port: options, host: typeof args[1] === "string" ? args[1] : undefined };
     } else {
       options = { ...options };
+    }
+    if (options.socket !== undefined &&
+        options.socket._thinpackConnectionId === undefined &&
+        isDuplex(options.socket)) {
+      const socket = new TLSSocket(options.socket, options);
+      if (callback) socket.once("secureConnect", callback);
+      socket._start();
+      return socket;
     }
     const socket = new TLSSocket(options);
     if (callback) socket.once("secureConnect", callback);
