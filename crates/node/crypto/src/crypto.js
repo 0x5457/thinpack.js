@@ -1,6 +1,7 @@
 (() => {
   const { Buffer } = require("node:buffer");
   const { Transform } = require("node:stream");
+  const LazyTransform = require("node:thinpack/internal/streams/lazy_transform");
   const { codes, opError, opErrorParts } = require("node:thinpack/internal/errors");
 
   const {
@@ -192,73 +193,196 @@
       ? Buffer.from(bytes)
       : Buffer.from(bytes).toString(encoding);
 
-  class Hash {
+  // Node parses digest-level encodings leniently: unknown or non-string values
+  // fall back to a Buffer, while known names go through Buffer decoding.
+  const digestOutput = (bytes, encoding) => {
+    if (!encoding) return Buffer.from(bytes);
+    const name = String(encoding);
+    return name.toLowerCase() !== "buffer" && Buffer.isEncoding(name)
+      ? Buffer.from(bytes).toString(name)
+      : Buffer.from(bytes);
+  };
+
+  const hashFailure = (code, message) => {
+    const error = new Error(message);
+    error.code = code;
+    return error;
+  };
+  const hashFinalized = () => hashFailure("ERR_CRYPTO_HASH_FINALIZED", "Digest already called");
+  const hashUpdateFailed = () => hashFailure("ERR_CRYPTO_HASH_UPDATE_FAILED", "Hash update failed");
+
+  // An unknown input encoding decodes as UTF-8, and only array-buffer views
+  // are accepted as bytes. The bytes are copied because the digest is computed
+  // at flush time, after the caller may have mutated its buffer.
+  const hashInput = (data, inputEncoding) => {
+    if (typeof data === "string") {
+      const encoding = Buffer.isEncoding(inputEncoding) ? inputEncoding : "utf8";
+      return Buffer.from(data, encoding);
+    }
+    if (ArrayBuffer.isView(data)) {
+      const copy = Buffer.allocUnsafe(data.byteLength);
+      copy.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+      return copy;
+    }
+    throw new codes.ERR_INVALID_ARG_TYPE(
+      "data",
+      ["string", "Buffer", "TypedArray", "DataView"],
+      data,
+    );
+  };
+
+  const hashChunks = (chunks) => (chunks.length === 1 ? chunks[0] : Buffer.concat(chunks));
+
+  class Hash extends LazyTransform {
     #algorithm;
     #chunks = [];
+    #digest = null;
     #digested = false;
 
-    constructor(algorithm) {
-      this.#algorithm = String(algorithm);
+    constructor(algorithm, options) {
+      super(options);
+      if (typeof algorithm !== "string") {
+        throw new codes.ERR_INVALID_ARG_TYPE("algorithm", "string", algorithm);
+      }
+      this.#algorithm = algorithm;
     }
 
     update(data, inputEncoding) {
-      if (this.#digested) throw new Error("Digest already called");
-      this.#chunks.push(decode(data, inputEncoding));
+      if (this.#digested) throw hashFinalized();
+      this.#update(hashInput(data, inputEncoding));
       return this;
     }
 
     digest(encoding) {
-      if (this.#digested) throw new Error("Digest already called");
+      if (this.#digested) throw hashFinalized();
+      const digest = this.#computeDigest();
       this.#digested = true;
-      const data = Buffer.concat(this.#chunks);
-      const bytes = Deno.core.ops.op_crypto_hash(this.#algorithm, data);
-      return output(bytes, encoding);
+      return digestOutput(digest, encoding);
     }
 
-    copy() {
-      const copy = new Hash(this.#algorithm);
-      copy.update(Buffer.concat(this.#chunks));
+    copy(options) {
+      if (this.#digested || this.#digest !== null) throw hashFinalized();
+      const copy = new Hash(this.#algorithm, options);
+      copy.#chunks = this.#chunks.slice();
       return copy;
+    }
+
+    _transform(chunk, encoding, callback) {
+      try {
+        this.#update(hashInput(chunk, encoding));
+        callback();
+      } catch (error) {
+        callback(error);
+      }
+    }
+
+    _flush(callback) {
+      try {
+        this.push(this.#computeDigest());
+        callback();
+      } catch (error) {
+        callback(error);
+      }
+    }
+
+    #update(bytes) {
+      if (this.#digest !== null) throw hashUpdateFailed();
+      this.#chunks.push(bytes);
+    }
+
+    #computeDigest() {
+      if (this.#digest === null) {
+        const bytes = Deno.core.ops.op_crypto_hash(this.#algorithm, hashChunks(this.#chunks));
+        this.#digest = Buffer.from(bytes);
+        this.#chunks = [];
+      }
+      return this.#digest;
     }
   }
 
-  class Hmac {
+  class Hmac extends LazyTransform {
     #algorithm;
     #key;
     #chunks = [];
-    #digested = false;
+    #finalized = false;
 
-    constructor(algorithm, key) {
-      this.#algorithm = String(algorithm);
-      this.#key = prepareSecretKey(key);
+    constructor(algorithm, key, options) {
+      super(options);
+      if (typeof algorithm !== "string") {
+        throw new codes.ERR_INVALID_ARG_TYPE("hmac", "string", algorithm);
+      }
+      const encoding = options?.encoding;
+      if (encoding !== undefined && encoding !== null && typeof encoding !== "string") {
+        throw new codes.ERR_INVALID_ARG_TYPE("options.encoding", "string", encoding);
+      }
+      this.#algorithm = algorithm;
+      this.#key = prepareSecretKey(key, encoding ?? undefined);
     }
 
     update(data, inputEncoding) {
-      if (this.#digested) throw new Error("Digest already called");
-      this.#chunks.push(decode(data, inputEncoding));
+      if (this.#finalized) throw hashFinalized();
+      this.#update(hashInput(data, inputEncoding));
       return this;
     }
 
     digest(encoding) {
-      if (this.#digested) throw new Error("Digest already called");
-      this.#digested = true;
+      // A finalized HMAC yields an empty result and never throws, unlike Hash.
+      if (this.#finalized) {
+        return encoding && encoding !== "buffer" ? "" : Buffer.alloc(0);
+      }
+      const digest = this.#computeDigest();
+      this.#finalized = true;
+      return digestOutput(digest, encoding);
+    }
+
+    _transform(chunk, encoding, callback) {
+      try {
+        this.#update(hashInput(chunk, encoding));
+        callback();
+      } catch (error) {
+        callback(error);
+      }
+    }
+
+    _flush(callback) {
+      if (this.#finalized) {
+        this.push(Buffer.alloc(0));
+        callback();
+        return;
+      }
+      try {
+        this.push(this.#computeDigest());
+        this.#finalized = true;
+        callback();
+      } catch (error) {
+        callback(error);
+      }
+    }
+
+    #update(bytes) {
+      if (this.#finalized) throw hashUpdateFailed();
+      this.#chunks.push(bytes);
+    }
+
+    #computeDigest() {
       const bytes = Deno.core.ops.op_crypto_hmac(
         this.#algorithm,
         this.#key,
-        Buffer.concat(this.#chunks),
+        hashChunks(this.#chunks),
       );
-      return output(bytes, encoding);
+      this.#chunks = [];
+      return Buffer.from(bytes);
     }
   }
 
-  const createHash = (algorithm) => new Hash(algorithm);
+  const createHash = (algorithm, options) => new Hash(algorithm, options);
 
   // Node's one-shot hash. undici's WebSocket authenticates the handshake with it.
   const hash = (algorithm, data, outputEncoding) => {
     const hasher = createHash(algorithm).update(data);
     return outputEncoding === undefined ? hasher.digest() : hasher.digest(outputEncoding);
   };
-  const createHmac = (algorithm, key) => new Hmac(algorithm, key);
+  const createHmac = (algorithm, key, options) => new Hmac(algorithm, key, options);
   const getHashes = () => ["md5", "sha1", "sha256", "sha384", "sha512"];
 
   const randomBytes = (size, callback) => {
