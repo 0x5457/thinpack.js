@@ -81,43 +81,68 @@ one final computed segment, or whose argument is a template literal naming
 ``./commands/${command}.js``, packs that directory's files matching the segment's literal suffix,
 or JavaScript modules when it has none; other computed module paths still need `--include`.
 
+Use the narrowest include paths that cover the files the app loads. An included file appears
+under `/app` at its path relative to the project root. A directory include also packs its other
+files and analyzes their imports. To check that a packed CLI is standalone, copy it and its
+runtime inputs to a directory outside the build project with no `node_modules`.
 
-If an app scans a package path only known at run time, include that directory explicitly. For
-Node-RED 5.0.10, include all of `@node-red/nodes` so its built-in nodes register:
+If an app scans a package directory at run time, include that directory explicitly. Node-RED 5.0.10
+resolves `@node-red/nodes`, then scans that package root for node `.js`/`.html` pairs and walks its
+`examples` tree. A bare pack carries only the resolved entry, so startup fails on the missing
+`examples` tree and, once that is supplied, the node `.js`/`.html` pairs are still absent. Include
+the whole package:
 
 ```sh
 thinpack pack node_modules/node-red/red.js \
   --include node_modules/@node-red/nodes -o node-red
 ```
 
-A package selected by a config file may also need an explicit include. For Babel 7 or 8
-with `@babel/preset-typescript` in `.babelrc`, include both the config and the preset:
+A headless HTTP-only flow needs only `node_modules/@node-red/nodes/core` and
+`node_modules/@node-red/nodes/examples`; the full package also carries the editor's locales and icons.
+
+A config file can also select a package. For Babel 7 or 8, import
+`@babel/preset-typescript` statically from a standard `babel.config.mjs` and include
+only the config:
+
+```js
+// babel.config.mjs
+import typescript from '@babel/preset-typescript';
+
+export default { presets: [typescript] };
+```
 
 ```sh
 thinpack pack node_modules/@babel/cli/bin/babel.js \
-  --include node_modules/@babel/preset-typescript \
-  --include .babelrc -o babel
+  --include babel.config.mjs -o babel
 ```
 
-The same `.babelrc` works under Node. A packed executable reads it from the payload at
-`/app/.babelrc`, because its working directory is on the host:
+The packed app reads the config at `/app/babel.config.mjs`; the input file stays on
+the host, relative to the working directory. Pass the packed path with `--no-babelrc`
+so Babel does not also look for a `.babelrc` beside the input:
 
 ```sh
-./babel --config-file /app/.babelrc input.ts
+./babel --no-babelrc --config-file /app/babel.config.mjs input.ts
 ```
 
-If the working directory has a `.babelrc` of its own, add `--no-babelrc` so Babel reads only
-the packed config.
+If you keep a JSON `.babelrc`, its preset names are resolved at run time. Include
+both the config and the selected preset directory, and pass the packed config path:
+
+```sh
+thinpack pack node_modules/@babel/cli/bin/babel.js \
+  --include .babelrc --include node_modules/@babel/preset-typescript -o babel
+./babel --no-babelrc --config-file /app/.babelrc input.ts
+```
 
 For Marp CLI 4.5.1 HTML output, include its runtime-selected `bespoke.js`.
 Marp references `emitter` in a fallback for `require('events')` that this workflow
 does not use. `--allow-missing emitter` lets packing proceed; it does not supply
-the module if that branch runs:
+the module if that branch runs. For file input, use `--no-stdin`:
 
 ```sh
 thinpack pack node_modules/@marp-team/marp-cli/marp-cli.js \
   --include node_modules/@marp-team/marp-cli/lib/bespoke.js \
   --allow-missing emitter -o marp
+./marp --no-stdin -o slides.html slides.md
 ```
 
 For webpack 5.102.1 and webpack-cli 6.0.1, production and lazy-chunk builds
@@ -127,15 +152,23 @@ need the CLI plugin and the worker script. The plugin pulls in webpack itself:
 thinpack pack node_modules/webpack/bin/webpack.js \
   --include node_modules/webpack-cli/lib/plugins/cli-plugin.js \
   --include node_modules/jest-worker/build/workers/threadChild.js -o webpack
+./webpack --config webpack.config.js
 ```
 
-A worker script reached through a runtime path also needs an explicit include.
-For pnpm 10.34.9's offline install worker:
+A worker script chosen through runtime state can leave no static edge for the analyzer to
+follow; packing then emits no warning about it. Add it with `--include`; the file lands at
+the `/app` path the worker opens. pnpm 10.34.9 builds `path.join(__dirname, "worker.js")`,
+stores it in its worker pool, and constructs `new Worker()` from that field; in the payload
+`__dirname` is `/app/node_modules/pnpm/dist`:
 
 ```sh
 thinpack pack node_modules/pnpm/bin/pnpm.cjs \
   --include node_modules/pnpm/dist/worker.js -o pnpm
 ```
+
+Without the worker, `./pnpm install --offline` exits with status 0 without linking
+dependencies, as Node does with the same file missing; `./pnpm list --json --depth=0`
+reports no dependencies.
 
 The optionality of a guarded `require`/`import()` or an `optionalDependencies` entry extends
 through the static dependencies it reaches: a missing module there becomes a warning, and the
