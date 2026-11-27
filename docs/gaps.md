@@ -272,3 +272,13 @@ the divergence, why it exists, and where it lives.
   (`structuredClone`, `markAsUncloneable`, `getEnvironmentData`) inherits the
   limits recorded under Worker threads: those helpers throw
   `ERR_NOT_IMPLEMENTED` (`crates/node/worker-threads/src/worker_threads.js`).
+
+## vm
+
+- `vm.createContext` still accepts only `undefined`, so it returns one realm's
+  global object rather than a contextified sandbox; `vm.isContext` therefore
+  only recognises those globals (`crates/node/vm/src/vm.js`).
+- `vm.compileFunction` compiles in `parsingContext`'s realm, but `cachedData`,
+  `produceCachedData` and `importModuleDynamically` are accepted and ignored: a
+  dynamic `import()` inside the compiled function has no host callback
+  (`crates/node/vm/src/ops.rs`).
