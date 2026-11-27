@@ -201,8 +201,12 @@
       promise.then((code) => {
         this.#waiting = null;
         this.#port.close();
-        const message = ops.op_worker_error(this.#id);
-        if (message !== "") this.emit("error", new Error(message));
+        const failure = ops.op_worker_error(this.#id);
+        if (failure !== null) {
+          const error = new Error(failure.message);
+          if (failure.code !== null) error.code = failure.code;
+          this.emit("error", error);
+        }
         this.emit("exit", code);
       });
     }
