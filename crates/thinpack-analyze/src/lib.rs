@@ -2565,6 +2565,72 @@ mod tests {
     }
 
     #[test]
+    fn a_concatenated_module_load_requires_a_directory_separator() {
+        // `'./plugins' + name` can name the sibling `plugins-extra` as easily as
+        // a child of `./plugins`, so it does not prove a directory.
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.cjs",
+                "const name = process.argv[2];\nrequire('./plugins' + name);\n",
+            ),
+            ("/app/plugins/plugin.cjs", "module.exports = 1;\n"),
+            ("/app/plugins-extra.cjs", "module.exports = 2;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+        assert!(
+            analysis.static_dirs.is_empty(),
+            "{:?}",
+            analysis.static_dirs
+        );
+        assert_eq!(analysis.warnings.len(), 1);
+        assert!(analysis.warnings[0].message.contains("non-literal"));
+    }
+
+    #[test]
+    fn a_concatenated_module_load_keeps_a_non_extension_suffix_diagnostic() {
+        // `/index.js` selects a path below `./plugins`, not an entry in it, so the
+        // suffix cannot turn the directory's files into module roots.
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.cjs",
+                "const name = process.argv[2];\nrequire('./plugins/' + name + '/index.js');\n",
+            ),
+            ("/app/plugins/one/index.js", "module.exports = 1;\n"),
+            ("/app/plugins/unrelated.cjs", "module.exports = 2;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+        assert!(
+            analysis.static_dirs.is_empty(),
+            "{:?}",
+            analysis.static_dirs
+        );
+        assert_eq!(analysis.warnings.len(), 1);
+        assert!(analysis.warnings[0].message.contains("non-literal"));
+    }
+
+    #[test]
+    fn a_joined_module_load_keeps_a_non_extension_suffix_diagnostic() {
+        // The same rule holds when `join` inserts the separators: appending
+        // `/index.js` names a path below the directory, not an entry in it.
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.cjs",
+                "const path = require('node:path');\nconst name = process.argv[2];\nrequire(path.join(__dirname, 'plugins', name + '/index.js'));\n",
+            ),
+            ("/app/plugins/one/index.js", "module.exports = 1;\n"),
+            ("/app/plugins/unrelated.cjs", "module.exports = 2;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+        assert!(
+            analysis.static_dirs.is_empty(),
+            "{:?}",
+            analysis.static_dirs
+        );
+        assert_eq!(analysis.warnings.len(), 1);
+        assert!(analysis.warnings[0].message.contains("non-literal"));
+    }
+
+    #[test]
     fn a_computed_module_load_records_its_candidate_directory() {
         let fs = MemoryFs::new(&[
             (
