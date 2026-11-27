@@ -1360,6 +1360,10 @@ timeout_ms = 5000
 module = "http2"
 timeout_ms = 5000
 
+[tests."parallel/test-thinpack-http-empty-response.js"]
+module = "http"
+timeout_ms = 5000
+
 [tests."parallel/test-thinpack-http-keepalive-trailers.js"]
 module = "http"
 timeout_ms = 5000

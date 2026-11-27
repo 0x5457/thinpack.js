@@ -133,6 +133,7 @@
     this._hasBody = req?.method !== "HEAD";
     this._header = null;
     this._headerSent = false;
+    this._removedContLen = false;
     this[kHeaders] = new Map();
     this[kChunked] = false;
   }
@@ -151,7 +152,9 @@
 
   ServerResponse.prototype.setHeader = function setHeader(name, value) {
     if (this._header !== null) throw headersSent("set");
-    this[kHeaders].set(String(name).toLowerCase(), value);
+    const key = String(name).toLowerCase();
+    if (key === "content-length") this._removedContLen = false;
+    this[kHeaders].set(key, value);
     return this;
   };
 
@@ -169,7 +172,9 @@
 
   ServerResponse.prototype.removeHeader = function removeHeader(name) {
     if (this._header !== null) throw headersSent("remove");
-    this[kHeaders].delete(String(name).toLowerCase());
+    const key = String(name).toLowerCase();
+    if (key === "content-length") this._removedContLen = true;
+    this[kHeaders].delete(key);
   };
 
   ServerResponse.prototype.writeHead = function writeHead(statusCode, statusMessage, headers) {
@@ -193,12 +198,25 @@
     return this;
   };
 
-  ServerResponse.prototype._storeHeader = function _storeHeader() {
+  ServerResponse.prototype._storeHeader = function _storeHeader(inferContentLength = false) {
     if (String(this.getHeader("connection") ?? "").toLowerCase() === "close") {
       this._keepAlive = false;
     }
     const length = this.getHeader("content-length");
-    this[kChunked] = length === undefined && this._hasBody && this.req?.httpVersion === "1.1";
+    // An empty implicit end() has a known zero-length body. This framing is
+    // serialization-only: getHeader never reports the inferred length.
+    const statusCode = this.statusCode;
+    const expectsBody = this._hasBody && statusCode !== 204 && statusCode !== 304 &&
+      !(statusCode >= 100 && statusCode < 200);
+    const inferredLength = inferContentLength &&
+      expectsBody &&
+      this.req?.httpVersion === "1.1" &&
+      length === undefined &&
+      !this._removedContLen &&
+      this.getHeader("transfer-encoding") === undefined &&
+      this.getHeader("trailer") === undefined;
+    this[kChunked] = length === undefined && this._hasBody &&
+      this.req?.httpVersion === "1.1" && !inferredLength;
 
     const lines = [];
     for (const [name, value] of this[kHeaders]) {
@@ -213,10 +231,10 @@
     }
     if (length !== undefined) {
       lines.push(`Content-Length: ${length}`);
+    } else if (inferredLength) {
+      lines.push("Content-Length: 0");
     } else if (this[kChunked]) {
       lines.push("Transfer-Encoding: chunked");
-    } else if (!this._hasBody) {
-      lines.push("Content-Length: 0");
     }
     if (this.sendDate && !this[kHeaders].has("date")) {
       lines.push(`Date: ${new Date().toUTCString()}`);
@@ -229,8 +247,8 @@
     this.headersSent = true;
   };
 
-  ServerResponse.prototype._sendHead = function _sendHead() {
-    if (this._header === null) this._storeHeader();
+  ServerResponse.prototype._sendHead = function _sendHead(inferContentLength = false) {
+    if (this._header === null) this._storeHeader(inferContentLength);
     if (this._headerSent) return;
     this._headerSent = true;
     this.socket.write(this._header);
@@ -248,7 +266,8 @@
   };
 
   ServerResponse.prototype._finish = function _finish() {
-    this._sendHead();
+    // end() with no writes is the only path that reaches _finish before the head exists.
+    this._sendHead(true);
     if (this[kChunked]) this.socket.write("0\r\n\r\n");
     if (!this._keepAlive) this.socket.end();
   };
