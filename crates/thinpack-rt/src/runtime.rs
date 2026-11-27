@@ -143,6 +143,7 @@ pub(crate) fn run(
     packed: Option<Packed>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     crate::cache::prepare_bytecode_cache();
+    #[cfg(feature = "node-worker-threads")]
     thinpack_core::worker::install_boot(run_worker);
 
     let main = input;
@@ -258,6 +259,7 @@ fn hook_parts(packed: bool) -> Result<thinpack_loader::HookRuntimeParts, String>
     })
 }
 
+#[cfg(feature = "node-worker-threads")]
 fn run_worker(spec: thinpack_core::worker::WorkerSpec) -> Result<(), thinpack_core::Error> {
     let entry = spec.script.clone();
     let (fs, assets, isolate) = match PACK.get().map(|pack| packed_parts(pack)) {
