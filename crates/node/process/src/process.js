@@ -129,13 +129,20 @@
       return result;
     };
     const isTTY = ops.op_thinpack_io_isatty(fd);
+    const sink = write(isError);
     const result = {
       fd,
       isTTY,
       writable: true,
       destroyed: false,
       writableEnded: false,
-      write: write(isError),
+      write: sink,
+      // A Writable destination forwards its chunk here. This stays on the same
+      // sink as `write`; routing it back through the public method would
+      // recurse if stdio were a Writable.
+      _write(chunk, encoding, callback) {
+        sink(chunk, encoding, callback);
+      },
       end(chunk, encoding, callback) {
         if (typeof chunk === "function") {
           callback = chunk;
