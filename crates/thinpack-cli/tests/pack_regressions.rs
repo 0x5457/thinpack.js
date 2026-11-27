@@ -2013,6 +2013,82 @@ module.exports = function loadSystemModule(networkEnabled) {
     }
 
     #[test]
+    fn rebuild_progress_stays_on_stderr_and_regular_pack_stays_quiet() {
+        let directory = TempDir::new("rebuild-progress");
+        let entry = directory.path().join("main.js");
+        let output = directory.path().join("packed-app");
+        let source = directory.path().join("checkout");
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        fs::write(&entry, "module.exports = 1;\n").expect("write entry");
+        fs::create_dir_all(source.join("crates/thinpack-rt")).expect("create fake checkout");
+        fs::write(source.join("crates/thinpack-rt/Cargo.toml"), "")
+            .expect("mark the fake checkout as thinpack");
+        // `--rebuild` shells out to cargo and inspects the binary the build leaves
+        // behind; a stub that plants the fixture exercises that path without a
+        // real multi-minute template build.
+        let cargo = directory.path().join("cargo");
+        fs::write(
+            &cargo,
+            r#"#!/bin/sh
+while [ $# -gt 0 ]; do
+  if [ "$1" = --target-dir ]; then shift; target=$1; fi
+  shift
+done
+mkdir -p "$target/release"
+cp "$THINPACK_FAKE_TEMPLATE" "$target/release/thinpack-rt"
+"#,
+        )
+        .expect("write fake cargo");
+        fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755))
+            .expect("make fake cargo executable");
+
+        let mut command = Command::new(env!("CARGO_BIN_EXE_thinpack"));
+        command
+            .current_dir(directory.path())
+            .env("THINPACK_CACHE", directory.path().join("cache"))
+            .env("THINPACK_CARGO", &cargo)
+            .env("THINPACK_FAKE_TEMPLATE", &template)
+            .args(["pack"])
+            .arg(&entry)
+            .args(["--rebuild", "--source"])
+            .arg(&source)
+            .arg("--output")
+            .arg(&output);
+        let rebuilt = run_with_timeout(&mut command);
+        let stdout = String::from_utf8_lossy(&rebuilt.stdout);
+        let stderr = String::from_utf8_lossy(&rebuilt.stderr);
+        assert!(rebuilt.status.success(), "{stderr}");
+        assert!(stderr.contains("with Brotli..."), "{stderr}");
+        assert!(
+            stderr.contains("compressed and wrote executable in "),
+            "{stderr}"
+        );
+        assert!(stdout.starts_with("packed 1 files, "), "{stdout}");
+        assert_eq!(stdout.lines().count(), 1, "{stdout}");
+
+        let regular = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            directory.path(),
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+            ],
+        );
+        assert!(regular.status.success(), "{regular:?}");
+        assert_eq!(regular.stdout, rebuilt.stdout);
+        assert!(
+            !String::from_utf8_lossy(&regular.stderr).contains("Brotli"),
+            "{regular:?}"
+        );
+    }
+
+    #[test]
     fn explicit_template_backend_must_match_request() {
         let directory = TempDir::new("explicit-template-backend");
         let entry = directory.path().join("main.js");
