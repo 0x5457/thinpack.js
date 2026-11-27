@@ -12,14 +12,15 @@ use oxc_allocator::Allocator;
 use oxc_ast::AstKind;
 use oxc_ast::ast::{
     Argument, BindingPattern, CallExpression, ExportAllDeclaration, ExportFromDeclaration,
-    Expression, IdentifierReference, ImportDeclaration, ImportExpression, NewExpression,
-    PropertyKey, StaticMemberExpression, StringLiteral, TryStatement, VariableDeclarator,
+    Expression, FormalParameters, IdentifierReference, ImportDeclaration, ImportExpression,
+    NewExpression, PropertyKey, StaticMemberExpression, StringLiteral, TryStatement,
+    VariableDeclarator,
 };
 
 use oxc_ast_visit::{VisitJs, walk_js};
 use oxc_parser::Parser;
-use oxc_semantic::{IsGlobalReference, Semantic, SemanticBuilder, SymbolId};
-use oxc_span::{SourceType, Span};
+use oxc_semantic::{IsGlobalReference, NodeId, ScopeId, Semantic, SemanticBuilder, SymbolId};
+use oxc_span::{GetSpan, SourceType, Span};
 use thinpack_resolve::{Conditions, FileSystem, Format};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -829,6 +830,21 @@ fn js_string(value: oxc_str::JSStr<'_>) -> String {
         .map_or_else(|| value.display().to_string(), str::to_owned)
 }
 
+/// Whether `call` reads an asset through `readFile`, `readFileSync`, or
+/// `createReadStream` on any receiver. Direct reads keep their long-standing
+/// receiver-independent behavior; only inference needs a proven `fs` binding.
+fn is_direct_asset_read(call: &CallExpression<'_>) -> bool {
+    let Some(member) = call.callee.as_member_expression() else {
+        return false;
+    };
+    matches!(
+        member
+            .static_property_name()
+            .and_then(oxc_str::JSStr::as_str),
+        Some("readFile" | "readFileSync" | "createReadStream")
+    )
+}
+
 /// The global an expression names, either bare or through `globalThis`.
 fn global_name<'a>(expression: &'a Expression<'_>) -> Option<&'a str> {
     match expression {
@@ -865,7 +881,7 @@ struct SpecifierCollector<'a, 's> {
     fs: &'s dyn FileSystem,
 }
 
-impl SpecifierCollector<'_, '_> {
+impl<'a> SpecifierCollector<'a, '_> {
     fn add_specifier(&mut self, specifier: String, is_import: bool) {
         self.add(specifier, is_import, self.try_depth > 0, false);
     }
@@ -1135,25 +1151,120 @@ impl SpecifierCollector<'_, '_> {
             strict: false,
         });
     }
-    /// Record a package-relative asset read through `fs.readFileSync`, `readFile` or
-    /// `createReadStream` when the path is built from `__dirname`. This is the
-    /// `errorhandler` case: a runtime asset that no import reaches.
+    /// Record a package-relative asset read through `fs.readFileSync`, `readFile`,
+    /// `fs.promises.readFile`, or `createReadStream` when the path is built from
+    /// `__dirname`. This is the `errorhandler` case: a runtime asset that no import
+    /// reaches. A direct read keeps its receiver-independent behavior; the promise
+    /// API and same-file function inference need a proven `fs` binding.
     fn static_asset(&mut self, call: &CallExpression<'_>) {
-        let Some(member) = call.callee.as_member_expression() else {
-            return;
-        };
-        let Some(property) = member
-            .static_property_name()
-            .and_then(oxc_str::JSStr::as_str)
-        else {
-            return;
-        };
-        if !matches!(property, "readFile" | "readFileSync" | "createReadStream") {
+        let fs_call = self.is_fs_call(
+            call,
+            &["readFile", "readFileSync", "createReadStream"],
+            &["readFile"],
+        );
+        if !fs_call && !is_direct_asset_read(call) {
             return;
         }
-        let Some(path) = self.static_path_argument(call) else {
+        if let Some(path) = self.static_path_argument(call) {
+            self.record_asset(path);
+            return;
+        }
+        if !fs_call {
+            return;
+        }
+        let Some(argument) = call.arguments.first().and_then(Argument::as_expression) else {
             return;
         };
+        for path in self.function_asset_paths(call.node_id.get(), argument) {
+            self.record_asset(path);
+        }
+    }
+
+    /// Whether the function at `node_id` reads an implicit `arguments` object. A
+    /// sloppy function's `arguments` aliases its parameters, so a write such as
+    /// `arguments[0] = "other.txt"` changes what a call's literal argument means.
+    /// Reject the whole function instead of interpreting the writes.
+    fn uses_arguments(&self, node_id: NodeId) -> bool {
+        let scoping = self.semantic.scoping();
+        let Some(references) = scoping.root_unresolved_references().get("arguments") else {
+            return false;
+        };
+        let nodes = self.semantic.nodes();
+        references.iter().any(|&id| {
+            nodes
+                .ancestors(scoping.get_reference(id).node_id())
+                .any(|ancestor| ancestor.id() == node_id)
+        })
+    }
+
+    /// The paths a read reaches through a stable same-file function. Each direct
+    /// call supplies the literal arguments for one evaluation, so alternatives
+    /// stay distinct instead of becoming a guessed union.
+    fn function_asset_paths(&self, node_id: NodeId, argument: &'a Expression<'a>) -> Vec<PathBuf> {
+        let Some((symbol, parameters, scope)) = self.enclosing_function(node_id) else {
+            return Vec::new();
+        };
+        let Some(calls) = require::literal_calls(symbol, parameters, scope, self.semantic) else {
+            return Vec::new();
+        };
+        let base = self.path.parent().unwrap_or_else(|| Path::new("/"));
+        calls
+            .into_iter()
+            .filter_map(|bindings| {
+                static_path::evaluate_with_bindings(argument, base, self.semantic, &bindings)
+            })
+            .collect()
+    }
+
+    /// The nearest function and its stable binding, if that function is declared
+    /// in this module and cannot rewrite its parameters through `arguments`. An
+    /// anonymous callback has no binding to enumerate.
+    fn enclosing_function(
+        &self,
+        node_id: NodeId,
+    ) -> Option<(SymbolId, &'a FormalParameters<'a>, Option<ScopeId>)> {
+        let nodes = self.semantic.nodes();
+        for ancestor in nodes.ancestors(node_id) {
+            match ancestor.kind() {
+                AstKind::Function(function) => {
+                    if self.uses_arguments(ancestor.id()) {
+                        return None;
+                    }
+                    let symbol = match nodes.parent_kind(ancestor.id()) {
+                        AstKind::VariableDeclarator(declaration)
+                            if declaration
+                                .init
+                                .as_ref()
+                                .is_some_and(|init| init.span() == function.span) =>
+                        {
+                            declaration.id.get_binding_identifier()?.symbol_id.get()?
+                        }
+                        _ => function.id.as_ref()?.symbol_id.get()?,
+                    };
+                    return Some((symbol, &function.params, function.scope_id.get()));
+                }
+                AstKind::ArrowFunctionExpression(function) => {
+                    let AstKind::VariableDeclarator(declaration) = nodes.parent_kind(ancestor.id())
+                    else {
+                        return None;
+                    };
+                    if declaration
+                        .init
+                        .as_ref()
+                        .is_none_or(|init| init.span() != function.span)
+                    {
+                        return None;
+                    }
+                    let symbol = declaration.id.get_binding_identifier()?.symbol_id.get()?;
+                    return Some((symbol, &function.params, function.scope_id.get()));
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn record_asset(&mut self, path: PathBuf) {
         if self.fs.is_file(&path) {
             self.data_files.insert(path);
         } else {
@@ -1242,31 +1353,7 @@ impl SpecifierCollector<'_, '_> {
     /// packed like `--include <directory>`. Only a call on the `fs` module counts:
     /// another object's `readdir` does not enumerate files the payload carries.
     fn static_directory(&mut self, call: &CallExpression<'_>) {
-        let Some(member) = call.callee.as_member_expression() else {
-            return;
-        };
-        let property = member
-            .static_property_name()
-            .and_then(oxc_str::JSStr::as_str);
-        let receiver = match member.object() {
-            Expression::Identifier(receiver) => {
-                if !matches!(property, Some("readdir" | "readdirSync")) {
-                    return;
-                }
-                receiver
-            }
-            Expression::StaticMemberExpression(promises) => {
-                if property != Some("readdir") || promises.property.name != "promises" {
-                    return;
-                }
-                let Expression::Identifier(receiver) = &promises.object else {
-                    return;
-                };
-                receiver
-            }
-            _ => return,
-        };
-        if !self.is_fs_binding(receiver) {
+        if !self.is_fs_call(call, &["readdir", "readdirSync"], &["readdir"]) {
             return;
         }
         let Some(path) = self.static_path_argument(call) else {
@@ -1278,6 +1365,35 @@ impl SpecifierCollector<'_, '_> {
                 .and_modify(|filter| filter.merge(&StaticDir::All))
                 .or_insert(StaticDir::All);
         }
+    }
+
+    /// Whether `call` invokes one of `direct` on a proven `fs` binding, or one of
+    /// `promises` on its `promises` property. Another object's method with the
+    /// same name is not an `fs` call.
+    fn is_fs_call(&self, call: &CallExpression<'_>, direct: &[&str], promises: &[&str]) -> bool {
+        let Some(member) = call.callee.as_member_expression() else {
+            return false;
+        };
+        let Some(property) = member
+            .static_property_name()
+            .and_then(oxc_str::JSStr::as_str)
+        else {
+            return false;
+        };
+        let receiver = match member.object() {
+            Expression::Identifier(receiver) if direct.contains(&property) => receiver,
+            Expression::StaticMemberExpression(promise_namespace)
+                if promise_namespace.property.name == "promises"
+                    && promises.contains(&property) =>
+            {
+                let Expression::Identifier(receiver) = &promise_namespace.object else {
+                    return false;
+                };
+                receiver
+            }
+            _ => return false,
+        };
+        self.is_fs_binding(receiver)
     }
 
     /// Whether `identifier` names the `fs` module, bound once to `require('fs')`
@@ -2477,6 +2593,165 @@ mod tests {
         let analysis = analyze(Path::new("/app/main.js"), &fs).unwrap();
         assert!(analysis.data_files.is_empty());
         assert!(analysis.warnings.is_empty(), "{:?}", analysis.warnings);
+    }
+
+    #[test]
+    fn records_assets_read_through_literal_calls_of_a_stable_function() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.cjs",
+                "const fs = require('node:fs');\n\
+                 const path = require('node:path');\n\
+                 async function asset(name) {\n\
+                   return (await fs.promises.readFile(path.resolve(__dirname, name))).toString();\n\
+                 }\n\
+                 async function watchAsset() { return asset('watch.js'); }\n\
+                 const inline = (name) => fs.readFileSync(path.join(__dirname, name));\n\
+                 console.log(watchAsset, asset('bespoke.js'), asset(process.argv[2]), inline('inline.css'));\n",
+            ),
+            ("/app/bespoke.js", "console.log('bespoke');\n"),
+            ("/app/watch.js", "console.log('watch');\n"),
+            ("/app/inline.css", "a {}\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+        assert_eq!(
+            analysis.data_files,
+            BTreeSet::from([
+                PathBuf::from("/app/bespoke.js"),
+                PathBuf::from("/app/inline.css"),
+                PathBuf::from("/app/watch.js")
+            ])
+        );
+    }
+
+    #[test]
+    fn does_not_infer_assets_from_a_reassigned_parameter_or_binding() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.cjs",
+                "const fs = require('node:fs');\n\
+                 const path = require('node:path');\n\
+                 function read(name) {\n\
+                   name = name + '.bak';\n\
+                   fs.readFileSync(path.join(__dirname, name));\n\
+                 }\n\
+                 let suffix = '.css';\n\
+                 function theme(name) {\n\
+                   fs.readFileSync(path.join(__dirname, name + suffix));\n\
+                 }\n\
+                 read('watch.js');\n\
+                 theme('plain');\n\
+                 function mapped(name) {\n\
+                   arguments[0] = 'other.css';\n\
+                   fs.readFileSync(path.join(__dirname, name));\n\
+                 }\n\
+                 mapped('plain.css');\n\
+                 suffix = '.bak';\n",
+            ),
+            ("/app/watch.js", "console.log('watch');\n"),
+            ("/app/plain.css", "plain {}\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+        assert!(analysis.data_files.is_empty(), "{:?}", analysis.data_files);
+    }
+
+    #[test]
+    fn does_not_infer_assets_from_redeclared_functions_or_parameters() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.cjs",
+                "const fs = require('node:fs');\n\
+                 const path = require('node:path');\n\
+                 function read(name) { fs.readFileSync(path.join(__dirname, name + '-one.css')); }\n\
+                 function read(name) { fs.readFileSync(path.join(__dirname, name + '-two.css')); }\n\
+                 read('dup');\n\
+                 function pair(first, first) { fs.readFileSync(path.join(__dirname, first)); }\n\
+                 pair('only.css');\n",
+            ),
+            ("/app/dup-one.css", "a {}\n"),
+            ("/app/dup-two.css", "b {}\n"),
+            ("/app/only.css", "c {}\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+        assert!(analysis.data_files.is_empty(), "{:?}", analysis.data_files);
+    }
+
+    #[test]
+    fn records_direct_asset_reads_without_a_proven_fs_binding() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.cjs",
+                "const path = require('node:path');\n\
+                 async function main() {\n\
+                   const fs = await import('node:fs');\n\
+                   fs.readFileSync(path.join(__dirname, 'data.txt'), 'utf8');\n\
+                 }\n\
+                 main();\n\
+                 require('node:fs').readFileSync(__dirname + '/inline.txt', 'utf8');\n\
+                 const chained = require('node:fs').promises;\n\
+                 chained.readFile(path.join(__dirname, 'chained.txt'));\n\
+                 const reader = { readFileSync: () => 'x', promises: { readFile: async () => 'x' } };\n\
+                 reader.readFileSync(path.join(__dirname, 'reader.txt'));\n\
+                 reader.promises.readFile(path.join(__dirname, 'promised.txt'));\n",
+            ),
+            ("/app/data.txt", "asset-visible\n"),
+            ("/app/inline.txt", "inline\n"),
+            ("/app/chained.txt", "chained\n"),
+            ("/app/reader.txt", "reader\n"),
+            ("/app/promised.txt", "promised\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+        assert_eq!(
+            analysis.data_files,
+            BTreeSet::from([
+                PathBuf::from("/app/chained.txt"),
+                PathBuf::from("/app/data.txt"),
+                PathBuf::from("/app/inline.txt"),
+                PathBuf::from("/app/promised.txt"),
+                PathBuf::from("/app/reader.txt"),
+            ])
+        );
+    }
+
+    #[test]
+    fn does_not_infer_through_unproven_promise_handlers_or_aliased_functions() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.cjs",
+                "const fs = require('node:fs');\n\
+                 const path = require('node:path');\n\
+                 const reader = { promises: { readFile: async (name) => name } };\n\
+                 function show(name) { return reader.promises.readFile(path.join(__dirname, name)); }\n\
+                 show('handler.css');\n\
+                 function load(name) { fs.readFileSync(path.join(__dirname, name)); }\n\
+                 const loadAlias = load;\n\
+                 loadAlias('aliased.css');\n\
+                 load('direct.css');\n",
+            ),
+            ("/app/handler.css", "a {}\n"),
+            ("/app/aliased.css", "a {}\n"),
+            ("/app/direct.css", "a {}\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+        assert!(analysis.data_files.is_empty(), "{:?}", analysis.data_files);
+    }
+
+    #[test]
+    fn does_not_infer_assets_through_an_exported_function() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.mjs",
+                "const fs = require('node:fs');\n\
+                 const path = require('node:path');\n\
+                 export function read(name) {\n\
+                   fs.readFileSync(path.join(__dirname, name));\n\
+                 }\n\
+                 read('exported.css');\n",
+            ),
+            ("/app/exported.css", "a {}\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.mjs"), &fs).unwrap();
+        assert!(analysis.data_files.is_empty(), "{:?}", analysis.data_files);
     }
 
     #[test]
