@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use thinpack_pack::{Compression, FileRecord, Manifest, Template};
 
+mod require_extensions;
 mod stdin;
 
 #[cfg(unix)]
@@ -347,6 +348,68 @@ parentPort.postMessage('worker loaded from the packed VFS');
             ),
         ],
         capabilities: &["assert", "worker_threads"],
+        error: None,
+    },
+    PackedTest {
+        name: "packed::worker-missing-entry-code",
+        directory: "worker-missing-entry-code",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r#"
+const { Worker } = require('node:worker_threads');
+
+const events = [];
+const worker = new Worker('./not-there.cjs');
+worker.on('error', (error) => events.push(['error', error.code ?? null]));
+worker.on('exit', (code) => {
+  events.push(['exit', code]);
+  const observed = JSON.stringify(events);
+  if (observed !== '[["error","MODULE_NOT_FOUND"],["exit",1]]') {
+    throw new Error(`unexpected worker events: ${observed}`);
+  }
+  console.log(observed);
+});
+"#,
+        )],
+        capabilities: &["worker_threads"],
+        error: None,
+    },
+    PackedTest {
+        name: "packed::worker-error-message-control",
+        directory: "worker-error-message-control",
+        entry: "/app/main.js",
+        files: &[
+            (
+                "/app/main.js",
+                r"
+const { Worker } = require('node:worker_threads');
+
+const events = [];
+const worker = new Worker('/app/worker.js');
+worker.on('error', (error) => events.push(['error', error.message, error.code ?? null]));
+worker.on('exit', (code) => {
+  events.push(['exit', code]);
+  const [kind, message, errorCode] = events[0];
+  const observed = JSON.stringify(events);
+  if (kind !== 'error' || errorCode !== null || !message.includes('worker\u0000message')) {
+    throw new Error(`unexpected worker error: ${observed}`);
+  }
+  if (events[1][0] !== 'exit' || events[1][1] !== 1) {
+    throw new Error(`unexpected worker exit: ${observed}`);
+  }
+  console.log(observed);
+});
+",
+            ),
+            (
+                "/app/worker.js",
+                r"
+throw new Error('worker\u0000message');
+",
+            ),
+        ],
+        capabilities: &["worker_threads"],
         error: None,
     },
     PackedTest {
@@ -1908,6 +1971,19 @@ server.bind(0, '127.0.0.1', () => {
         error: None,
     },
     PackedTest {
+        name: "packed::net-early-write",
+        directory: "net-early-write",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            include_str!(
+                "../../../tests/node/compat/test/parallel/test-thinpack-net-early-write.js"
+            ),
+        )],
+        capabilities: &["assert", "net"],
+        error: None,
+    },
+    PackedTest {
         name: "packed::fs-watch",
         directory: "fs-watch",
         entry: "/app/main.js",
@@ -2050,6 +2126,41 @@ console.log('require.extensions ok');
         capabilities: &["assert"],
         error: None,
     },
+    PackedTest {
+        name: "packed::tls-duplex-client",
+        directory: "tls-duplex-client",
+        entry: "/app/main.js",
+        files: &[
+            (
+                "/app/main.js",
+                r"
+const { main } = require('./duplex.cjs');
+main('/app').catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+",
+            ),
+            (
+                "/app/duplex.cjs",
+                include_str!("../../../tests/fixtures/tls/duplex.cjs"),
+            ),
+            (
+                "/app/ca.pem",
+                include_str!("../../../tests/fixtures/tls/ca.pem"),
+            ),
+            (
+                "/app/server.key",
+                include_str!("../../../tests/fixtures/tls/server.key"),
+            ),
+            (
+                "/app/server.pem",
+                include_str!("../../../tests/fixtures/tls/server.pem"),
+            ),
+        ],
+        capabilities: &["assert", "events", "fs", "net", "stream", "tls"],
+        error: None,
+    },
 ];
 /// Packed startup cases whose source is generated because the payload is large.
 struct StartupTest {
@@ -2085,6 +2196,7 @@ pub(super) fn print_list(cli: &super::Cli) {
     #[cfg(unix)]
     tty::print_list(cli);
     stdin::print_list(cli);
+    require_extensions::print_list(cli);
 }
 
 pub(super) fn execute(cli: &super::Cli) -> bool {
@@ -2101,7 +2213,9 @@ pub(super) fn execute(cli: &super::Cli) -> bool {
     let tty_count = tty::selected(cli).len();
     #[cfg(not(unix))]
     let tty_count = 0;
-    let test_count = selected.len() + startup.len() + stdin::selected(cli).len() + tty_count;
+    let delegate_count = usize::from(require_extensions::matches(cli));
+    let test_count =
+        selected.len() + startup.len() + stdin::selected(cli).len() + tty_count + delegate_count;
     if test_count == 0 {
         return true;
     }
@@ -2142,6 +2256,16 @@ pub(super) fn execute(cli: &super::Cli) -> bool {
         report(
             test.name(),
             stdin::run_test(test),
+            started,
+            &mut passed,
+            &mut failed,
+        );
+    }
+    if require_extensions::matches(cli) {
+        let started = Instant::now();
+        report(
+            require_extensions::NAME,
+            require_extensions::run_test(),
             started,
             &mut passed,
             &mut failed,

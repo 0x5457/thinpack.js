@@ -1381,6 +1381,10 @@ module = "net"
 timeout_ms = 5000
 stdin_pipe = true
 
+[tests."parallel/test-thinpack-net-early-write.js"]
+module = "net"
+timeout_ms = 10000
+
 [tests."parallel/test-thinpack-child-process-spawn-sync-large-io.js"]
 module = "child_process"
 timeout_ms = 10000
@@ -1394,6 +1398,9 @@ module = "cluster"
 timeout_ms = 10000
 
 [tests."parallel/test-thinpack-textdecoder-streaming-utf8.js"]
+module = "util"
+
+[tests."parallel/test-thinpack-util-system-error-map.js"]
 module = "util"
 
 [tests."parallel/test-thinpack-event-target.js"]

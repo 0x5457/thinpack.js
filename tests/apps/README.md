@@ -5,6 +5,11 @@ One npm project per program in the README's comparison tables, measured by `carg
 only changes size when the tree or the runtime does. The command installs each fixture with
 `npm ci --ignore-scripts` and packs it with `--rebuild`.
 
+A fixture can name a `compile` source in the app table. The command then compiles it with the
+packed artifact to `target/apps/<name>-compile` and requires the emitted JavaScript to equal
+the `.js` file beside the source. The `tsc` fixture uses this to prove its payload carries the
+standard library declarations: `--version` alone also succeeds when they are missing.
+
 ## Adding or bumping an app
 
 The app table, its entry point and the files `--include` has to carry live in

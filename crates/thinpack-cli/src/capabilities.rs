@@ -68,10 +68,10 @@ pub(crate) fn analyze_entry(options: &Options, pack: bool) -> Result<Analyzed, B
 }
 
 /// Analyze the entry and explicit include roots, expanding every
-/// package-relative directory the graph enumerates with `fs.readdir` or
-/// `fs.readdirSync` as if it had been passed to `--include`. A directory can
-/// contain a module that scans another directory, so repeat until no new
-/// directory appears.
+/// package-relative directory the graph enumerates with `fs.readdir`,
+/// `fs.readdirSync`, or `fs.promises.readdir` as if it had been passed to
+/// `--include`. A directory can contain a module that scans another directory,
+/// so repeat until no new directory appears.
 fn analyze_graph(
     entry: &Path,
     root: &Path,

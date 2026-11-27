@@ -1236,26 +1236,37 @@ impl SpecifierCollector<'_, '_> {
         found
     }
 
-    /// Record a package-relative directory enumerated through `fs.readdir` or
-    /// `fs.readdirSync`. The names it returns are not known statically, but the
-    /// directory is, so it can be packed like `--include <directory>`. Only a call
-    /// on the `fs` module counts: another object's `readdirSync` does not enumerate
-    /// files the payload carries.
+    /// Record a package-relative directory enumerated through `fs.readdir`,
+    /// `fs.readdirSync`, or the promise API's `fs.promises.readdir`. The names
+    /// they return are not known statically, but the directory is, so it can be
+    /// packed like `--include <directory>`. Only a call on the `fs` module counts:
+    /// another object's `readdir` does not enumerate files the payload carries.
     fn static_directory(&mut self, call: &CallExpression<'_>) {
         let Some(member) = call.callee.as_member_expression() else {
             return;
         };
-        let Expression::Identifier(receiver) = member.object() else {
-            return;
+        let property = member
+            .static_property_name()
+            .and_then(oxc_str::JSStr::as_str);
+        let receiver = match member.object() {
+            Expression::Identifier(receiver) => {
+                if !matches!(property, Some("readdir" | "readdirSync")) {
+                    return;
+                }
+                receiver
+            }
+            Expression::StaticMemberExpression(promises) => {
+                if property != Some("readdir") || promises.property.name != "promises" {
+                    return;
+                }
+                let Expression::Identifier(receiver) = &promises.object else {
+                    return;
+                };
+                receiver
+            }
+            _ => return,
         };
-        if !self.is_fs_binding(receiver)
-            || !matches!(
-                member
-                    .static_property_name()
-                    .and_then(oxc_str::JSStr::as_str),
-                Some("readdir" | "readdirSync")
-            )
-        {
+        if !self.is_fs_binding(receiver) {
             return;
         }
         let Some(path) = self.static_path_argument(call) else {
@@ -2485,6 +2496,22 @@ mod tests {
     }
 
     #[test]
+    fn records_a_static_directory_scanned_through_promises() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.cjs",
+                "const fs = require('node:fs');\nfs.promises.readdir(__dirname + '/plugins');\n",
+            ),
+            ("/app/plugins/plugin.cjs", "module.exports = 42;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+        assert_eq!(
+            analysis.static_dirs,
+            BTreeMap::from([(PathBuf::from("/app/plugins"), StaticDir::All)])
+        );
+    }
+
+    #[test]
     fn a_computed_module_load_records_its_candidate_directory() {
         let fs = MemoryFs::new(&[
             (
@@ -2754,6 +2781,24 @@ mod tests {
             (
                 "/app/main.cjs",
                 "const scanner = { readdirSync: () => ['plugin.cjs'] };\nscanner.readdirSync(__dirname + '/plugins');\n",
+            ),
+            ("/app/plugins/plugin.cjs", "module.exports = 42;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+        assert!(
+            analysis.static_dirs.is_empty(),
+            "{:?}",
+            analysis.static_dirs
+        );
+    }
+
+    #[test]
+    fn an_unrelated_promises_readdir_is_left_alone() {
+        // The promise API only counts on the `fs` binding, like `readdirSync`.
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.cjs",
+                "const scanner = { promises: { readdir: () => ['plugin.cjs'] } };\nscanner.promises.readdir(__dirname + '/plugins');\n",
             ),
             ("/app/plugins/plugin.cjs", "module.exports = 42;\n"),
         ]);

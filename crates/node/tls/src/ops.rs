@@ -1,5 +1,5 @@
-use std::collections::{HashMap, HashSet};
-use std::io::{self, Cursor};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::io::{self, Cursor, Read, Write};
 use std::net::TcpStream as StdTcpStream;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -32,6 +32,15 @@ pub(crate) const OPS: &[OpDecl] = &[
     op_tls_set_secure_context(),
     op_tls_listener_close(),
     op_tls_listener_info(),
+    op_tls_stream_client(),
+    op_tls_stream_feed(),
+    op_tls_stream_eof(),
+    op_tls_stream_write(),
+    op_tls_stream_read(),
+    op_tls_stream_output(),
+    op_tls_stream_shutdown(),
+    op_tls_stream_info(),
+    op_tls_stream_close(),
 ];
 
 struct Connection {
@@ -129,15 +138,9 @@ fn parse_certs(pem: &str) -> Result<Vec<CertificateDer<'static>>, JsErrorBox> {
         .map_err(|error| tls_error("ERR_TLS_INVALID_CERT", error))
 }
 
-fn handshake_error(error: io::Error) -> JsErrorBox {
-    if error.raw_os_error().is_some() {
-        return io_error(error);
-    }
-    let code = match error
-        .get_ref()
-        .and_then(|source| source.downcast_ref::<rustls::Error>())
-    {
-        Some(rustls::Error::InvalidCertificate(certificate)) => match certificate {
+const fn rustls_error_code(error: &rustls::Error) -> &'static str {
+    match error {
+        rustls::Error::InvalidCertificate(certificate) => match certificate {
             rustls::CertificateError::NotValidForName
             | rustls::CertificateError::NotValidForNameContext { .. } => {
                 "ERR_TLS_CERT_ALTNAME_INVALID"
@@ -152,8 +155,25 @@ fn handshake_error(error: io::Error) -> JsErrorBox {
             _ => "ERR_TLS_HANDSHAKE_FAILURE",
         },
         _ => "ERR_TLS_HANDSHAKE_FAILURE",
-    };
-    tls_error(code, error)
+    }
+}
+
+fn rustls_failure(error: rustls::Error) -> JsErrorBox {
+    tls_error(rustls_error_code(&error), error)
+}
+
+fn handshake_error(error: io::Error) -> JsErrorBox {
+    if error.raw_os_error().is_some() {
+        return io_error(error);
+    }
+    error
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<rustls::Error>())
+        .cloned()
+        .map_or_else(
+            || tls_error("ERR_TLS_HANDSHAKE_FAILURE", error),
+            rustls_failure,
+        )
 }
 
 fn insert_connection<S>(tls: S, shutdown: StdTcpStream, alpn: String, authorized: bool) -> u32
@@ -432,6 +452,244 @@ fn connection_of(id: u32) -> Result<Arc<Connection>, JsErrorBox> {
         .get(&id)
         .map(Arc::clone)
         .ok_or_else(|| JsErrorBox::new("Error", "EBADF\0connection closed"))
+}
+
+/// How the peer's TLS read side ended. A `close_notify` is a clean half-close;
+/// a transport EOF without one is reported separately instead of being
+/// presented as an orderly shutdown.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PeerClose {
+    Open,
+    Clean,
+    Unclean,
+}
+
+/// A client TLS session whose ciphertext is moved by JavaScript over any byte
+/// `Duplex`. Rust owns the protocol state; JS owns the transport and its write
+/// completions, so a TLS write callback fires only after the encrypted bytes
+/// have been accepted by the underlying stream.
+struct StreamConnection {
+    connection: rustls::ClientConnection,
+    plaintext: VecDeque<u8>,
+    authorized: bool,
+    peer_close: PeerClose,
+    eof: bool,
+    local_closed: bool,
+}
+
+fn streams() -> &'static Mutex<HashMap<u32, Arc<Mutex<StreamConnection>>>> {
+    static STREAMS: OnceLock<Mutex<HashMap<u32, Arc<Mutex<StreamConnection>>>>> = OnceLock::new();
+    STREAMS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+static STREAM_CONNECTIONS: thinpack_core::IdCounter = thinpack_core::IdCounter::new();
+
+fn stream_of(id: u32) -> Result<Arc<Mutex<StreamConnection>>, JsErrorBox> {
+    streams()
+        .lock()
+        .expect("tls streams")
+        .get(&id)
+        .cloned()
+        .ok_or_else(|| tls_error("EBADF", "connection closed"))
+}
+
+/// Moves rustls' newly decrypted application data into the read queue. A raw
+/// EOF is recorded separately from a peer `close_notify` so the caller can
+/// report the difference instead of treating both as a clean close. rustls only
+/// buffers 16 KiB of received plaintext, so this runs after every feed even
+/// when JavaScript has paused its readable side; the queue is not a fixed-size
+/// ingress buffer.
+fn stream_plaintext(stream: &mut StreamConnection) -> Result<(), JsErrorBox> {
+    loop {
+        let mut buffer = [0u8; 16384];
+        match stream.connection.reader().read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => stream.plaintext.extend(&buffer[..read]),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
+                if stream.peer_close != PeerClose::Clean {
+                    stream.peer_close = PeerClose::Unclean;
+                }
+                break;
+            }
+            Err(error) => return Err(io_error(error)),
+        }
+    }
+    Ok(())
+}
+
+#[op2(fast)]
+fn op_tls_stream_client(
+    #[string] servername: &str,
+    #[string] ca_pem: &str,
+    #[string] cert_pem: &str,
+    #[string] key_pem: &str,
+    #[string] alpn: &str,
+    reject_unauthorized: bool,
+) -> Result<u32, JsErrorBox> {
+    let config = client_config(ca_pem, cert_pem, key_pem, alpn, reject_unauthorized)?;
+    let name = ServerName::try_from(servername)
+        .map_err(|error| tls_error("ERR_TLS_INVALID_SERVERNAME", error))?
+        .to_owned();
+    let connection = rustls::ClientConnection::new(config, name)
+        .map_err(|error| tls_error("ERR_TLS_CONFIG", error))?;
+    let stream = StreamConnection {
+        connection,
+        plaintext: VecDeque::new(),
+        authorized: reject_unauthorized,
+        peer_close: PeerClose::Open,
+        eof: false,
+        local_closed: false,
+    };
+    let id = STREAM_CONNECTIONS.next();
+    streams()
+        .lock()
+        .expect("tls streams")
+        .insert(id, Arc::new(Mutex::new(stream)));
+    Ok(id)
+}
+
+#[op2(fast)]
+fn op_tls_stream_feed(id: u32, #[buffer] data: &[u8]) -> Result<(), JsErrorBox> {
+    let stream = stream_of(id)?;
+    let mut stream = stream.lock().expect("tls stream");
+    let mut input = data;
+    while !input.is_empty() {
+        let read = stream.connection.read_tls(&mut input).map_err(io_error)?;
+        if read == 0 {
+            return Err(tls_error("EIO", "TLS input was not consumed"));
+        }
+        let state = stream
+            .connection
+            .process_new_packets()
+            .map_err(rustls_failure)?;
+        if state.peer_has_closed() {
+            stream.peer_close = PeerClose::Clean;
+        }
+        stream_plaintext(&mut stream)?;
+    }
+    Ok(())
+}
+
+#[op2(fast)]
+fn op_tls_stream_eof(id: u32) -> Result<(), JsErrorBox> {
+    let stream = stream_of(id)?;
+    let mut stream = stream.lock().expect("tls stream");
+    if stream.eof {
+        return Ok(());
+    }
+    stream.eof = true;
+    let mut empty: &[u8] = &[];
+    stream.connection.read_tls(&mut empty).map_err(io_error)?;
+    let state = stream
+        .connection
+        .process_new_packets()
+        .map_err(rustls_failure)?;
+    if state.peer_has_closed() {
+        stream.peer_close = PeerClose::Clean;
+    }
+    stream_plaintext(&mut stream)
+}
+
+#[op2(fast)]
+fn op_tls_stream_write(id: u32, #[buffer] data: &[u8]) -> Result<(), JsErrorBox> {
+    let stream = stream_of(id)?;
+    let mut stream = stream.lock().expect("tls stream");
+    let mut input = data;
+    while !input.is_empty() {
+        let written = stream
+            .connection
+            .writer()
+            .write(input)
+            .map_err(handshake_error)?;
+        if written == 0 {
+            return Err(tls_error("ERR_TLS_WRITE", "the TLS send buffer is full"));
+        }
+        input = &input[written..];
+    }
+    Ok(())
+}
+
+#[op2]
+#[buffer]
+fn op_tls_stream_read(id: u32) -> Result<Box<[u8]>, JsErrorBox> {
+    let stream = stream_of(id)?;
+    let mut stream = stream.lock().expect("tls stream");
+    if stream.plaintext.is_empty() {
+        if stream.peer_close == PeerClose::Unclean {
+            stream.peer_close = PeerClose::Open;
+            return Err(tls_error(
+                "ERR_SSL_UNEXPECTED_EOF",
+                "peer closed the TLS connection without close_notify",
+            ));
+        }
+        return Ok(Box::new([]));
+    }
+    let count = stream.plaintext.len().min(65536);
+    Ok(stream
+        .plaintext
+        .drain(..count)
+        .collect::<Vec<_>>()
+        .into_boxed_slice())
+}
+
+#[op2]
+#[buffer]
+fn op_tls_stream_output(id: u32) -> Result<Box<[u8]>, JsErrorBox> {
+    let stream = stream_of(id)?;
+    let mut stream = stream.lock().expect("tls stream");
+    let mut output = Vec::new();
+    let count = stream.connection.write_tls(&mut output).map_err(io_error)?;
+    output.truncate(count);
+    Ok(output.into_boxed_slice())
+}
+
+#[op2(fast)]
+fn op_tls_stream_shutdown(id: u32) -> Result<(), JsErrorBox> {
+    let stream = stream_of(id)?;
+    let mut stream = stream.lock().expect("tls stream");
+    if !stream.local_closed {
+        stream.connection.send_close_notify();
+        stream.local_closed = true;
+    }
+    Ok(())
+}
+
+#[op2]
+#[string]
+fn op_tls_stream_info(id: u32) -> String {
+    streams().lock().expect("tls streams").get(&id).map_or_else(
+        || "\0\0\0\0".to_owned(),
+        |stream| {
+            let stream = stream.lock().expect("tls stream");
+            let alpn = stream
+                .connection
+                .alpn_protocol()
+                .map_or_else(String::new, |protocol| {
+                    String::from_utf8_lossy(protocol).into_owned()
+                });
+            let handshaking = stream.connection.is_handshaking();
+            format!(
+                "{alpn}\0{}\0{}\0{}",
+                if !handshaking && stream.authorized {
+                    "1"
+                } else {
+                    "0"
+                },
+                if handshaking { "1" } else { "0" },
+                if stream.peer_close == PeerClose::Clean {
+                    "1"
+                } else {
+                    "0"
+                },
+            )
+        },
+    )
+}
+
+#[op2(fast)]
+fn op_tls_stream_close(id: u32) {
+    let _ = streams().lock().expect("tls streams").remove(&id);
 }
 
 struct TlsListen {

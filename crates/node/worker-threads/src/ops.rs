@@ -58,8 +58,8 @@ async fn op_worker_exit(id: u32) -> u32 {
 }
 
 #[op2]
-#[string]
-fn op_worker_error(id: u32) -> String {
+#[serde]
+fn op_worker_error(id: u32) -> Option<worker::WorkerError> {
     worker::worker_error(id)
 }
 
