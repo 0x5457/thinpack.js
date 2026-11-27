@@ -1,6 +1,7 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use thinpack_core::{VirtualEntry, VirtualFiles, VirtualStat};
 use thinpack_resolve::{FileSystem, Format};
@@ -71,15 +72,61 @@ impl Vfs {
             conditions: pack.manifest.conditions.clone(),
         })
     }
+
+    /// The payload key for a path handed to `fs`.
+    ///
+    /// Packed paths arrive exactly as the manifest recorded them, so a path with
+    /// no parent segment is its own key, borrowed, and costs no allocation. A
+    /// path with `..` is resolved the way a file system resolves it: while it
+    /// walks. A parent segment only cancels the directory the walk entered, so
+    /// `/app/lib/../data.txt` names `/app/data.txt`, while
+    /// `/app/missing/../data.txt` names nothing, because the payload holds no
+    /// `missing` directory to enter. A path that leaves the mount is not
+    /// resolved either; only the payload is walked.
+    fn key<'a>(&self, path: &'a Path) -> Option<Cow<'a, Path>> {
+        // Only `..` can change which payload path a caller means.
+        if !path
+            .components()
+            .any(|segment| segment == Component::ParentDir)
+        {
+            return Some(Cow::Borrowed(path));
+        }
+
+        let mut resolved = PathBuf::from(ROOT);
+        let mut segments = path.strip_prefix(ROOT).ok()?.components().peekable();
+        while let Some(segment) = segments.next() {
+            match segment {
+                Component::ParentDir => {
+                    if resolved == Path::new(ROOT) {
+                        return None;
+                    }
+                    resolved.pop();
+                }
+                Component::Normal(name) => {
+                    resolved.push(name);
+                    // A segment with more path behind it must be a directory;
+                    // nothing below a file or an unpacked directory exists.
+                    if segments.peek().is_some() && !self.directories.contains(&resolved) {
+                        return None;
+                    }
+                }
+                // Only `Normal` and `ParentDir` appear: `Components` drops
+                // `.`, and `strip_prefix` already removed the root.
+                _ => return None,
+            }
+        }
+        Some(Cow::Owned(resolved))
+    }
 }
 
 impl VirtualFiles for Vfs {
     fn read(&self, path: &str) -> Option<Vec<u8>> {
-        self.files.get(Path::new(path)).cloned()
+        self.files.get(self.key(Path::new(path))?.as_ref()).cloned()
     }
 
     fn stat(&self, path: &str) -> Option<VirtualStat> {
-        let path = Path::new(path);
+        let path = self.key(Path::new(path))?;
+        let path = path.as_ref();
         if let Some(contents) = self.files.get(path) {
             return Some(VirtualStat {
                 len: contents.len() as u64,
@@ -95,7 +142,8 @@ impl VirtualFiles for Vfs {
     }
 
     fn entries(&self, path: &str) -> Option<Vec<VirtualEntry>> {
-        let directory = Path::new(path);
+        let directory = self.key(Path::new(path))?;
+        let directory = directory.as_ref();
         if !self.directories.contains(directory) {
             return None;
         }
