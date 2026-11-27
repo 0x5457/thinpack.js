@@ -2137,6 +2137,92 @@ console.log('vm context ok');
         error: None,
     },
     PackedTest {
+        name: "packed::vm-compile-function",
+        directory: "vm-compile-function",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r#"const assert = require('node:assert/strict');
+const vm = require('node:vm');
+
+// jest-environment-node creates this context, then jest-runtime compiles every
+// module wrapper in it with vm.compileFunction and parsingContext.
+const context = vm.createContext();
+vm.runInContext('var frameworkMarker = "from-context";', context);
+
+const params = ['module', 'exports', 'require', '__dirname', '__filename', 'jest'];
+const compiled = vm.compileFunction(
+  'module.exports = [frameworkMarker, this === globalThis, Object, globalThis, __filename, typeof jest];',
+  params,
+  { filename: '/app/example.test.js', parsingContext: context },
+);
+assert.equal(compiled.length, params.length);
+assert.equal(
+  Object.getPrototypeOf(compiled),
+  vm.runInContext('Function.prototype', context),
+);
+
+const wrapper = { exports: undefined };
+compiled(wrapper, {}, require, '/app', '/app/example.test.js', { marker: true });
+const [marker, globalThisIsRealm, object, global, filename, jestType] = wrapper.exports;
+assert.equal(marker, 'from-context');
+assert.equal(globalThisIsRealm, true);
+assert.equal(object, vm.runInContext('Object', context));
+assert.equal(global, vm.runInContext('this', context));
+assert.equal(filename, '/app/example.test.js');
+assert.equal(jestType, 'object');
+
+// contextExtensions are extra scopes for the compiled body.
+const extension = vm.runInContext('({ extensionValue: 21 })', context);
+assert.equal(
+  vm.compileFunction('return extensionValue * 2', [], {
+    parsingContext: context,
+    contextExtensions: [extension],
+  })(),
+  42,
+);
+
+// A compile error is the parsing context's SyntaxError, not the caller's.
+let syntaxError;
+try {
+  vm.compileFunction('return )', [], { parsingContext: context });
+} catch (error) {
+  syntaxError = error;
+}
+assert.equal(syntaxError.name, 'SyntaxError');
+assert.equal(syntaxError instanceof SyntaxError, false);
+assert.equal(syntaxError instanceof vm.runInContext('SyntaxError', context), true);
+
+// filename and lineOffset reach a stack trace from the compiled function.
+const thrower = vm.compileFunction('throw new Error("boom")', [], {
+  filename: '/app/example.test.js',
+  lineOffset: 10,
+  parsingContext: context,
+});
+let runtimeError;
+try {
+  thrower();
+} catch (error) {
+  runtimeError = error;
+}
+assert.equal(runtimeError instanceof Error, false);
+assert.equal(runtimeError instanceof vm.runInContext('Error', context), true);
+assert.match(runtimeError.stack, /\/app\/example\.test\.js:11/);
+
+// Without parsingContext the caller's realm and global are the defaults.
+assert.equal(vm.compileFunction('return globalThis')(), globalThis);
+assert.equal(vm.compileFunction('return typeof frameworkMarker')(), 'undefined');
+assert.throws(
+  () => vm.compileFunction('return 1', [], { parsingContext: {} }),
+  { code: 'ERR_INVALID_ARG_TYPE' },
+);
+console.log('vm compileFunction ok');
+"#,
+        )],
+        capabilities: &["assert", "vm"],
+        error: None,
+    },
+    PackedTest {
         name: "packed::require-extensions",
         directory: "require-extensions",
         entry: "/app/main.js",

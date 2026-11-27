@@ -37,7 +37,11 @@ impl Contexts {
     }
 }
 
-pub(crate) const OPS: &[deno_core::OpDecl] = &[op_vm_create_context(), op_vm_run_in_context()];
+pub(crate) const OPS: &[deno_core::OpDecl] = &[
+    op_vm_create_context(),
+    op_vm_run_in_context(),
+    op_vm_compile_function(),
+];
 
 /// Returns `[id, global]`: the handle the JavaScript side stores, and the
 /// context's global object to hand back as the context.
@@ -107,6 +111,89 @@ fn op_vm_run_in_context<'s>(
 
     if let Some(value) = result {
         out.set_index(tc_scope, 1, value);
+    } else if let Some(exception) = tc_scope.exception() {
+        out.set_index(tc_scope, 0, v8::Boolean::new(tc_scope, true).into());
+        out.set_index(tc_scope, 1, exception);
+    }
+    Ok(out)
+}
+
+/// Compiles a function in `id`'s realm, or in the caller's realm when `id` is
+/// zero. Returns `[threw, value]` like `op_vm_run_in_context`.
+#[op2(reentrant)]
+fn op_vm_compile_function<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    state: Rc<RefCell<OpState>>,
+    #[smi] id: i32,
+    #[string] source: &str,
+    #[string] filename: &str,
+    #[smi] line_offset: i32,
+    #[smi] column_offset: i32,
+    params: v8::Local<'s, v8::Array>,
+    context_extensions: v8::Local<'s, v8::Array>,
+) -> Result<v8::Local<'s, v8::Array>, JsErrorBox> {
+    let context = if id == 0 {
+        scope.get_current_context()
+    } else {
+        let context = state
+            .borrow()
+            .borrow::<Contexts>()
+            .get(id)
+            .ok_or_else(|| JsErrorBox::type_error("Unknown vm context"))?;
+        v8::Local::new(scope, &context)
+    };
+
+    let mut arguments = Vec::new();
+    for index in 0..params.length() {
+        let value = params
+            .get_index(scope, index)
+            .and_then(|value| value.try_into().ok())
+            .ok_or_else(|| JsErrorBox::type_error("params must be strings"))?;
+        arguments.push(value);
+    }
+    let mut extensions = Vec::new();
+    for index in 0..context_extensions.length() {
+        let value = context_extensions
+            .get_index(scope, index)
+            .and_then(|value| value.try_into().ok())
+            .ok_or_else(|| JsErrorBox::type_error("contextExtensions must be objects"))?;
+        extensions.push(value);
+    }
+
+    let out = v8::Array::new(scope, 2);
+    out.set_index(scope, 0, v8::Boolean::new(scope, false).into());
+    out.set_index(scope, 1, v8::null(scope).into());
+
+    let context_scope = &mut v8::ContextScope::new(scope, context);
+    v8::tc_scope!(let tc_scope, context_scope);
+
+    let source = v8::String::new(tc_scope, source).expect("the source fits in a V8 string");
+    let filename = v8::String::new(tc_scope, filename).expect("the filename fits in a V8 string");
+    let origin = v8::ScriptOrigin::new(
+        tc_scope,
+        filename.into(),
+        line_offset,
+        column_offset,
+        false,
+        0,
+        None,
+        false,
+        false,
+        false,
+        None,
+    );
+    let mut source = v8::script_compiler::Source::new(source, Some(&origin));
+    let function = v8::script_compiler::compile_function(
+        tc_scope,
+        &mut source,
+        &arguments,
+        &extensions,
+        v8::script_compiler::CompileOptions::NoCompileOptions,
+        v8::script_compiler::NoCacheReason::NoReason,
+    );
+
+    if let Some(function) = function {
+        out.set_index(tc_scope, 1, function.into());
     } else if let Some(exception) = tc_scope.exception() {
         out.set_index(tc_scope, 0, v8::Boolean::new(tc_scope, true).into());
         out.set_index(tc_scope, 1, exception);
