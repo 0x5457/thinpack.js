@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::process::ExitStatus;
+use std::time::Instant;
 
 use crate::bundle;
 use crate::capabilities::{analyze_entry, print_capabilities};
@@ -33,8 +34,18 @@ pub(crate) fn pack_command(args: Vec<String>) -> Result<(), Box<dyn Error>> {
     let output = options
         .output
         .unwrap_or_else(|| bundle::default_output(&analyzed.entry));
+    let writing = options.rebuild.then(|| {
+        eprintln!("compressing {} bytes with Brotli...", bundle.blob.len());
+        Instant::now()
+    });
     let (payload_len, total) =
         bundle::write(&template.path, &bundle.manifest, &bundle.blob, &output)?;
+    if let Some(started) = writing {
+        eprintln!(
+            "compressed and wrote executable in {:.2}s",
+            started.elapsed().as_secs_f64()
+        );
+    }
 
     println!(
         "packed {} files, {} capabilities ({} bytes payload, {} bytes total) -> {}",

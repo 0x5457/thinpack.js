@@ -77,15 +77,24 @@ evaluated once per direct call that supplies literal string arguments, so a non-
 its path unknown and an exported function or a non-call reference leaves the whole read unknown.
 The promise API and that function inference require the `fs` namespace bound once by `require('fs')`
 or `require('node:fs')`; a direct read keeps its previous receiver-independent behavior.
-Enumeration likewise counts only on that binding. A scanned directory is expanded like
-`--include` only when it is below the project root and is
-neither a package root nor `node_modules`; anything broader still needs `--include`. `path.join`,
-`path.resolve`, string concatenation, and single-assignment bindings of them are evaluated. A
-`require` of one constant path built that way packs the named file. A computed `require`/`import`
-whose loaded binding has a `path.join`/`path.resolve` call with a literal `__dirname` directory and
-one final computed segment, or whose argument is a template literal naming
-``./commands/${command}.js``, packs that directory's files matching the segment's literal suffix,
-or JavaScript modules when it has none; other computed module paths still need `--include`.
+Enumeration likewise counts only on that binding. Enumeration names entries; it does not load
+them, so those files are payload data and their imports are not analyzed. An enumerated directory
+is packed only when it is below the project root and is neither a package root nor `node_modules`;
+anything broader still needs `--include`. `path.join`, `path.resolve`, string concatenation, and
+single-assignment bindings of them are evaluated. A `require` of one constant path built that way
+packs the named file. A computed `require`/`import` whose loaded binding has a
+`path.join`/`path.resolve` call with a literal `__dirname` directory and one final computed
+segment, whose argument is a concatenation such as `'./plugins/' + name`, or whose argument is a
+template literal naming ``./commands/${command}.js``, makes that directory's matching files module
+roots: their imports are analyzed, and a real missing dependency still fails the pack. A
+concatenated prefix has to end with `/` (otherwise it can name a sibling, as in
+`'./plugins' + name`), and a literal suffix after the computed segment has to be an extension
+(`.js` in `name + '.js'`); a suffix that is not an extension, such as `'/index.js'` in
+`'./plugins/' + name + '/index.js'`, names a path below the directory and stays diagnostic. The
+filter keeps the files matching the segment's literal suffix, or JavaScript modules when it has
+none; other computed module paths still need `--include`. A path segment that is a property of
+another module's exported object, such as `path.join(__dirname, constants.BANNER)`, is not
+evaluated; add the named file with `--include`.
 
 Use the narrowest include paths that cover the files the app loads. An included file appears
 under `/app` at its path relative to the project root. A directory include also packs its other

@@ -1323,6 +1323,136 @@ mod unix {
     }
 
     #[test]
+    fn a_scanned_dependency_template_is_packed_as_data() {
+        let directory = TempDir::new("scanned-dependency-data");
+        let project = directory.path().join("project");
+        let package = project.join("node_modules/dep");
+        fs::create_dir_all(package.join("templates/starter"))
+            .expect("create the template directory");
+        fs::write(project.join("package.json"), r#"{ "name": "app" }"#)
+            .expect("write the project manifest");
+        let entry = project.join("main.cjs");
+        fs::write(&entry, "require('dep');\n").expect("write the entry");
+        fs::write(
+            package.join("package.json"),
+            r#"{ "name": "dep", "main": "index.cjs" }"#,
+        )
+        .expect("write the dependency manifest");
+        fs::write(
+            package.join("index.cjs"),
+            "const fs = require('node:fs');\nconst path = require('node:path');\nmodule.exports = fs.readdirSync(path.join(__dirname, 'templates'));\n",
+        )
+        .expect("write the dependency entry");
+        fs::write(
+            package.join("templates/starter/package.json"),
+            r#"{ "name": "starter" }"#,
+        )
+        .expect("write the template manifest");
+        let template_source = "require('template-only-package');\n";
+        fs::write(package.join("templates/starter/index.cjs"), template_source)
+            .expect("write the template module");
+        fs::write(package.join("templates/starter/README.md"), "template\n")
+            .expect("write the template readme");
+
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let output = directory.path().join("packed-app");
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            &project,
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+            ],
+        );
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(result.status.success(), "pack failed:\n{stderr}");
+        assert!(!stderr.contains("template-only-package"), "{stderr}");
+
+        let pack = thinpack_pack::read_from_executable(&output)
+            .expect("read packed executable")
+            .expect("packed payload");
+        let paths: Vec<&str> = pack
+            .manifest
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect();
+        for path in [
+            "/app/node_modules/dep/templates/starter/index.cjs",
+            "/app/node_modules/dep/templates/starter/package.json",
+            "/app/node_modules/dep/templates/starter/README.md",
+        ] {
+            assert!(paths.contains(&path), "{path} was not packed: {paths:?}");
+        }
+        let data = pack
+            .manifest
+            .files
+            .iter()
+            .find(|file| file.path.ends_with("/templates/starter/index.cjs"))
+            .expect("the template module is packed");
+        assert_eq!(pack.slice_of(data), Some(template_source.as_bytes()));
+    }
+
+    #[test]
+    fn a_scanned_dependency_plugin_is_still_analyzed() {
+        let directory = TempDir::new("scanned-dependency-module");
+        let project = directory.path().join("project");
+        let package = project.join("node_modules/dep");
+        fs::create_dir_all(package.join("plugins/starter")).expect("create the plugin directory");
+        fs::write(project.join("package.json"), r#"{ "name": "app" }"#)
+            .expect("write the project manifest");
+        let entry = project.join("main.cjs");
+        fs::write(&entry, "require('dep');\n").expect("write the entry");
+        fs::write(
+            package.join("package.json"),
+            r#"{ "name": "dep", "main": "index.cjs" }"#,
+        )
+        .expect("write the dependency manifest");
+        fs::write(
+            package.join("index.cjs"),
+            "const fs = require('node:fs');\nconst path = require('node:path');\nconst dir = path.join(__dirname, 'plugins');\nfor (const name of fs.readdirSync(dir)) require(dir + '/' + name);\n",
+        )
+        .expect("write the dependency entry");
+        fs::write(
+            package.join("plugins/starter/package.json"),
+            r#"{ "name": "starter" }"#,
+        )
+        .expect("write the plugin manifest");
+        fs::write(
+            package.join("plugins/starter/index.cjs"),
+            "require('template-only-package');\n",
+        )
+        .expect("write the plugin module");
+
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let output = directory.path().join("packed-app");
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            &project,
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+            ],
+        );
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(!result.status.success(), "pack succeeded:\n{stderr}");
+        assert!(stderr.contains("template-only-package"), "{stderr}");
+        assert!(stderr.contains("cannot resolve"), "{stderr}");
+    }
+
+    #[test]
     fn a_computed_module_load_packs_only_its_literal_extension() {
         let directory = TempDir::new("computed-module-directory");
         let project = directory.path().join("project");
@@ -2010,6 +2140,82 @@ module.exports = function loadSystemModule(networkEnabled) {
             .map(|module| module.name)
             .collect();
         assert_eq!(names, expected);
+    }
+
+    #[test]
+    fn rebuild_progress_stays_on_stderr_and_regular_pack_stays_quiet() {
+        let directory = TempDir::new("rebuild-progress");
+        let entry = directory.path().join("main.js");
+        let output = directory.path().join("packed-app");
+        let source = directory.path().join("checkout");
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        fs::write(&entry, "module.exports = 1;\n").expect("write entry");
+        fs::create_dir_all(source.join("crates/thinpack-rt")).expect("create fake checkout");
+        fs::write(source.join("crates/thinpack-rt/Cargo.toml"), "")
+            .expect("mark the fake checkout as thinpack");
+        // `--rebuild` shells out to cargo and inspects the binary the build leaves
+        // behind; a stub that plants the fixture exercises that path without a
+        // real multi-minute template build.
+        let cargo = directory.path().join("cargo");
+        fs::write(
+            &cargo,
+            r#"#!/bin/sh
+while [ $# -gt 0 ]; do
+  if [ "$1" = --target-dir ]; then shift; target=$1; fi
+  shift
+done
+mkdir -p "$target/release"
+cp "$THINPACK_FAKE_TEMPLATE" "$target/release/thinpack-rt"
+"#,
+        )
+        .expect("write fake cargo");
+        fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755))
+            .expect("make fake cargo executable");
+
+        let mut command = Command::new(env!("CARGO_BIN_EXE_thinpack"));
+        command
+            .current_dir(directory.path())
+            .env("THINPACK_CACHE", directory.path().join("cache"))
+            .env("THINPACK_CARGO", &cargo)
+            .env("THINPACK_FAKE_TEMPLATE", &template)
+            .args(["pack"])
+            .arg(&entry)
+            .args(["--rebuild", "--source"])
+            .arg(&source)
+            .arg("--output")
+            .arg(&output);
+        let rebuilt = run_with_timeout(&mut command);
+        let stdout = String::from_utf8_lossy(&rebuilt.stdout);
+        let stderr = String::from_utf8_lossy(&rebuilt.stderr);
+        assert!(rebuilt.status.success(), "{stderr}");
+        assert!(stderr.contains("with Brotli..."), "{stderr}");
+        assert!(
+            stderr.contains("compressed and wrote executable in "),
+            "{stderr}"
+        );
+        assert!(stdout.starts_with("packed 1 files, "), "{stdout}");
+        assert_eq!(stdout.lines().count(), 1, "{stdout}");
+
+        let regular = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            directory.path(),
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+            ],
+        );
+        assert!(regular.status.success(), "{regular:?}");
+        assert_eq!(regular.stdout, rebuilt.stdout);
+        assert!(
+            !String::from_utf8_lossy(&regular.stderr).contains("Brotli"),
+            "{regular:?}"
+        );
     }
 
     #[test]

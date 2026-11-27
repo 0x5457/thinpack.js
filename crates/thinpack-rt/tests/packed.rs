@@ -1194,6 +1194,128 @@ assert.equal(
         error: None,
     },
     PackedTest {
+        name: "packed::crypto-hash-streams",
+        directory: "crypto-hash-streams",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r"
+const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
+const { Readable } = require('node:stream');
+
+const sha256abc = 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad';
+const sha256abcdef = 'bef57ec7f53a6d40beb640a780a639c83bc29ac8a9816f1fc6c5c6dcd93c4721';
+const hmacAbc = '9c196e32dc0175f86f4b1cb89289d6619de6bee699e4c378e68309ed97a1a6ab';
+
+const base = crypto.createHash('sha256').update('abc');
+const copy = base.copy();
+assert.equal(base.update('def').digest('hex'), sha256abcdef);
+assert.equal(copy.update('def').digest('hex'), sha256abcdef);
+assert.throws(() => base.digest(), { code: 'ERR_CRYPTO_HASH_FINALIZED' });
+assert.throws(() => base.copy(), { code: 'ERR_CRYPTO_HASH_FINALIZED' });
+
+assert.equal(crypto.createHash('sha256').update('abc', 'nope').digest('hex'), sha256abc);
+assert.ok(Buffer.isBuffer(crypto.createHash('sha256').update('abc').digest('nope')));
+assert.ok(Buffer.isBuffer(crypto.createHash('sha256').update('abc').digest('BUFFER')));
+assert.equal(
+  crypto.createHash('sha256').update('abc').digest('base64'),
+  'ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=',
+);
+assert.throws(
+  () => crypto.createHash('sha256').update(new ArrayBuffer(3)),
+  { code: 'ERR_INVALID_ARG_TYPE' },
+);
+assert.throws(
+  () => crypto.createHash('sha256').update(1),
+  { code: 'ERR_INVALID_ARG_TYPE' },
+);
+
+// update() snapshots the bytes, as the native handle does.
+const mutable = Buffer.from('abc');
+const snapshot = crypto.createHash('sha256').update(mutable);
+mutable.fill(0);
+assert.equal(snapshot.digest('hex'), sha256abc);
+
+const backing = new Uint8Array([0, 97, 98, 99, 0]);
+const snapshotView = crypto.createHash('sha256')
+  .update(new DataView(backing.buffer, 1, 3));
+backing.fill(0);
+assert.equal(snapshotView.digest('hex'), sha256abc);
+
+const mutableHmac = Buffer.from('abc');
+const hmacSnapshot = crypto.createHmac('sha256', 'key').update(mutableHmac);
+mutableHmac.fill(0);
+assert.equal(hmacSnapshot.digest('hex'), hmacAbc);
+
+// A stream flush caches the digest: read() and one public digest() both work.
+const streamed = crypto.createHash('sha256');
+streamed.setEncoding('hex');
+streamed.end('abc');
+assert.equal(streamed.read(), sha256abc);
+assert.equal(streamed.digest('hex'), sha256abc);
+assert.throws(() => streamed.digest('hex'), { code: 'ERR_CRYPTO_HASH_FINALIZED' });
+
+const flushed = crypto.createHash('sha256');
+flushed.end('abc');
+assert.equal(flushed.digest('hex'), sha256abc);
+assert.throws(() => flushed.update('x'), { code: 'ERR_CRYPTO_HASH_FINALIZED' });
+
+const flushedOnly = crypto.createHash('sha256');
+flushedOnly.end('abc');
+assert.throws(() => flushedOnly.update('x'), { code: 'ERR_CRYPTO_HASH_UPDATE_FAILED' });
+// Node 26 defers the failure of a copy of a flushed hash to digest(); the
+// flushed digest is already final here, so copy() fails eagerly.
+assert.throws(() => flushedOnly.copy(), { code: 'ERR_CRYPTO_HASH_FINALIZED' });
+
+// HMAC finalizes on flush, so a later public digest returns an empty result.
+const hmac = crypto.createHmac('sha256', 'key');
+hmac.setEncoding('hex');
+hmac.end('abc');
+assert.equal(hmac.read(), hmacAbc);
+assert.equal(hmac.digest('hex'), '');
+assert.equal(hmac.digest('nope'), '');
+assert.ok(Buffer.isBuffer(hmac.digest()));
+assert.throws(() => hmac.update('x'), { code: 'ERR_CRYPTO_HASH_FINALIZED' });
+assert.equal(
+  crypto.createHmac('sha256', '6b6579', { encoding: 'hex' }).update('abc').digest('hex'),
+  hmacAbc,
+);
+assert.equal(
+  crypto.createHmac('sha256', crypto.createSecretKey(Buffer.from('key')))
+    .update('abc').digest('hex'),
+  hmacAbc,
+);
+
+const piped = crypto.createHash('sha256');
+piped.setEncoding('hex');
+Readable.from(['ab', 'c']).pipe(piped);
+let pipedDigest;
+piped.on('finish', () => { pipedDigest = piped.read(); });
+
+// A stream write after a public digest fails inside the transform, as in Node.
+const lateHash = crypto.createHash('sha256');
+const lateHmac = crypto.createHmac('sha256', 'key');
+let lateHashCode;
+let lateHmacCode;
+lateHash.digest();
+lateHmac.digest();
+lateHash.on('error', (error) => { lateHashCode = error.code; });
+lateHmac.on('error', (error) => { lateHmacCode = error.code; });
+lateHash.write('abc');
+lateHmac.write('abc');
+
+process.on('exit', () => {
+  assert.equal(pipedDigest, sha256abc);
+  assert.equal(lateHashCode, 'ERR_CRYPTO_HASH_UPDATE_FAILED');
+  assert.equal(lateHmacCode, 'ERR_CRYPTO_HASH_UPDATE_FAILED');
+});
+",
+        )],
+        capabilities: &["assert", "crypto", "stream"],
+        error: None,
+    },
+    PackedTest {
         name: "packed::ffi-dlopen",
         directory: "ffi-dlopen",
         entry: "/app/main.js",
@@ -2131,6 +2253,92 @@ for (const [api, call] of calls) {
 }
 assert.throws(() => vm.runInThisContext('throw new TypeError("boom")'), TypeError);
 console.log('vm context ok');
+"#,
+        )],
+        capabilities: &["assert", "vm"],
+        error: None,
+    },
+    PackedTest {
+        name: "packed::vm-compile-function",
+        directory: "vm-compile-function",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r#"const assert = require('node:assert/strict');
+const vm = require('node:vm');
+
+// jest-environment-node creates this context, then jest-runtime compiles every
+// module wrapper in it with vm.compileFunction and parsingContext.
+const context = vm.createContext();
+vm.runInContext('var frameworkMarker = "from-context";', context);
+
+const params = ['module', 'exports', 'require', '__dirname', '__filename', 'jest'];
+const compiled = vm.compileFunction(
+  'module.exports = [frameworkMarker, this === globalThis, Object, globalThis, __filename, typeof jest];',
+  params,
+  { filename: '/app/example.test.js', parsingContext: context },
+);
+assert.equal(compiled.length, params.length);
+assert.equal(
+  Object.getPrototypeOf(compiled),
+  vm.runInContext('Function.prototype', context),
+);
+
+const wrapper = { exports: undefined };
+compiled(wrapper, {}, require, '/app', '/app/example.test.js', { marker: true });
+const [marker, globalThisIsRealm, object, global, filename, jestType] = wrapper.exports;
+assert.equal(marker, 'from-context');
+assert.equal(globalThisIsRealm, true);
+assert.equal(object, vm.runInContext('Object', context));
+assert.equal(global, vm.runInContext('this', context));
+assert.equal(filename, '/app/example.test.js');
+assert.equal(jestType, 'object');
+
+// contextExtensions are extra scopes for the compiled body.
+const extension = vm.runInContext('({ extensionValue: 21 })', context);
+assert.equal(
+  vm.compileFunction('return extensionValue * 2', [], {
+    parsingContext: context,
+    contextExtensions: [extension],
+  })(),
+  42,
+);
+
+// A compile error is the parsing context's SyntaxError, not the caller's.
+let syntaxError;
+try {
+  vm.compileFunction('return )', [], { parsingContext: context });
+} catch (error) {
+  syntaxError = error;
+}
+assert.equal(syntaxError.name, 'SyntaxError');
+assert.equal(syntaxError instanceof SyntaxError, false);
+assert.equal(syntaxError instanceof vm.runInContext('SyntaxError', context), true);
+
+// filename and lineOffset reach a stack trace from the compiled function.
+const thrower = vm.compileFunction('throw new Error("boom")', [], {
+  filename: '/app/example.test.js',
+  lineOffset: 10,
+  parsingContext: context,
+});
+let runtimeError;
+try {
+  thrower();
+} catch (error) {
+  runtimeError = error;
+}
+assert.equal(runtimeError instanceof Error, false);
+assert.equal(runtimeError instanceof vm.runInContext('Error', context), true);
+assert.match(runtimeError.stack, /\/app\/example\.test\.js:11/);
+
+// Without parsingContext the caller's realm and global are the defaults.
+assert.equal(vm.compileFunction('return globalThis')(), globalThis);
+assert.equal(vm.compileFunction('return typeof frameworkMarker')(), 'undefined');
+assert.throws(
+  () => vm.compileFunction('return 1', [], { parsingContext: {} }),
+  { code: 'ERR_INVALID_ARG_TYPE' },
+);
+console.log('vm compileFunction ok');
 "#,
         )],
         capabilities: &["assert", "vm"],

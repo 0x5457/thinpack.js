@@ -1,6 +1,13 @@
 (() => {
   const { ops } = Deno.core;
   const { codes } = require("node:thinpack/internal/errors");
+  const {
+    validateArray,
+    validateInt32,
+    validateObject,
+    validateString,
+    validateStringArray,
+  } = require("node:thinpack/internal/validators");
 
   const contexts = new WeakMap();
   const DEFAULT_FILENAME = "evalmachine.<anonymous>";
@@ -128,8 +135,52 @@
     }
   }
 
+  // Compiles the body in `parsingContext`'s realm, where its globals, built-ins
+  // and thrown syntax errors belong; without one, the caller's realm is used.
   const compileFunction = (code, params = [], options = {}) => {
-    return new Function(...params, String(code));
+    validateString(code, "code");
+    validateStringArray(params, "params");
+    validateObject(options, "options");
+    const {
+      filename = "",
+      lineOffset = 0,
+      columnOffset = 0,
+      parsingContext,
+      contextExtensions = [],
+    } = options;
+    validateString(filename, "options.filename");
+    validateInt32(lineOffset, "options.lineOffset");
+    validateInt32(columnOffset, "options.columnOffset");
+    validateArray(contextExtensions, "options.contextExtensions");
+    for (let index = 0; index < contextExtensions.length; index++) {
+      validateObject(
+        contextExtensions[index],
+        `options.contextExtensions[${index}]`,
+      );
+    }
+
+    let id = 0;
+    if (parsingContext !== undefined) {
+      id = contexts.get(parsingContext);
+      if (id === undefined) {
+        throw new codes.ERR_INVALID_ARG_TYPE(
+          "options.parsingContext",
+          "Context",
+          parsingContext,
+        );
+      }
+    }
+    const [threw, result] = ops.op_vm_compile_function(
+      id,
+      code,
+      filename,
+      lineOffset,
+      columnOffset,
+      params,
+      contextExtensions,
+    );
+    if (threw) throw result;
+    return result;
   };
 
   const constants = Object.freeze({
