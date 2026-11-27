@@ -110,6 +110,7 @@
 
   const kHeaders = Symbol("headers");
   const kChunked = Symbol("chunked");
+  const kFinalChunk = Symbol("finalChunk");
 
   const headersSent = (action) => {
     const error = new Error(`Cannot ${action} headers after they are sent to the client`);
@@ -198,17 +199,17 @@
     return this;
   };
 
-  ServerResponse.prototype._storeHeader = function _storeHeader(inferContentLength = false) {
+  ServerResponse.prototype._storeHeader = function _storeHeader(finalLength) {
     if (String(this.getHeader("connection") ?? "").toLowerCase() === "close") {
       this._keepAlive = false;
     }
     const length = this.getHeader("content-length");
-    // An empty implicit end() has a known zero-length body. This framing is
+    // An implicit end() has a known body length. This framing is
     // serialization-only: getHeader never reports the inferred length.
     const statusCode = this.statusCode;
     const expectsBody = this._hasBody && statusCode !== 204 && statusCode !== 304 &&
       !(statusCode >= 100 && statusCode < 200);
-    const inferredLength = inferContentLength &&
+    const inferredLength = typeof finalLength === "number" &&
       expectsBody &&
       this.req?.httpVersion === "1.1" &&
       length === undefined &&
@@ -232,7 +233,7 @@
     if (length !== undefined) {
       lines.push(`Content-Length: ${length}`);
     } else if (inferredLength) {
-      lines.push("Content-Length: 0");
+      lines.push(`Content-Length: ${finalLength}`);
     } else if (this[kChunked]) {
       lines.push("Transfer-Encoding: chunked");
     }
@@ -247,8 +248,8 @@
     this.headersSent = true;
   };
 
-  ServerResponse.prototype._sendHead = function _sendHead(inferContentLength = false) {
-    if (this._header === null) this._storeHeader(inferContentLength);
+  ServerResponse.prototype._sendHead = function _sendHead(finalLength) {
+    if (this._header === null) this._storeHeader(finalLength);
     if (this._headerSent) return;
     this._headerSent = true;
     this.socket.write(this._header);
@@ -267,7 +268,7 @@
 
   ServerResponse.prototype._finish = function _finish() {
     // end() with no writes is the only path that reaches _finish before the head exists.
-    this._sendHead(true);
+    this._sendHead(0);
     if (this[kChunked]) this.socket.write("0\r\n\r\n");
     if (!this._keepAlive) this.socket.end();
   };
@@ -297,9 +298,24 @@
     this._sendHead();
   };
 
+  ServerResponse.prototype.end = function end(chunk, encoding, callback) {
+    if (chunk == null || typeof chunk === "function" || this._header !== null ||
+      this.writableLength !== 0 || this.writableBuffer.length !== 0) {
+      return Writable.prototype.end.call(this, chunk, encoding, callback);
+    }
+    // Only the first write dispatched by end() is a complete body. Let Writable
+    // normalize its arguments and encoding before measuring the actual bytes.
+    this[kFinalChunk] = true;
+    try {
+      return Writable.prototype.end.call(this, chunk, encoding, callback);
+    } finally {
+      this[kFinalChunk] = false;
+    }
+  };
+
   ServerResponse.prototype._write = function _write(chunk, encoding, callback) {
     try {
-      this._sendHead();
+      this._sendHead(this[kFinalChunk] ? chunk.byteLength : undefined);
       this._writeChunk(chunk);
       callback();
     } catch (error) {

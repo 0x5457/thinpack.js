@@ -1,9 +1,7 @@
 'use strict';
 
-// An empty implicit end() is a known-length empty response in Node: ordinary HTTP/1.1
-// GET gets Content-Length: 0, HEAD gets no framing header, and once the header is
-// composed (writeHead, flushHeaders, or any write, including an empty one) the existing
-// framing stays unchanged.
+// An implicit single end() has a known length in Node. HEAD gets no automatic
+// framing header, and earlier writes or an explicit header keep their framing.
 
 const assert = require('node:assert/strict');
 const http = require('node:http');
@@ -52,6 +50,7 @@ const exchange = (port, version, method, path) => new Promise((resolve, reject) 
 
 (async () => {
   const observed = new Map();
+  let endCallbacks = 0;
   const server = http.createServer((req, res) => {
     res.sendDate = false;
     res.statusCode = 404;
@@ -61,7 +60,31 @@ const exchange = (port, version, method, path) => new Promise((resolve, reject) 
     if (req.url === '/empty-write') res.write('');
     if (req.url === '/first-write') res.write('x');
     res.once('finish', () => observed.set(`${req.method} ${req.url}`, res.getHeader('content-length')));
-    res.end();
+    switch (req.url) {
+      case '/body':
+        return res.end('héllo');
+      case '/encoded':
+        return res.end('e9', 'hex', () => { endCallbacks += 1; });
+      case '/buffer':
+        return res.end(Buffer.from('x'), () => { endCallbacks += 1; });
+      case '/empty-string':
+        return res.end('');
+      case '/explicit-body':
+        res.writeHead(404);
+        return res.end(Buffer.from('x'));
+      case '/flushed-body':
+        res.flushHeaders();
+        return res.end('x');
+      case '/no-length':
+        res.removeHeader('Content-Length');
+        return res.end('x');
+      case '/buffered-write':
+        res.cork();
+        res.write('');
+        return res.end('x');
+      default:
+        return res.end();
+    }
   });
   const port = await listen(server);
   const request = (version, method, path) => exchange(port, version, method, path);
@@ -97,6 +120,32 @@ const exchange = (port, version, method, path) => new Promise((resolve, reject) 
     const http10 = await request('1.0', 'GET', '/empty');
     assert.deepEqual(http10, { status: 404, length: undefined, encoding: undefined, body: '' });
 
+    const bodyBytes = Buffer.from('héllo').toString('latin1');
+    const getBody = await request('1.1', 'GET', '/body');
+    assert.deepEqual(getBody, {
+      status: 404, length: '6', encoding: undefined, body: bodyBytes,
+    });
+    const encoded = await request('1.1', 'GET', '/encoded');
+    assert.deepEqual(encoded, { status: 404, length: '1', encoding: undefined, body: 'é' });
+    const buffer = await request('1.1', 'GET', '/buffer');
+    assert.deepEqual(buffer, { status: 404, length: '1', encoding: undefined, body: 'x' });
+    assert.deepEqual(await request('1.1', 'GET', '/empty-string'), empty);
+    assert.equal(endCallbacks, 2);
+
+    for (const path of ['/explicit-body', '/flushed-body', '/no-length', '/buffered-write']) {
+      const response = await request('1.1', 'GET', path);
+      assert.deepEqual(response, {
+        status: 404, length: undefined, encoding: 'chunked', body: '1\r\nx\r\n0\r\n\r\n',
+      });
+    }
+    const headBody = await request('1.1', 'HEAD', '/body');
+    assert.deepEqual(headBody, { status: 404, length: undefined, encoding: undefined, body: '' });
+    const oldHttpBody = await request('1.0', 'GET', '/body');
+    assert.deepEqual(oldHttpBody, {
+      status: 404, length: undefined, encoding: undefined, body: bodyBytes,
+    });
+
+    assert.equal(observed.get('GET /body'), undefined);
     assert.equal(observed.get('GET /empty'), undefined);
     assert.equal(observed.get('HEAD /empty'), undefined);
     assert.equal(observed.get('HEAD /head-length'), '7');
