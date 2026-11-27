@@ -1779,6 +1779,47 @@ console.log('module compile ok');
         error: None,
     },
     PackedTest {
+        name: "packed::stdio-writable-sink",
+        directory: "stdio-writable-sink",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r"
+const assert = require('node:assert/strict');
+const { Writable } = require('node:stream');
+
+assert.equal(typeof process.stdout._write, 'function');
+assert.equal(typeof process.stderr._write, 'function');
+
+let stdoutWrites = 0;
+let stderrWrites = 0;
+const forward = (target, onwrite) => new Writable({
+  write(chunk, encoding, callback) {
+    onwrite();
+    target._write(chunk, encoding, callback);
+  },
+});
+
+const stdout = forward(process.stdout, () => stdoutWrites++);
+const stderr = forward(process.stderr, () => stderrWrites++);
+stdout.write('stdout string\n');
+stdout.write(Buffer.from('stdout buffer\n'));
+stderr.write('stderr string\n');
+stderr.write(Buffer.from('stderr buffer\n'));
+stdout.end();
+stderr.end();
+
+setImmediate(() => {
+  assert.equal(stdoutWrites, 2);
+  assert.equal(stderrWrites, 2);
+  process.stdout.write('stdio writable sink ok\n');
+});
+",
+        )],
+        capabilities: &["assert", "stream"],
+        error: None,
+    },
+    PackedTest {
         name: "packed::builtin-named-exports",
         directory: "builtin-named-exports",
         entry: "/app/main.mjs",
