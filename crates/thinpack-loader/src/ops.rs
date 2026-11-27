@@ -508,10 +508,9 @@ fn read(resolved: &Resolved, fs: &ModuleFs) -> String {
                 if resolved.format == Format::Json {
                     return format!("j\0{path}\0{url}\0{source}");
                 }
-                let Some((name, script)) = crate::commonjs_script(&resolved.path, &source) else {
-                    return invalid_url(&path);
-                };
-                format!("f\0{path}\0{name}\0{script}")
+                // CommonJS source stays unwrapped: the loader wraps it once, and a
+                // delegated default `.js` handler compiles it through `_compile`.
+                format!("f\0{path}\0{url}\0{}", crate::strip_hashbang(&source))
             },
         ),
         Err(error) => format!("e\0ERR_MODULE_READ\0{path}: {error}\0"),

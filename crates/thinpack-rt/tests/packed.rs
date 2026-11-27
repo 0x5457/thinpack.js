@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use thinpack_pack::{Compression, FileRecord, Manifest, Template};
 
+mod require_extensions;
 mod stdin;
 
 #[cfg(unix)]
@@ -2085,6 +2086,7 @@ pub(super) fn print_list(cli: &super::Cli) {
     #[cfg(unix)]
     tty::print_list(cli);
     stdin::print_list(cli);
+    require_extensions::print_list(cli);
 }
 
 pub(super) fn execute(cli: &super::Cli) -> bool {
@@ -2101,7 +2103,9 @@ pub(super) fn execute(cli: &super::Cli) -> bool {
     let tty_count = tty::selected(cli).len();
     #[cfg(not(unix))]
     let tty_count = 0;
-    let test_count = selected.len() + startup.len() + stdin::selected(cli).len() + tty_count;
+    let delegate_count = usize::from(require_extensions::matches(cli));
+    let test_count =
+        selected.len() + startup.len() + stdin::selected(cli).len() + tty_count + delegate_count;
     if test_count == 0 {
         return true;
     }
@@ -2142,6 +2146,16 @@ pub(super) fn execute(cli: &super::Cli) -> bool {
         report(
             test.name(),
             stdin::run_test(test),
+            started,
+            &mut passed,
+            &mut failed,
+        );
+    }
+    if require_extensions::matches(cli) {
+        let started = Instant::now();
+        report(
+            require_extensions::NAME,
+            require_extensions::run_test(),
             started,
             &mut passed,
             &mut failed,
