@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 
-use oxc_ast::ast::{BinaryOperator, CallExpression, Expression};
+use oxc_ast::ast::{BinaryExpression, BinaryOperator, CallExpression, Expression};
 use oxc_semantic::{Semantic, SymbolId};
 use thinpack_resolve::normalize;
 
@@ -42,10 +42,15 @@ pub(super) fn evaluate_rooted<'a>(
     (value.rooted && value.path.has_root()).then(|| normalize(&value.path))
 }
 
-/// The directory a computed module path selects from, when its literal arguments
-/// are followed by one computed final argument. The optional extension is the
-/// literal suffix that computed argument appends (`.js` in
+/// The directory a computed module path selects from, when a literal prefix
+/// names it and one final computed segment follows. The optional extension is
+/// the literal suffix that segment appends (`.js` in
 /// `` `${name}.js` ``), so packing can keep only the matching candidates.
+///
+/// A concatenated prefix has to end with a separator, because `'./lib' + name`
+/// can name the sibling `lib-extra` as well as a child of `./lib`; a literal
+/// suffix after the computed segment has to be an extension, because anything
+/// else names a path below the directory rather than an entry in it.
 ///
 /// The module's own directory and its ancestors are rejected: a computed load
 /// there would sweep every sibling instead of a shipped candidate directory.
@@ -75,6 +80,9 @@ pub(super) fn module_directory<'a>(
             return None;
         }
         return Some((directory, Some(extension(expression)?)));
+    }
+    if let Expression::BinaryExpression(binary) = expression {
+        return binary_directory(binary, base, semantic, expression);
     }
     let Expression::CallExpression(call) = expression else {
         return None;
@@ -118,27 +126,100 @@ pub(super) fn module_directory<'a>(
     if path.path == base || base.starts_with(&path.path) {
         return None;
     }
-    Some((path.path, extension(dynamic)))
+    let filter = match candidates(dynamic) {
+        Candidates::Modules => None,
+        Candidates::Extension(extension) => Some(extension),
+        Candidates::BelowDirectory => return None,
+    };
+    Some((path.path, filter))
 }
 
-/// The literal extension a computed final path segment appends.
-fn extension<'a>(expression: &'a Expression<'a>) -> Option<&'a str> {
-    let suffix = match expression.without_parentheses() {
+/// ``require('./lib/grant/' + name)`` names a directory next to the module and
+/// loads the name the final computed segment selects. A concatenated literal
+/// suffix, as in ``'./plugins/' + name + '.js'``, keeps only that extension.
+fn binary_directory<'a>(
+    binary: &'a BinaryExpression<'a>,
+    base: &Path,
+    semantic: &Semantic<'a>,
+    expression: &'a Expression<'a>,
+) -> Option<(PathBuf, Option<&'a str>)> {
+    if binary.operator != BinaryOperator::Addition {
+        return None;
+    }
+    if path_value(&binary.right, base, semantic, &mut BTreeSet::new()).is_some() {
+        // The appended literal is a suffix on the computed segment, so only an
+        // extension keeps it inside the directory; `'/index.js'` names a path
+        // below it, and a non-extension suffix cannot be a candidate filter.
+        let (directory, _) = module_directory(&binary.left, base, semantic)?;
+        return Some((directory, Some(extension(expression)?)));
+    }
+    let value = path_value(&binary.left, base, semantic, &mut BTreeSet::new())?;
+    if !value.rooted && !value.path.starts_with(".") {
+        return None;
+    }
+    // `'./plugins' + name` can name the sibling `plugins-extra`, not just an
+    // entry of `./plugins`, so only a prefix that ends with a separator proves
+    // the directory.
+    if !value.path.to_string_lossy().ends_with('/') {
+        return None;
+    }
+    let directory = normalize(&if value.path.is_absolute() {
+        value.path
+    } else {
+        base.join(value.path)
+    });
+    if directory == base || !directory.starts_with(base) {
+        return None;
+    }
+    let filter = match candidates(&binary.right) {
+        Candidates::Modules => None,
+        Candidates::Extension(extension) => Some(extension),
+        Candidates::BelowDirectory => return None,
+    };
+    Some((directory, filter))
+}
+
+/// The candidates a computed final path segment's literal suffix leaves.
+enum Candidates<'a> {
+    /// No literal suffix, so every JavaScript module in the directory matches.
+    Modules,
+    /// The suffix is this extension, so only files ending with it match.
+    Extension(&'a str),
+    /// The suffix is not an extension, so it names a path below the directory,
+    /// which no filter on the directory itself can bound.
+    BelowDirectory,
+}
+
+/// The candidates a computed final path segment selects.
+fn candidates<'a>(expression: &'a Expression<'a>) -> Candidates<'a> {
+    match suffix(expression) {
+        None => Candidates::Modules,
+        Some(_) => extension(expression).map_or(Candidates::BelowDirectory, Candidates::Extension),
+    }
+}
+
+/// The literal suffix a computed final path segment appends, if it appends one.
+fn suffix<'a>(expression: &'a Expression<'a>) -> Option<&'a str> {
+    match expression.without_parentheses() {
         Expression::TemplateLiteral(template) if !template.expressions.is_empty() => template
             .quasis
             .last()?
             .value
             .cooked
-            .and_then(oxc_str::JSStr::as_str)?,
+            .and_then(oxc_str::JSStr::as_str),
         Expression::BinaryExpression(binary)
             if binary.operator == BinaryOperator::Addition
                 && let Expression::StringLiteral(literal) = binary.right.without_parentheses() =>
         {
-            literal.value.as_str()?
+            literal.value.as_str()
         }
-        _ => return None,
-    };
-    let extension = suffix.strip_prefix('.')?;
+        _ => None,
+    }
+}
+
+/// The literal extension a computed final path segment appends.
+fn extension<'a>(expression: &'a Expression<'a>) -> Option<&'a str> {
+    let extension = suffix(expression)?.strip_prefix('.')?;
     (!extension.is_empty()
         && extension.chars().all(|character| {
             character.is_ascii_alphanumeric() || character == '_' || character == '-'

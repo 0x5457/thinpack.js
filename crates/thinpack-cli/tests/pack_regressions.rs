@@ -1323,6 +1323,136 @@ mod unix {
     }
 
     #[test]
+    fn a_scanned_dependency_template_is_packed_as_data() {
+        let directory = TempDir::new("scanned-dependency-data");
+        let project = directory.path().join("project");
+        let package = project.join("node_modules/dep");
+        fs::create_dir_all(package.join("templates/starter"))
+            .expect("create the template directory");
+        fs::write(project.join("package.json"), r#"{ "name": "app" }"#)
+            .expect("write the project manifest");
+        let entry = project.join("main.cjs");
+        fs::write(&entry, "require('dep');\n").expect("write the entry");
+        fs::write(
+            package.join("package.json"),
+            r#"{ "name": "dep", "main": "index.cjs" }"#,
+        )
+        .expect("write the dependency manifest");
+        fs::write(
+            package.join("index.cjs"),
+            "const fs = require('node:fs');\nconst path = require('node:path');\nmodule.exports = fs.readdirSync(path.join(__dirname, 'templates'));\n",
+        )
+        .expect("write the dependency entry");
+        fs::write(
+            package.join("templates/starter/package.json"),
+            r#"{ "name": "starter" }"#,
+        )
+        .expect("write the template manifest");
+        let template_source = "require('template-only-package');\n";
+        fs::write(package.join("templates/starter/index.cjs"), template_source)
+            .expect("write the template module");
+        fs::write(package.join("templates/starter/README.md"), "template\n")
+            .expect("write the template readme");
+
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let output = directory.path().join("packed-app");
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            &project,
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+            ],
+        );
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(result.status.success(), "pack failed:\n{stderr}");
+        assert!(!stderr.contains("template-only-package"), "{stderr}");
+
+        let pack = thinpack_pack::read_from_executable(&output)
+            .expect("read packed executable")
+            .expect("packed payload");
+        let paths: Vec<&str> = pack
+            .manifest
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect();
+        for path in [
+            "/app/node_modules/dep/templates/starter/index.cjs",
+            "/app/node_modules/dep/templates/starter/package.json",
+            "/app/node_modules/dep/templates/starter/README.md",
+        ] {
+            assert!(paths.contains(&path), "{path} was not packed: {paths:?}");
+        }
+        let data = pack
+            .manifest
+            .files
+            .iter()
+            .find(|file| file.path.ends_with("/templates/starter/index.cjs"))
+            .expect("the template module is packed");
+        assert_eq!(pack.slice_of(data), Some(template_source.as_bytes()));
+    }
+
+    #[test]
+    fn a_scanned_dependency_plugin_is_still_analyzed() {
+        let directory = TempDir::new("scanned-dependency-module");
+        let project = directory.path().join("project");
+        let package = project.join("node_modules/dep");
+        fs::create_dir_all(package.join("plugins/starter")).expect("create the plugin directory");
+        fs::write(project.join("package.json"), r#"{ "name": "app" }"#)
+            .expect("write the project manifest");
+        let entry = project.join("main.cjs");
+        fs::write(&entry, "require('dep');\n").expect("write the entry");
+        fs::write(
+            package.join("package.json"),
+            r#"{ "name": "dep", "main": "index.cjs" }"#,
+        )
+        .expect("write the dependency manifest");
+        fs::write(
+            package.join("index.cjs"),
+            "const fs = require('node:fs');\nconst path = require('node:path');\nconst dir = path.join(__dirname, 'plugins');\nfor (const name of fs.readdirSync(dir)) require(dir + '/' + name);\n",
+        )
+        .expect("write the dependency entry");
+        fs::write(
+            package.join("plugins/starter/package.json"),
+            r#"{ "name": "starter" }"#,
+        )
+        .expect("write the plugin manifest");
+        fs::write(
+            package.join("plugins/starter/index.cjs"),
+            "require('template-only-package');\n",
+        )
+        .expect("write the plugin module");
+
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let output = directory.path().join("packed-app");
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            &project,
+            &entry,
+            &[
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+            ],
+        );
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(!result.status.success(), "pack succeeded:\n{stderr}");
+        assert!(stderr.contains("template-only-package"), "{stderr}");
+        assert!(stderr.contains("cannot resolve"), "{stderr}");
+    }
+
+    #[test]
     fn a_computed_module_load_packs_only_its_literal_extension() {
         let directory = TempDir::new("computed-module-directory");
         let project = directory.path().join("project");
