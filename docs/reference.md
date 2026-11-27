@@ -71,15 +71,21 @@ launcher that selects a package bin at run time works without `--include`.
 
 A path built from `__dirname` can name files the module never imports: files read through
 `fs.readFileSync`, `readFile`, or `createReadStream` are packed as data, and so is every file under
-a directory listed with `fs.readdir` or `readdirSync`. Enumeration counts only on the `fs` module,
-and a scanned directory is expanded like `--include` only when it is below the project root and is
-neither a package root nor `node_modules`; anything broader still needs `--include`. `path.join`,
-`path.resolve`, string concatenation, and single-assignment bindings of them are evaluated. A
-`require` of one constant path built that way packs the named file. A computed `require`/`import`
-whose loaded binding has a `path.join`/`path.resolve` call with a literal `__dirname` directory and
-one final computed segment, or whose argument is a template literal naming
-``./commands/${command}.js``, packs that directory's files matching the segment's literal suffix,
-or JavaScript modules when it has none; other computed module paths still need `--include`.
+a directory listed with `fs.readdir` or `readdirSync`. Enumeration names entries; it does not load
+them, so those files are payload data and their imports are not analyzed. Enumeration counts only
+on the `fs` module, and an enumerated directory is packed only when it is below the project root
+and is neither a package root nor `node_modules`; anything broader still needs `--include`.
+`path.join`, `path.resolve`, string concatenation, and single-assignment bindings of them are
+evaluated. A `require` of one constant path built that way packs the named file. A computed
+`require`/`import` whose loaded binding has a `path.join`/`path.resolve` call with a literal
+`__dirname` directory and one final computed segment, whose argument is a concatenation such as
+`'./plugins/' + name`, or whose argument is a template literal naming
+``./commands/${command}.js``, makes that directory's matching files module roots: their imports
+are analyzed, and a real missing dependency still fails the pack. The filter keeps the files
+matching the segment's literal suffix, or JavaScript modules when it has none; other computed
+module paths still need `--include`. A path segment that is a property of another module's
+exported object, such as `path.join(__dirname, constants.BANNER)`, is not evaluated; add the
+named file with `--include`.
 
 Use the narrowest include paths that cover the files the app loads. An included file appears
 under `/app` at its path relative to the project root. A directory include also packs its other

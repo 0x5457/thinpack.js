@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 
-use oxc_ast::ast::{BinaryOperator, CallExpression, Expression};
+use oxc_ast::ast::{BinaryExpression, BinaryOperator, CallExpression, Expression};
 use oxc_semantic::{Semantic, SymbolId};
 use thinpack_resolve::normalize;
 
@@ -42,9 +42,9 @@ pub(super) fn evaluate_rooted<'a>(
     (value.rooted && value.path.has_root()).then(|| normalize(&value.path))
 }
 
-/// The directory a computed module path selects from, when its literal arguments
-/// are followed by one computed final argument. The optional extension is the
-/// literal suffix that computed argument appends (`.js` in
+/// The directory a computed module path selects from, when a literal prefix
+/// names it and one final computed segment follows. The optional extension is
+/// the literal suffix that segment appends (`.js` in
 /// `` `${name}.js` ``), so packing can keep only the matching candidates.
 ///
 /// The module's own directory and its ancestors are rejected: a computed load
@@ -75,6 +75,9 @@ pub(super) fn module_directory<'a>(
             return None;
         }
         return Some((directory, Some(extension(expression)?)));
+    }
+    if let Expression::BinaryExpression(binary) = expression {
+        return binary_directory(binary, base, semantic, expression);
     }
     let Expression::CallExpression(call) = expression else {
         return None;
@@ -119,6 +122,37 @@ pub(super) fn module_directory<'a>(
         return None;
     }
     Some((path.path, extension(dynamic)))
+}
+
+/// ``require('./lib/grant/' + name)`` names a directory next to the module and
+/// loads the name the final computed segment selects. A concatenated literal
+/// suffix, as in ``'./plugins/' + name + '.js'``, keeps only that extension.
+fn binary_directory<'a>(
+    binary: &'a BinaryExpression<'a>,
+    base: &Path,
+    semantic: &Semantic<'a>,
+    expression: &'a Expression<'a>,
+) -> Option<(PathBuf, Option<&'a str>)> {
+    if binary.operator != BinaryOperator::Addition {
+        return None;
+    }
+    if path_value(&binary.right, base, semantic, &mut BTreeSet::new()).is_some() {
+        let (directory, _) = module_directory(&binary.left, base, semantic)?;
+        return Some((directory, extension(expression)));
+    }
+    let value = path_value(&binary.left, base, semantic, &mut BTreeSet::new())?;
+    if !value.rooted && !value.path.starts_with(".") {
+        return None;
+    }
+    let directory = normalize(&if value.path.is_absolute() {
+        value.path
+    } else {
+        base.join(value.path)
+    });
+    if directory == base || !directory.starts_with(base) {
+        return None;
+    }
+    Some((directory, extension(&binary.right)))
 }
 
 /// The literal extension a computed final path segment appends.

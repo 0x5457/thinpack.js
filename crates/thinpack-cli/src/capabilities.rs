@@ -68,10 +68,10 @@ pub(crate) fn analyze_entry(options: &Options, pack: bool) -> Result<Analyzed, B
 }
 
 /// Analyze the entry and explicit include roots, expanding every
-/// package-relative directory the graph enumerates with `fs.readdir`,
-/// `fs.readdirSync`, or `fs.promises.readdir` as if it had been passed to
-/// `--include`. A directory can contain a module that scans another directory,
-/// so repeat until no new directory appears.
+/// package-relative directory the graph scans. An `fs.readdir` enumeration packs
+/// the entries as data; a computed module load packs its candidates as module
+/// roots. A directory can be both. A directory can contain a module that scans
+/// another directory, so repeat until no new module candidate appears.
 fn analyze_graph(
     entry: &Path,
     root: &Path,
@@ -80,7 +80,9 @@ fn analyze_graph(
     conditions: &[String],
 ) -> Result<Analysis, Box<dyn Error>> {
     let mut includes = includes.to_vec();
-    let mut expanded = BTreeSet::new();
+    let mut data_files = BTreeSet::new();
+    let mut expanded_data = BTreeSet::new();
+    let mut expanded_modules = BTreeSet::new();
     let mut skipped = BTreeMap::new();
     loop {
         let mut analysis = thinpack_analyze::analyze_roots_with(
@@ -93,9 +95,6 @@ fn analyze_graph(
         let mut discovered = Vec::new();
         for (directory, filter) in &analysis.static_dirs {
             let directory = normalize(directory);
-            if !expanded.insert((directory.clone(), filter.clone())) {
-                continue;
-            }
             // The payload is rooted at the project, so a directory above it cannot
             // be reached from `/app`. Leave it to the host.
             if !directory.starts_with(root) {
@@ -109,7 +108,16 @@ fn analyze_graph(
                 );
                 continue;
             }
-            collect_files(&directory, false, Some(filter), &mut discovered)?;
+            if filter.is_enumerated() && expanded_data.insert(directory.clone()) {
+                let mut entries = Vec::new();
+                collect_files(&directory, false, None, &mut entries)?;
+                data_files.extend(entries);
+            }
+            if let Some(extensions) = filter.module_extensions()
+                && expanded_modules.insert((directory.clone(), extensions.clone()))
+            {
+                collect_files(&directory, false, Some(filter), &mut discovered)?;
+            }
         }
         if discovered.is_empty() {
             for (directory, reason) in skipped {
@@ -120,6 +128,11 @@ fn analyze_graph(
                     ),
                     strict: false,
                 });
+            }
+            for path in data_files {
+                if !analysis.files.contains(&path) {
+                    analysis.data_files.insert(path);
+                }
             }
             analysis.warnings.sort();
             return Ok(analysis);
@@ -193,7 +206,8 @@ fn expand_includes(root: &Path, includes: &[PathBuf]) -> Result<Vec<PathBuf>, Bo
 
 /// Collect every regular file under `directory`. An `--include` follows links; an
 /// implicitly scanned directory does not, so a link cannot carry host files into
-/// the payload.
+/// the payload. No filter means data, which keeps every file; a filter keeps only
+/// the computed module-load candidates.
 fn collect_files(
     directory: &Path,
     follow_links: bool,

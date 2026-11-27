@@ -29,19 +29,33 @@ pub struct Warning {
 }
 
 /// Which files an implicitly scanned directory contributes.
-#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub enum StaticDir {
-    /// Every file, as `fs.readdir` followed by a load of each name can reach.
-    #[default]
-    All,
-    /// Only files with one of these extensions, for a computed module path whose
-    /// literal prefix names the directory and whose suffix names the candidates.
-    Extensions(BTreeSet<String>),
+///
+/// The two signals stay separate because they mean different things. An
+/// `fs.readdir` enumeration can name every entry, but naming a file does not load
+/// it; those entries are payload data. A computed module load selects code, and
+/// the files it can select are module roots whose imports the graph follows. A
+/// directory can be both.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct StaticDir {
+    /// The directory was enumerated through `fs.readdir`.
+    enumerated: bool,
+    /// The extensions a computed module load selects, or `None`.
+    modules: Option<BTreeSet<String>>,
 }
 
 impl StaticDir {
+    const fn enumerated() -> Self {
+        Self {
+            enumerated: true,
+            modules: None,
+        }
+    }
+
     fn extensions<'a>(extensions: impl IntoIterator<Item = &'a str>) -> Self {
-        Self::Extensions(extensions.into_iter().map(str::to_owned).collect())
+        Self {
+            enumerated: false,
+            modules: Some(extensions.into_iter().map(str::to_owned).collect()),
+        }
     }
 
     fn modules() -> Self {
@@ -49,26 +63,34 @@ impl StaticDir {
     }
 
     fn merge(&mut self, other: &Self) {
-        match other {
-            Self::All => *self = Self::All,
-            Self::Extensions(right) => {
-                if let Self::Extensions(left) = self {
-                    left.extend(right.iter().cloned());
-                }
-            }
+        self.enumerated |= other.enumerated;
+        match (&mut self.modules, &other.modules) {
+            (Some(left), Some(right)) => left.extend(right.iter().cloned()),
+            (None, Some(right)) => self.modules = Some(right.clone()),
+            _ => {}
         }
     }
 
-    /// Whether a file in the directory is one of the candidates.
+    /// Whether `fs.readdir` enumerated the directory, so every entry is data.
+    #[must_use]
+    pub const fn is_enumerated(&self) -> bool {
+        self.enumerated
+    }
+
+    /// The extensions a computed module load selects, if there is one.
+    #[must_use]
+    pub const fn module_extensions(&self) -> Option<&BTreeSet<String>> {
+        self.modules.as_ref()
+    }
+
+    /// Whether a file in the directory is a computed module-load candidate.
     #[must_use]
     pub fn accepts(&self, path: &Path) -> bool {
-        match self {
-            Self::All => true,
-            Self::Extensions(extensions) => path
-                .extension()
+        self.modules.as_ref().is_some_and(|extensions| {
+            path.extension()
                 .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extensions.contains(extension)),
-        }
+                .is_some_and(|extension| extensions.contains(extension))
+        })
     }
 }
 
@@ -89,15 +111,16 @@ pub struct Analysis {
     pub formats: BTreeMap<PathBuf, Format>,
     /// Files the payload carries as data instead of parsing: paths read through
     /// `fs.readFileSync`/`readFile`/`createReadStream`, declaration files a module
-    /// names beside itself, and targets named only by
-    /// `require.resolve`/`import.meta.resolve`. Resolving a path does not make it a
-    /// module, so the analyzer keeps its bytes and parses nothing.
+    /// names beside itself, targets named only by
+    /// `require.resolve`/`import.meta.resolve`, and every file of a directory
+    /// `fs.readdir` enumerated. Resolving or enumerating a path does not make it a
+    /// module, so the payload keeps its bytes and parses nothing.
     pub data_files: BTreeSet<PathBuf>,
     /// Directories enumerated through `fs.readdir`/`readdirSync`, or named by a
-    /// literal `__dirname` prefix of a computed module load. The CLI expands a
-    /// bounded one like an `--include` root, so the files the application can name
-    /// are packed and their imports are analyzed. The filter keeps a computed load
-    /// to the candidates its literal suffix names.
+    /// literal prefix of a computed module load. The CLI packs every entry of an
+    /// enumerated directory as data; a computed load's candidates are module roots,
+    /// so packing analyzes their imports. The filter keeps a computed load to the
+    /// candidates its literal suffix names.
     pub static_dirs: BTreeMap<PathBuf, StaticDir>,
     /// TypeScript files replaced by the JavaScript packing stripped them to. The
     /// payload stores this text under the original path, so neither the loader nor
@@ -1275,8 +1298,8 @@ impl SpecifierCollector<'_, '_> {
         if self.fs.is_dir(&path) {
             self.static_dirs
                 .entry(path)
-                .and_modify(|filter| filter.merge(&StaticDir::All))
-                .or_insert(StaticDir::All);
+                .and_modify(|filter| filter.merge(&StaticDir::enumerated()))
+                .or_insert_with(StaticDir::enumerated);
         }
     }
 
@@ -2489,10 +2512,9 @@ mod tests {
             ("/app/plugins/plugin.cjs", "module.exports = 42;\n"),
         ]);
         let analysis = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
-        assert_eq!(
-            analysis.static_dirs,
-            BTreeMap::from([(PathBuf::from("/app/plugins"), StaticDir::All)])
-        );
+        let filter = &analysis.static_dirs[Path::new("/app/plugins")];
+        assert!(filter.is_enumerated());
+        assert!(!filter.accepts(Path::new("/app/plugins/plugin.cjs")));
     }
 
     #[test]
@@ -2507,8 +2529,39 @@ mod tests {
         let analysis = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
         assert_eq!(
             analysis.static_dirs,
-            BTreeMap::from([(PathBuf::from("/app/plugins"), StaticDir::All)])
+            BTreeMap::from([(PathBuf::from("/app/plugins"), StaticDir::enumerated())])
         );
+    }
+
+    #[test]
+    fn enumeration_and_a_computed_load_keep_both_signals() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.cjs",
+                "const fs = require('node:fs');\nfor (const file of fs.readdirSync(__dirname + '/plugins')) require('./plugins/' + file);\n",
+            ),
+            ("/app/plugins/plugin.cjs", "module.exports = 1;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+        let filter = &analysis.static_dirs[Path::new("/app/plugins")];
+        assert!(filter.is_enumerated());
+        assert!(filter.accepts(Path::new("/app/plugins/plugin.cjs")));
+    }
+
+    #[test]
+    fn a_concatenated_module_load_keeps_its_literal_extension() {
+        let fs = MemoryFs::new(&[
+            (
+                "/app/main.cjs",
+                "const names = ['one'];\nfor (const name of names) require('./lib/formatters/' + name + '.cjs');\n",
+            ),
+            ("/app/lib/formatters/one.cjs", "module.exports = 1;\n"),
+            ("/app/lib/formatters/one.js", "module.exports = 2;\n"),
+        ]);
+        let analysis = analyze(Path::new("/app/main.cjs"), &fs).unwrap();
+        let filter = &analysis.static_dirs[Path::new("/app/lib/formatters")];
+        assert!(filter.accepts(Path::new("/app/lib/formatters/one.cjs")));
+        assert!(!filter.accepts(Path::new("/app/lib/formatters/one.js")));
     }
 
     #[test]
