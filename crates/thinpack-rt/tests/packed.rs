@@ -351,6 +351,34 @@ parentPort.postMessage('worker loaded from the packed VFS');
         error: None,
     },
     PackedTest {
+        name: "packed::worker-url",
+        directory: "worker-url",
+        entry: "/app/main.js",
+        files: &[
+            (
+                "/app/main.js",
+                r"
+const assert = require('node:assert/strict');
+const { Worker } = require('node:worker_threads');
+
+const worker = new Worker(new URL('file:///app/worker.js'));
+worker.once('error', (error) => {
+  throw error;
+});
+worker.once('message', (message) => {
+  assert.equal(message, 'worker url ok');
+});
+",
+            ),
+            (
+                "/app/worker.js",
+                "require('node:worker_threads').parentPort.postMessage('worker url ok');\n",
+            ),
+        ],
+        capabilities: &["assert", "worker_threads"],
+        error: None,
+    },
+    PackedTest {
         name: "packed::worker-missing-entry-code",
         directory: "worker-missing-entry-code",
         entry: "/app/main.js",
@@ -605,6 +633,35 @@ import(`${pathToFileURL(esmConfig).href}?mtime=1`)
   });
 "#,
         )],
+        capabilities: &["assert", "fs"],
+        error: None,
+    },
+    // `fs` resolves a `..` segment the way the kernel resolves it for a real
+    // file: out of a directory it walked into.
+    PackedTest {
+        name: "packed::fs-parent-segment",
+        directory: "fs-parent-segment",
+        entry: "/app/lib/main.js",
+        files: &[
+            (
+                "/app/lib/main.js",
+                r"
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const expected = 'asset-visible\n';
+assert.equal(fs.readFileSync(path.join(__dirname, '..', 'data.txt'), 'utf8'), expected);
+assert.equal(fs.readFileSync(`${__dirname}/../data.txt`, 'utf8'), expected);
+assert.equal(fs.readFileSync('/app/lib/../data.txt', 'utf8'), expected);
+// The parent of a directory the payload does not hold cancels nothing, so the
+// path names a file that does not exist, exactly as it would on disk.
+assert.throws(() => fs.readFileSync('/app/missing/../data.txt', 'utf8'), { code: 'ENOENT' });
+console.log('fs parent segment ok');
+",
+            ),
+            ("/app/data.txt", "asset-visible\n"),
+        ],
         capabilities: &["assert", "fs"],
         error: None,
     },

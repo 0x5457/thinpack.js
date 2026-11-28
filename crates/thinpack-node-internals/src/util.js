@@ -151,6 +151,8 @@
     systemErrors.delete(-111);
     systemErrors.set(-4078, connectionRefused);
     systemErrors.set(-4065, ["EMSGSIZE", "message too long"]);
+    // libuv's Windows UV_ENOENT, which uv_compat reports for a missing host path.
+    systemErrors.set(-4058, ["ENOENT", "no such file or directory"]);
   } else if (process.platform === "darwin") {
     systemErrors.delete(-111);
     systemErrors.set(-61, connectionRefused);

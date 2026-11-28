@@ -2,6 +2,7 @@
   const { EventEmitter } = require("node:events");
   const { posix, resolve } = require("node:path");
   const { codes } = require("node:thinpack/internal/errors");
+  const { toPathIfFileURL } = require("node:thinpack/internal/url");
 
   const core = Deno.core;
   const { ops } = core;
@@ -158,8 +159,9 @@
 
     constructor(filename, options = {}) {
       super();
+      filename = toPathIfFileURL(filename);
       if (typeof filename !== "string") {
-        throw new codes.ERR_INVALID_ARG_TYPE("filename", ["string"], filename);
+        throw new codes.ERR_INVALID_ARG_TYPE("filename", ["string", "URL"], filename);
       }
       const data = core.serialize(options.workerData, {
         transferredArrayBuffers: transferBuffers(options.transferList),

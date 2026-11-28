@@ -12,6 +12,15 @@
   const isURL = (self) =>
     Boolean(self?.href && self.protocol && self.auth === undefined && self.path === undefined);
 
+  // Payload paths are POSIX paths rooted at `/app` on every platform (see
+  // `thinpack_vfs::ROOT`); a drive-less file URL under that root names the
+  // virtual file system, not a host path.
+  const VIRTUAL_ROOT = "/app";
+  const isVirtualFileURL = (fileURL) =>
+    fileURL.hostname === "" &&
+    (fileURL.pathname === VIRTUAL_ROOT ||
+      fileURL.pathname.startsWith(`${VIRTUAL_ROOT}/`));
+
   const getPathFromURLPosix = (fileURL) => {
     if (fileURL.hostname !== "") {
       throw new ERR_INVALID_FILE_URL_HOST(process.platform);
@@ -67,6 +76,9 @@
     if (fileURL.protocol !== "file:") {
       throw new ERR_INVALID_URL_SCHEME("file");
     }
+    // A virtual file URL keeps its POSIX spelling on every platform; Windows
+    // would otherwise reject it as a host path with no drive letter.
+    if (isVirtualFileURL(fileURL)) return getPathFromURLPosix(fileURL);
     const windows = options?.windows === true || process.platform === "win32";
     return windows ? getPathFromURLWin32(fileURL) : getPathFromURLPosix(fileURL);
   };
