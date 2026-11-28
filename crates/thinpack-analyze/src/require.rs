@@ -32,6 +32,40 @@ pub(super) fn referenced_symbol(
         .symbol_id()
 }
 
+/// Whether `expression` is the immutable named import `name` from one of
+/// `modules`.
+///
+/// An ES module import binding cannot be reassigned, so every use resolves to the
+/// imported export itself, whether that is a built-in's own value or another
+/// module's export. A local binding, a destructure, or a namespace member is not
+/// an import binding and proves nothing.
+pub(super) fn named_import(
+    expression: &Expression<'_>,
+    semantic: &Semantic<'_>,
+    name: &str,
+    modules: &[&str],
+) -> bool {
+    let Some(identifier) = expression.without_parentheses().get_identifier_reference() else {
+        return false;
+    };
+    let Some(symbol) = referenced_symbol(identifier, semantic.scoping()) else {
+        return false;
+    };
+    let declaration = semantic.symbol_declaration(symbol);
+    let AstKind::ImportSpecifier(specifier) = declaration.kind() else {
+        return false;
+    };
+    let AstKind::ImportDeclaration(import) = semantic.nodes().parent_kind(declaration.id()) else {
+        return false;
+    };
+    specifier.imported.name() == name
+        && import
+            .source
+            .value
+            .as_str()
+            .is_some_and(|module| modules.contains(&module))
+}
+
 /// The argument index a `Function`-built import factory reads its specifier from.
 ///
 /// `new Function("module", "return import(module)")` creates a function that imports
@@ -342,7 +376,7 @@ fn member_value(
 
 /// A plain object literal: no spread, methods, accessors, computed keys, duplicate
 /// keys, or `__proto__`. The remaining properties have one unambiguous value.
-fn plain_object<'a>(expression: &'a Expression<'a>) -> Option<&'a ObjectExpression<'a>> {
+pub(super) fn plain_object<'a>(expression: &'a Expression<'a>) -> Option<&'a ObjectExpression<'a>> {
     let Expression::ObjectExpression(object) = expression.without_parentheses() else {
         return None;
     };
@@ -354,16 +388,21 @@ fn plain_object<'a>(expression: &'a Expression<'a>) -> Option<&'a ObjectExpressi
         if property.kind != PropertyKind::Init || property.method || property.computed {
             return None;
         }
-        let key = match &property.key {
-            PropertyKey::StaticIdentifier(identifier) => identifier.name.as_str(),
-            PropertyKey::StringLiteral(literal) => literal.value.as_str()?,
-            _ => return None,
-        };
+        let key = property_key(&property.key)?;
         if key == "__proto__" || !keys.insert(key) {
             return None;
         }
     }
     Some(object)
+}
+
+/// The static name of a data property key.
+pub(super) fn property_key<'a>(key: &PropertyKey<'a>) -> Option<&'a str> {
+    match key {
+        PropertyKey::StaticIdentifier(identifier) => Some(identifier.name.as_str()),
+        PropertyKey::StringLiteral(literal) => literal.value.as_str(),
+        _ => None,
+    }
 }
 
 fn object_value<'a>(
@@ -376,12 +415,7 @@ fn object_value<'a>(
         let ObjectPropertyKind::ObjectProperty(property) = entry else {
             return None;
         };
-        let key = match &property.key {
-            PropertyKey::StaticIdentifier(identifier) => identifier.name.as_str(),
-            PropertyKey::StringLiteral(literal) => literal.value.as_str()?,
-            _ => return None,
-        };
-        (key == property_name).then_some(property)
+        (property_key(&property.key)? == property_name).then_some(property)
     })?;
     static_string_with(&property.value, semantic, visiting)
 }
@@ -791,17 +825,12 @@ fn is_create_require_call(expression: &Expression<'_>, semantic: &Semantic<'_>) 
 
 /// Whether `callee` is the `createRequire` imported from `node:module`.
 fn is_create_require(callee: &Expression<'_>, semantic: &Semantic<'_>) -> bool {
-    let Some(identifier) = callee.without_parentheses().get_identifier_reference() else {
-        return false;
-    };
-    let Some(symbol) = referenced_symbol(identifier, semantic.scoping()) else {
-        return false;
-    };
-    let declaration = semantic.symbol_declaration(symbol);
-    matches!(declaration.kind(), AstKind::ImportSpecifier(specifier)
-        if specifier.imported.name() == "createRequire")
-        && matches!(semantic.nodes().parent_kind(declaration.id()),
-            AstKind::ImportDeclaration(import) if matches!(import.source.value.as_str(), Some("node:module" | "module")))
+    named_import(
+        callee,
+        semantic,
+        "createRequire",
+        &["node:module", "module"],
+    )
 }
 
 /// Whether `call` is a direct call of the named `createRequire` import with the
@@ -820,20 +849,24 @@ pub(super) fn is_importer_require_call(call: &CallExpression<'_>, semantic: &Sem
     let Some(argument) = call.arguments.first().and_then(Argument::as_expression) else {
         return false;
     };
-    let Expression::StaticMemberExpression(member) = argument.without_parentheses() else {
+    is_import_meta_url(argument)
+}
+
+/// Whether `expression` reads `import.meta.url`.
+pub(super) fn is_import_meta_url(expression: &Expression<'_>) -> bool {
+    let Expression::StaticMemberExpression(member) = expression.without_parentheses() else {
         return false;
     };
     member.property.name == "url" && matches!(&member.object, Expression::ImportMeta(_))
 }
 
-/// Whether every `import.meta` in the module is the `.url` member passed straight
-/// to a proven `createRequire` call.
+/// Whether every `import.meta` in the module is a `.url` read passed as a value.
 ///
 /// `import.meta.url` is an ordinary writable property, so a syntactic member read
 /// is only the module URL while no other expression can write it or expose
 /// `import.meta` to code that does. `import.meta` has no symbol or reference for
-/// the existing mutation helpers, so every AST use is checked directly: passing the
-/// string to a proven `createRequire` copies it and cannot change the URL.
+/// the existing mutation helpers, so every AST use is checked directly: an
+/// argument receives a copy of the string and cannot change the URL.
 pub(super) fn importer_url_is_stable(semantic: &Semantic<'_>) -> bool {
     let nodes = semantic.nodes();
     nodes.iter().all(|node| {
@@ -843,12 +876,23 @@ pub(super) fn importer_url_is_stable(semantic: &Semantic<'_>) -> bool {
         let AstKind::StaticMemberExpression(member) = nodes.parent_kind(node.id()) else {
             return false;
         };
-        member.property.name == "url"
-            && matches!(&member.object, Expression::ImportMeta(_))
-            && matches!(
-                nodes.parent_kind(nodes.parent_id(node.id())),
-                AstKind::CallExpression(call) if is_create_require(&call.callee, semantic)
-            )
+        if member.property.name != "url" || !matches!(&member.object, Expression::ImportMeta(_)) {
+            return false;
+        }
+        match nodes.parent_kind(nodes.parent_id(node.id())) {
+            AstKind::CallExpression(call) => is_argument(member, &call.arguments),
+            AstKind::NewExpression(expression) => is_argument(member, &expression.arguments),
+            _ => false,
+        }
+    })
+}
+
+/// Whether `member` is passed as a value in `arguments`.
+fn is_argument(member: &StaticMemberExpression<'_>, arguments: &[Argument<'_>]) -> bool {
+    arguments.iter().any(|argument| {
+        argument
+            .as_expression()
+            .is_some_and(|argument| argument.without_parentheses().span() == member.span())
     })
 }
 

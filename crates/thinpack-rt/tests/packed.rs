@@ -379,6 +379,50 @@ worker.once('message', (message) => {
         error: None,
     },
     PackedTest {
+        name: "packed::worker-relative-url",
+        directory: "worker-relative-url",
+        entry: "/app/main.mjs",
+        files: &[
+            (
+                "/app/main.mjs",
+                r"
+import assert from 'node:assert/strict';
+import { Worker } from 'node:worker_threads';
+import { URL } from 'node:url';
+
+// The imported URL must not be the writable global.
+globalThis.URL = function () { return 'file:///app/not-used.mjs'; };
+
+const worker = new Worker(new URL('./worker.mjs', import.meta.url));
+worker.once('error', (error) => {
+  throw error;
+});
+worker.once('message', (message) => {
+  assert.equal(message, 'relative worker ok');
+});
+worker.once('exit', (code) => {
+  assert.equal(code, 0);
+});
+",
+            ),
+            (
+                "/app/worker.mjs",
+                r"
+import { parentPort } from 'node:worker_threads';
+import { helper } from './helper.mjs';
+
+parentPort.postMessage(helper);
+",
+            ),
+            (
+                "/app/helper.mjs",
+                "export const helper = 'relative worker ok';\n",
+            ),
+        ],
+        capabilities: &["assert", "worker_threads"],
+        error: None,
+    },
+    PackedTest {
         name: "packed::worker-missing-entry-code",
         directory: "worker-missing-entry-code",
         entry: "/app/main.js",
