@@ -282,3 +282,10 @@ the divergence, why it exists, and where it lives.
   `produceCachedData` and `importModuleDynamically` are accepted and ignored: a
   dynamic `import()` inside the compiled function has no host callback
   (`crates/node/vm/src/ops.rs`).
+- On the JSC backend `vm.compileFunction` also accepts but ignores
+  `contextExtensions`, `lineOffset` and `columnOffset`: the pinned v8x port's
+  `ScriptCompiler::CompileFunction` drops the extension objects, and its
+  `ScriptOrigin` keeps no line or column offset (`src/jsc/module.rs` in the
+  `thinpack-js/v8x` fork). V8 and QuickJS implement them; the packed option
+  fixture is gated off on JSC until its port does
+  (`crates/thinpack-rt/tests/packed.rs`).

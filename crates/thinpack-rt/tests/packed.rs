@@ -2294,16 +2294,6 @@ assert.equal(global, vm.runInContext('this', context));
 assert.equal(filename, '/app/example.test.js');
 assert.equal(jestType, 'object');
 
-// contextExtensions are extra scopes for the compiled body.
-const extension = vm.runInContext('({ extensionValue: 21 })', context);
-assert.equal(
-  vm.compileFunction('return extensionValue * 2', [], {
-    parsingContext: context,
-    contextExtensions: [extension],
-  })(),
-  42,
-);
-
 // A compile error is the parsing context's SyntaxError, not the caller's.
 let syntaxError;
 try {
@@ -2314,6 +2304,45 @@ try {
 assert.equal(syntaxError.name, 'SyntaxError');
 assert.equal(syntaxError instanceof SyntaxError, false);
 assert.equal(syntaxError instanceof vm.runInContext('SyntaxError', context), true);
+
+// Without parsingContext the caller's realm and global are the defaults.
+assert.equal(vm.compileFunction('return globalThis')(), globalThis);
+assert.equal(vm.compileFunction('return typeof frameworkMarker')(), 'undefined');
+assert.throws(
+  () => vm.compileFunction('return 1', [], { parsingContext: {} }),
+  { code: 'ERR_INVALID_ARG_TYPE' },
+);
+console.log('vm compileFunction ok');
+"#,
+        )],
+        capabilities: &["assert", "vm"],
+        error: None,
+    },
+    // The pinned JSC port's ScriptCompiler::CompileFunction drops
+    // contextExtensions, and its ScriptOrigin drops lineOffset/columnOffset
+    // (`thinpack-js/v8x`), so only QuickJS and V8 can assert those options.
+    // docs/gaps.md records the gap; drop this gate when the port implements them.
+    #[cfg(not(feature = "backend-jsc"))]
+    PackedTest {
+        name: "packed::vm-compile-function-options",
+        directory: "vm-compile-function-options",
+        entry: "/app/main.js",
+        files: &[(
+            "/app/main.js",
+            r#"const assert = require('node:assert/strict');
+const vm = require('node:vm');
+
+const context = vm.createContext();
+
+// contextExtensions are extra scopes for the compiled body.
+const extension = vm.runInContext('({ extensionValue: 21 })', context);
+assert.equal(
+  vm.compileFunction('return extensionValue * 2', [], {
+    parsingContext: context,
+    contextExtensions: [extension],
+  })(),
+  42,
+);
 
 // filename and lineOffset reach a stack trace from the compiled function.
 const thrower = vm.compileFunction('throw new Error("boom")', [], {
@@ -2330,15 +2359,7 @@ try {
 assert.equal(runtimeError instanceof Error, false);
 assert.equal(runtimeError instanceof vm.runInContext('Error', context), true);
 assert.match(runtimeError.stack, /\/app\/example\.test\.js:11/);
-
-// Without parsingContext the caller's realm and global are the defaults.
-assert.equal(vm.compileFunction('return globalThis')(), globalThis);
-assert.equal(vm.compileFunction('return typeof frameworkMarker')(), 'undefined');
-assert.throws(
-  () => vm.compileFunction('return 1', [], { parsingContext: {} }),
-  { code: 'ERR_INVALID_ARG_TYPE' },
-);
-console.log('vm compileFunction ok');
+console.log('vm compileFunction options ok');
 "#,
         )],
         capabilities: &["assert", "vm"],
