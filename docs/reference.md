@@ -70,25 +70,31 @@ unresolved dynamic requests an error during packing. When a computed module load
 launcher that selects a package bin at run time works without `--include`.
 
 A path built from `__dirname` can name files the module never imports: files read through
-`fs.readFileSync`, `readFile`, or `createReadStream` are packed as data, and so is every file under
-a directory listed with `fs.readdir` or `readdirSync`. Enumeration names entries; it does not load
-them, so those files are payload data and their imports are not analyzed. Enumeration counts only
-on the `fs` module, and an enumerated directory is packed only when it is below the project root
-and is neither a package root nor `node_modules`; anything broader still needs `--include`.
-`path.join`, `path.resolve`, string concatenation, and single-assignment bindings of them are
-evaluated. A `require` of one constant path built that way packs the named file. A computed
-`require`/`import` whose loaded binding has a `path.join`/`path.resolve` call with a literal
-`__dirname` directory and one final computed segment, whose argument is a concatenation such as
-`'./plugins/' + name`, or whose argument is a template literal naming
-``./commands/${command}.js``, makes that directory's matching files module roots: their imports
-are analyzed, and a real missing dependency still fails the pack. A concatenated prefix has to end
-with `/` (otherwise it can name a sibling, as in `'./plugins' + name`), and a literal suffix after
-the computed segment has to be an extension (`.js` in `name + '.js'`); a suffix that is not an
-extension, such as `'/index.js'` in `'./plugins/' + name + '/index.js'`, names a path below the
-directory and stays diagnostic. The filter keeps the files matching the segment's literal suffix,
-or JavaScript modules when it has none; other computed module paths still need `--include`. A
-path segment that is a property of another module's exported object, such as
-`path.join(__dirname, constants.BANNER)`, is not evaluated; add the named file with `--include`.
+`readFileSync`, `readFile`, `createReadStream`, or `fs.promises.readFile` are packed as data, and so
+is every file under a directory listed with `fs.readdir`, `readdirSync`, or `fs.promises.readdir`.
+A direct read evaluates its literal `__dirname` path; a read inside a same-file stable function is
+evaluated once per direct call that supplies literal string arguments, so a non-literal call leaves
+its path unknown and an exported function or a non-call reference leaves the whole read unknown.
+The promise API and that function inference require the `fs` namespace bound once by `require('fs')`
+or `require('node:fs')`; a direct read keeps its previous receiver-independent behavior.
+Enumeration likewise counts only on that binding. Enumeration names entries; it does not load
+them, so those files are payload data and their imports are not analyzed. An enumerated directory
+is packed only when it is below the project root and is neither a package root nor `node_modules`;
+anything broader still needs `--include`. `path.join`, `path.resolve`, string concatenation, and
+single-assignment bindings of them are evaluated. A `require` of one constant path built that way
+packs the named file. A computed `require`/`import` whose loaded binding has a
+`path.join`/`path.resolve` call with a literal `__dirname` directory and one final computed
+segment, whose argument is a concatenation such as `'./plugins/' + name`, or whose argument is a
+template literal naming ``./commands/${command}.js``, makes that directory's matching files module
+roots: their imports are analyzed, and a real missing dependency still fails the pack. A
+concatenated prefix has to end with `/` (otherwise it can name a sibling, as in
+`'./plugins' + name`), and a literal suffix after the computed segment has to be an extension
+(`.js` in `name + '.js'`); a suffix that is not an extension, such as `'/index.js'` in
+`'./plugins/' + name + '/index.js'`, names a path below the directory and stays diagnostic. The
+filter keeps the files matching the segment's literal suffix, or JavaScript modules when it has
+none; other computed module paths still need `--include`. A path segment that is a property of
+another module's exported object, such as `path.join(__dirname, constants.BANNER)`, is not
+evaluated; add the named file with `--include`.
 
 Use the narrowest include paths that cover the files the app loads. An included file appears
 under `/app` at its path relative to the project root. A directory include also packs its other
@@ -142,14 +148,15 @@ thinpack pack node_modules/@babel/cli/bin/babel.js \
 ./babel --no-babelrc --config-file /app/.babelrc input.ts
 ```
 
-For Marp CLI 4.5.1 HTML output, include its runtime-selected `bespoke.js`.
-Marp references `emitter` in a fallback for `require('events')` that this workflow
-does not use. `--allow-missing emitter` lets packing proceed; it does not supply
-the module if that branch runs. For file input, use `--no-stdin`:
+For Marp CLI 4.5.1 HTML output, the default pack follows the same-file loader that reads
+`lib/bespoke.js` and `lib/watch.js`, so no `--include` is needed. Marp references `emitter` in a
+fallback for `require('events')` that this workflow does not use. That fallback is still treated
+as a required dependency, so `--allow-missing emitter` is required; it does not supply the module
+if that branch runs. A bare pack without it still fails on `emitter`. For file input, use
+`--no-stdin`:
 
 ```sh
 thinpack pack node_modules/@marp-team/marp-cli/marp-cli.js \
-  --include node_modules/@marp-team/marp-cli/lib/bespoke.js \
   --allow-missing emitter -o marp
 ./marp --no-stdin -o slides.html slides.md
 ```

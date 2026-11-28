@@ -2,11 +2,11 @@ use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
 use oxc_ast::AstKind;
 use oxc_ast::ast::{
-    Argument, BinaryOperator, BindingPattern, CallExpression, Expression, IdentifierReference,
-    ObjectExpression, ObjectPropertyKind, PropertyKey, PropertyKind, Statement,
-    StaticMemberExpression,
+    Argument, BinaryOperator, BindingPattern, CallExpression, Expression, FormalParameters,
+    IdentifierReference, ObjectExpression, ObjectPropertyKind, PropertyKey, PropertyKind,
+    Statement, StaticMemberExpression,
 };
-use oxc_semantic::{IsGlobalReference, Reference, Scoping, Semantic, SymbolId};
+use oxc_semantic::{IsGlobalReference, Reference, ScopeId, Scoping, Semantic, SymbolId};
 use oxc_span::{GetSpan, Span};
 
 pub(super) fn bindings(semantic: &Semantic<'_>) -> BTreeSet<SymbolId> {
@@ -110,6 +110,75 @@ pub(super) fn late_import_bindings(semantic: &Semantic<'_>) -> BTreeMap<SymbolId
             Some((symbol, LateImport { argument, span }))
         })
         .collect()
+}
+
+/// The literal string arguments of every direct call of a same-file function
+/// whose binding is neither exported nor reassigned. Each call is a separate
+/// binding map, so a parameter supplied with different literals yields one path
+/// per call instead of a guessed union. A spread, a non-call reference or a
+/// redeclaration leaves the function unresolved, and a parameter without a
+/// literal argument stays absent from that call's map.
+pub(super) fn literal_calls<'a>(
+    symbol: SymbolId,
+    parameters: &'a FormalParameters<'a>,
+    scope: Option<ScopeId>,
+    semantic: &Semantic<'a>,
+) -> Option<Vec<BTreeMap<SymbolId, &'a Expression<'a>>>> {
+    let scoping = semantic.scoping();
+    if parameters.rest.is_some()
+        || scope.is_some_and(|scope| scoping.scope_flags(scope).contains_direct_eval())
+        || is_exported(symbol, semantic)
+        || scoping.symbol_is_mutated(symbol)
+        || !scoping.symbol_redeclarations(symbol).is_empty()
+    {
+        return None;
+    }
+    let parameters = parameters
+        .items
+        .iter()
+        .map(|parameter| {
+            if parameter.initializer.is_some() {
+                return None;
+            }
+            let BindingPattern::BindingIdentifier(binding) = &parameter.pattern else {
+                return None;
+            };
+            let symbol = binding.symbol_id.get()?;
+            (!scoping.symbol_is_mutated(symbol) && scoping.symbol_redeclarations(symbol).is_empty())
+                .then_some(symbol)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let mut calls = Vec::new();
+    for reference in semantic.symbol_references(symbol) {
+        if !is_direct_call_callee(reference, semantic) {
+            return None;
+        }
+        let AstKind::CallExpression(call) = semantic.nodes().parent_kind(reference.node_id())
+        else {
+            return None;
+        };
+        if call
+            .arguments
+            .iter()
+            .any(|argument| matches!(argument, Argument::SpreadElement(_)))
+        {
+            return None;
+        }
+        let bindings = parameters
+            .iter()
+            .enumerate()
+            .filter_map(|(index, parameter)| {
+                let argument = call
+                    .arguments
+                    .get(index)?
+                    .as_expression()?
+                    .without_parentheses();
+                matches!(argument, Expression::StringLiteral(_)).then_some((*parameter, argument))
+            })
+            .collect();
+        calls.push(bindings);
+    }
+    (!calls.is_empty()).then_some(calls)
 }
 
 fn is_direct_call_callee(reference: &Reference, semantic: &Semantic<'_>) -> bool {
@@ -525,15 +594,20 @@ fn references_only_member_reads(symbol: SymbolId, semantic: &Semantic<'_>) -> bo
 }
 
 fn is_exported(symbol: SymbolId, semantic: &Semantic<'_>) -> bool {
+    let nodes = semantic.nodes();
     let declaration = semantic.symbol_declaration(symbol);
-    let variable = semantic.nodes().parent_id(declaration.id());
-    matches!(
-        semantic.nodes().kind(variable),
-        AstKind::VariableDeclaration(_)
-    ) && matches!(
-        semantic.nodes().parent_kind(variable),
-        AstKind::ExportDeclaration(_)
-    )
+    match declaration.kind() {
+        AstKind::VariableDeclarator(_) => {
+            let variable = nodes.parent_id(declaration.id());
+            matches!(nodes.kind(variable), AstKind::VariableDeclaration(_))
+                && matches!(nodes.parent_kind(variable), AstKind::ExportDeclaration(_))
+        }
+        AstKind::Function(_) => matches!(
+            nodes.parent_kind(declaration.id()),
+            AstKind::ExportDeclaration(_) | AstKind::ExportDefaultDeclaration(_)
+        ),
+        _ => false,
+    }
 }
 
 /// Every expression assigned to a binding: its initializer and each assignment.

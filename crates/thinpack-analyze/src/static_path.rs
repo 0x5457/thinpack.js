@@ -1,6 +1,6 @@
 //! Evaluation of `__dirname`-rooted path expressions.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
 use oxc_ast::ast::{BinaryExpression, BinaryOperator, CallExpression, Expression};
@@ -21,7 +21,19 @@ pub(super) fn evaluate<'a>(
     base: &Path,
     semantic: &Semantic<'a>,
 ) -> Option<PathBuf> {
-    let value = path_value(expression, base, semantic, &mut BTreeSet::new())?;
+    evaluate_with_bindings(expression, base, semantic, &BTreeMap::new())
+}
+
+/// [`evaluate`] with parameter bindings supplied by a call of the same-file
+/// function the read belongs to. A bound expression replaces the declaration
+/// lookup for its symbol.
+pub(super) fn evaluate_with_bindings<'a>(
+    expression: &'a Expression<'a>,
+    base: &Path,
+    semantic: &Semantic<'a>,
+    bindings: &BTreeMap<SymbolId, &'a Expression<'a>>,
+) -> Option<PathBuf> {
+    let value = path_value(expression, base, semantic, bindings, &mut BTreeSet::new())?;
     Some(normalize(&if value.path.is_absolute() {
         value.path
     } else {
@@ -38,7 +50,13 @@ pub(super) fn evaluate_rooted<'a>(
     base: &Path,
     semantic: &Semantic<'a>,
 ) -> Option<PathBuf> {
-    let value = path_value(expression, base, semantic, &mut BTreeSet::new())?;
+    let value = path_value(
+        expression,
+        base,
+        semantic,
+        &BTreeMap::new(),
+        &mut BTreeSet::new(),
+    )?;
     (value.rooted && value.path.has_root()).then(|| normalize(&value.path))
 }
 
@@ -99,7 +117,13 @@ pub(super) fn module_directory<'a>(
     let mut dynamic = None;
     for (index, argument) in call.arguments.iter().enumerate() {
         let expression = argument.as_expression()?;
-        if let Some(value) = path_value(expression, base, semantic, &mut BTreeSet::new()) {
+        if let Some(value) = path_value(
+            expression,
+            base,
+            semantic,
+            &BTreeMap::new(),
+            &mut BTreeSet::new(),
+        ) {
             arguments.push(value);
             continue;
         }
@@ -146,14 +170,28 @@ fn binary_directory<'a>(
     if binary.operator != BinaryOperator::Addition {
         return None;
     }
-    if path_value(&binary.right, base, semantic, &mut BTreeSet::new()).is_some() {
+    if path_value(
+        &binary.right,
+        base,
+        semantic,
+        &BTreeMap::new(),
+        &mut BTreeSet::new(),
+    )
+    .is_some()
+    {
         // The appended literal is a suffix on the computed segment, so only an
         // extension keeps it inside the directory; `'/index.js'` names a path
         // below it, and a non-extension suffix cannot be a candidate filter.
         let (directory, _) = module_directory(&binary.left, base, semantic)?;
         return Some((directory, Some(extension(expression)?)));
     }
-    let value = path_value(&binary.left, base, semantic, &mut BTreeSet::new())?;
+    let value = path_value(
+        &binary.left,
+        base,
+        semantic,
+        &BTreeMap::new(),
+        &mut BTreeSet::new(),
+    )?;
     if !value.rooted && !value.path.starts_with(".") {
         return None;
     }
@@ -239,6 +277,7 @@ fn path_value<'a>(
     expression: &'a Expression<'a>,
     base: &Path,
     semantic: &Semantic<'a>,
+    bindings: &BTreeMap<SymbolId, &'a Expression<'a>>,
     resolving: &mut BTreeSet<SymbolId>,
 ) -> Option<Value> {
     match expression.without_parentheses() {
@@ -250,11 +289,14 @@ fn path_value<'a>(
         // expression, so follow a binding that is never reassigned.
         Expression::Identifier(identifier) => {
             let symbol = require::referenced_symbol(identifier, semantic.scoping())?;
+            if let Some(bound) = bindings.get(&symbol) {
+                return path_value(bound, base, semantic, bindings, resolving);
+            }
             if !resolving.insert(symbol) {
                 return None;
             }
             let value = require::initializer(symbol, semantic)
-                .and_then(|init| path_value(init, base, semantic, resolving));
+                .and_then(|init| path_value(init, base, semantic, bindings, resolving));
             resolving.remove(&symbol);
             value
         }
@@ -265,8 +307,8 @@ fn path_value<'a>(
         }),
         Expression::BinaryExpression(binary) if binary.operator == BinaryOperator::Addition => {
             // String concatenation, so an absolute right operand never resets.
-            let left = path_value(&binary.left, base, semantic, resolving)?;
-            let right = path_value(&binary.right, base, semantic, resolving)?;
+            let left = path_value(&binary.left, base, semantic, bindings, resolving)?;
+            let right = path_value(&binary.right, base, semantic, bindings, resolving)?;
             let rooted = left.rooted || (left.path.as_os_str().is_empty() && right.rooted);
             let mut value = left.path.into_os_string();
             value.push(right.path);
@@ -275,7 +317,7 @@ fn path_value<'a>(
                 rooted,
             })
         }
-        Expression::CallExpression(call) => call_value(call, base, semantic, resolving),
+        Expression::CallExpression(call) => call_value(call, base, semantic, bindings, resolving),
         _ => None,
     }
 }
@@ -284,6 +326,7 @@ fn call_value<'a>(
     call: &'a CallExpression<'a>,
     base: &Path,
     semantic: &Semantic<'a>,
+    bindings: &BTreeMap<SymbolId, &'a Expression<'a>>,
     resolving: &mut BTreeSet<SymbolId>,
 ) -> Option<Value> {
     let callee = match call.callee.without_parentheses() {
@@ -297,7 +340,15 @@ fn call_value<'a>(
     let arguments = call
         .arguments
         .iter()
-        .map(|argument| path_value(argument.as_expression()?, base, semantic, resolving))
+        .map(|argument| {
+            path_value(
+                argument.as_expression()?,
+                base,
+                semantic,
+                bindings,
+                resolving,
+            )
+        })
         .collect::<Option<Vec<_>>>()?;
     Some(if callee == "join" {
         join(&arguments)
