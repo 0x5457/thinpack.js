@@ -11,14 +11,23 @@ pub(crate) struct Manifest {
     pub module_type: Option<bool>,
     pub exports: Option<Json>,
     pub imports: Option<Json>,
-    bins: BTreeMap<String, String>,
-    optional: Vec<String>,
 }
 
-impl Manifest {
-    pub(crate) fn read(path: &Path, fs: &impl FileSystem) -> Result<Self, Error> {
+/// A parsed `package.json`, validated before either view reads it.
+///
+/// Resolution needs a handful of fields, while packing also reads `bin` and the
+/// optional dependency names. Parsing once and letting each consumer take its view
+/// keeps the runtime from building data that only the analyzer reads.
+struct PackageJson {
+    value: Json,
+    module_type: Option<bool>,
+}
+
+impl PackageJson {
+    /// Reads `path`, or `None` when the file does not exist.
+    fn read(path: &Path, fs: &impl FileSystem) -> Result<Option<Self>, Error> {
         if !fs.is_file(path) {
-            return Ok(Self::default());
+            return Ok(None);
         }
         let text = fs.read(path).map_err(|error| Error::Io {
             path: path.to_path_buf(),
@@ -29,7 +38,6 @@ impl Manifest {
             path: path.to_path_buf(),
             message,
         })?;
-
         let module_type = match value.get("type") {
             None => None,
             Some(Json::Str(kind)) if kind == "module" => Some(true),
@@ -41,16 +49,22 @@ impl Manifest {
                 });
             }
         };
+        Ok(Some(Self { value, module_type }))
+    }
+}
 
-        let name = value.get("name").and_then(Json::as_str).map(str::to_owned);
+impl Manifest {
+    pub(crate) fn read(path: &Path, fs: &impl FileSystem) -> Result<Self, Error> {
+        let Some(package) = PackageJson::read(path, fs)? else {
+            return Ok(Self::default());
+        };
+        let value = &package.value;
         Ok(Self {
-            name: name.clone(),
+            name: value.get("name").and_then(Json::as_str).map(str::to_owned),
             main: value.get("main").and_then(Json::as_str).map(str::to_owned),
-            module_type,
+            module_type: package.module_type,
             exports: value.get("exports").cloned(),
             imports: value.get("imports").cloned(),
-            bins: bin_targets(&value, name.as_deref()),
-            optional: optional_names(&value),
         })
     }
     pub(crate) fn is_module(&self) -> bool {
@@ -106,8 +120,12 @@ pub fn declared_bin(
     let Some(directory) = manifest.parent() else {
         return Ok(None);
     };
-    let manifest = Manifest::read(manifest, fs)?;
-    let Some(target) = manifest.bins.get(name) else {
+    let Some(package) = PackageJson::read(manifest, fs)? else {
+        return Ok(None);
+    };
+    let package_name = package.value.get("name").and_then(Json::as_str);
+    let bins = bin_targets(&package.value, package_name);
+    let Some(target) = bins.get(name) else {
         return Ok(None);
     };
     let path = crate::normalize(&directory.join(target));
@@ -124,8 +142,10 @@ pub fn optional_dependencies(path: &Path, fs: &impl FileSystem) -> Vec<String> {
     while let Some(current) = directory {
         let manifest_path = current.join("package.json");
         if fs.is_file(&manifest_path) {
-            return Manifest::read(&manifest_path, fs)
-                .map_or_else(|_| Vec::new(), |manifest| manifest.optional);
+            let Ok(Some(package)) = PackageJson::read(&manifest_path, fs) else {
+                return Vec::new();
+            };
+            return optional_names(&package.value);
         }
         directory = current.parent();
     }
