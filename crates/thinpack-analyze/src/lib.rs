@@ -1,6 +1,7 @@
 mod require;
 mod static_path;
 mod typescript;
+mod worker;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -853,6 +854,18 @@ fn js_string(value: oxc_str::JSStr<'_>) -> String {
         .map_or_else(|| value.display().to_string(), str::to_owned)
 }
 
+/// A raw module path rendered as a resolver specifier. A drive-less absolute
+/// path (`/app` on Windows) renders with backslashes but is still a POSIX payload
+/// path, so keep the leading `/` the resolver's absolute check expects.
+fn path_specifier(path: &Path) -> String {
+    if path.has_root() && !path.is_absolute() {
+        path.to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, "/")
+    } else {
+        path.to_string_lossy().into_owned()
+    }
+}
+
 /// Whether `call` reads an asset through `readFile`, `readFileSync`, or
 /// `createReadStream` on any receiver. Direct reads keep their long-standing
 /// receiver-independent behavior; only inference needs a proven `fs` binding.
@@ -1318,16 +1331,23 @@ impl<'a> SpecifierCollector<'a, '_> {
         else {
             return false;
         };
-        // A drive-less virtual root (`/app`) renders with backslashes on Windows;
-        // keep the leading `/` the resolver's absolute-specifier check expects.
-        let specifier = if path.has_root() && !path.is_absolute() {
-            path.to_string_lossy()
-                .replace(std::path::MAIN_SEPARATOR, "/")
-        } else {
-            path.to_string_lossy().into_owned()
-        };
-        self.add(specifier, is_import, optional, resolve_only);
+        self.add(path_specifier(&path), is_import, optional, resolve_only);
         true
+    }
+
+    /// Record the module a `new Worker(new URL(...))` call starts as a module
+    /// edge, so the worker and everything it imports join the payload. The proof
+    /// is the immutable `worker_threads.Worker` and `node:url` imports, the
+    /// relative literal, and this module's own unchanged URL; a worker path the
+    /// program computes stays a runtime value and still needs `--include`.
+    fn worker_entry(&mut self, call: &NewExpression<'_>) {
+        let Some(path) = worker::entry(call, self.semantic, self.path) else {
+            return;
+        };
+        if !self.importer_url_is_stable() {
+            return;
+        }
+        self.add_specifier(path_specifier(&path), true);
     }
 
     /// Record the directory named by a computed module load when the loaded
@@ -1568,6 +1588,7 @@ impl<'a> VisitJs<'a> for SpecifierCollector<'a, '_> {
     }
 
     fn visit_new_expression(&mut self, expression: &NewExpression<'a>) {
+        self.worker_entry(expression);
         self.dynamic_function(expression.span, &expression.callee, &expression.arguments);
         walk_js::walk_new_expression(self, expression);
     }
@@ -3513,5 +3534,118 @@ mod tests {
         let fs = MemoryFs::new(&[("/app/main.js", "require('node:nope');\n")]);
         let error = analyze(Path::new("/app/main.js"), &fs).unwrap_err();
         assert!(matches!(error, Error::UnknownBuiltin { .. }));
+    }
+
+    /// Analyze `/app/main.mjs` with a worker that imports a helper.
+    fn analyze_worker(source: &str) -> Analysis {
+        let fs = MemoryFs::new(&[
+            ("/app/main.mjs", source),
+            (
+                "/app/worker.mjs",
+                "import { helper } from './helper.mjs';\nexport const value = helper;\n",
+            ),
+            ("/app/helper.mjs", "export const helper = 1;\n"),
+            (
+                "/app/lookalike.mjs",
+                "export function Worker() {}\nexport class URL {}\n",
+            ),
+        ]);
+        analyze(Path::new("/app/main.mjs"), &fs).unwrap()
+    }
+
+    fn worker_followed(analysis: &Analysis) -> bool {
+        ["/app/worker.mjs", "/app/helper.mjs"].iter().all(|path| {
+            let path = PathBuf::from(path);
+            analysis.files.contains(&path) && analysis.required.contains(&path)
+        })
+    }
+
+    #[test]
+    fn a_named_worker_url_follows_the_worker_and_its_imports() {
+        for source in [
+            "import { Worker } from 'node:worker_threads';\nimport { URL } from 'node:url';\nnew Worker(new URL('./worker.mjs', import.meta.url));\n",
+            "import { Worker as W } from 'worker_threads';\nimport { URL as U } from 'url';\nnew W(new U(`./sub/../worker.mjs`, import.meta.url), { eval: false, type: 'module' });\n",
+        ] {
+            let analysis = analyze_worker(source);
+            assert!(
+                worker_followed(&analysis) && analysis.warnings.is_empty(),
+                "{source}: {analysis:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_writable_url_or_an_unproved_worker_is_not_followed() {
+        for source in [
+            // The overridden global URL returns the already packed main module,
+            // not the literal path. `globalThis.URL` is writable, so a bare
+            // `URL` proves nothing.
+            "import { Worker } from 'node:worker_threads';\nconst OriginalURL = globalThis.URL;\nglobalThis.URL = function (_, base) { return new OriginalURL(base); };\nnew Worker(new URL('./worker.mjs', import.meta.url));\n",
+            "import { Worker } from 'node:worker_threads';\nnew Worker(new URL('./worker.mjs', import.meta.url));\n",
+            "import { Worker } from 'node:worker_threads';\nimport { URL } from './lookalike.mjs';\nnew Worker(new URL('./worker.mjs', import.meta.url));\n",
+            "import { URL } from 'node:url';\nconst { Worker } = require('worker_threads');\nnew Worker(new URL('./worker.mjs', import.meta.url));\n",
+            "import * as workerThreads from 'node:worker_threads';\nimport { URL } from 'node:url';\nnew workerThreads.Worker(new URL('./worker.mjs', import.meta.url));\n",
+            "import { Worker } from 'node:worker_threads';\nimport { URL } from 'node:url';\nnew Worker('./worker.mjs');\n",
+            "import { Worker } from 'node:worker_threads';\nimport { URL } from 'node:url';\nnew Worker(new URL('./worker.mjs', '/app/lookalike.mjs'));\n",
+            "import { Worker } from 'node:worker_threads';\nimport { URL } from 'node:url';\nnew Worker(new URL('./worker.mjs'));\n",
+        ] {
+            let analysis = analyze_worker(source);
+            assert!(!worker_followed(&analysis), "{source}: {analysis:?}");
+            assert!(
+                analysis.warnings.is_empty(),
+                "{source}: {:?}",
+                analysis.warnings
+            );
+        }
+    }
+
+    #[test]
+    fn worker_options_must_leave_the_target_a_filename() {
+        let prefix = "import { Worker } from 'node:worker_threads';\nimport { URL } from 'node:url';\nconst options = { eval: true };\n";
+        for source in [
+            "{ eval: true }",
+            "{ type: 'module', ...options }",
+            "{ ['eval']: false }",
+            "{ get eval() { return false; } }",
+            "{ __proto__: { eval: true } }",
+            "{ eval: 0 }",
+            "options",
+            "true",
+        ] {
+            let analysis = analyze_worker(&format!(
+                "{prefix}new Worker(new URL('./worker.mjs', import.meta.url), {source});\n"
+            ));
+            assert!(!worker_followed(&analysis), "{source}: {analysis:?}");
+        }
+        for source in [
+            "{}",
+            "{ eval: false }",
+            "{ eval: false, type: 'module' }",
+            "{ workerData: { count: 1 } }",
+        ] {
+            let analysis = analyze_worker(&format!(
+                "{prefix}new Worker(new URL('./worker.mjs', import.meta.url), {source});\n"
+            ));
+            assert!(worker_followed(&analysis), "{source}: {analysis:?}");
+        }
+    }
+
+    #[test]
+    fn a_rewritten_importer_url_leaves_no_worker_proof() {
+        for source in [
+            "import.meta.url = '/app/lookalike.mjs';",
+            "const meta = import.meta;\nmeta.url = '/app/lookalike.mjs';",
+        ] {
+            let analysis = analyze_worker(&format!(
+                "import {{ Worker }} from 'node:worker_threads';\nimport {{ URL }} from 'node:url';\n{source}\nnew Worker(new URL('./worker.mjs', import.meta.url));\n"
+            ));
+            assert!(!worker_followed(&analysis), "{source}: {analysis:?}");
+            assert!(analysis.warnings.is_empty(), "{source}: {analysis:?}");
+        }
+        // A copy into an argument is not a write.
+        let analysis = analyze_worker(
+            "import { Worker } from 'node:worker_threads';\nimport { URL } from 'node:url';\nimport { fileURLToPath } from 'node:url';\nconsole.log(fileURLToPath(import.meta.url));\nnew Worker(new URL('./worker.mjs', import.meta.url));\n",
+        );
+        assert!(worker_followed(&analysis), "{analysis:?}");
     }
 }

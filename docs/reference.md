@@ -171,7 +171,15 @@ thinpack pack node_modules/webpack/bin/webpack.js \
 ./webpack --config webpack.config.js
 ```
 
-A worker script chosen through runtime state can leave no static edge for the analyzer to
+A worker started from a module-relative `new URL('./worker.js', import.meta.url)` is a
+static module edge when the `Worker` and `URL` constructors are static named imports of
+`node:worker_threads` and `node:url` (`worker_threads` and `url` also work): the worker and
+every module it imports join the payload. The worker must be inside the project root, and
+options are followed only when they cannot set `eval: true`. A bare `URL` proves nothing
+because `globalThis.URL` is writable; neither does a `require` or a namespace import.
+
+A worker script the proof above cannot name — because runtime state chooses it, or because
+it is built with a bare `URL` or a `require` — can leave no static edge for the analyzer to
 follow; packing then emits no warning about it. Add it with `--include`; the file lands at
 the `/app` path the worker opens. pnpm 10.34.9 builds `path.join(__dirname, "worker.js")`,
 stores it in its worker pool, and constructs `new Worker()` from that field; in the payload

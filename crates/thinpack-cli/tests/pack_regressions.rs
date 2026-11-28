@@ -1102,6 +1102,105 @@ mod unix {
     }
 
     #[test]
+    fn a_named_worker_url_packs_the_worker_and_ignores_a_writable_url() {
+        let directory = TempDir::new("named-worker-url");
+        fs::write(
+            directory.path().join("package.json"),
+            r#"{ "name": "worker-app", "private": true }"#,
+        )
+        .expect("write project manifest");
+        let entry = directory.path().join("main.mjs");
+        fs::write(
+            &entry,
+            r"
+import { Worker } from 'node:worker_threads';
+import { URL } from 'node:url';
+
+new Worker(new URL('./worker.mjs', import.meta.url), { type: 'module' });
+new Worker(new URL('./eval.mjs', import.meta.url), { eval: true });
+",
+        )
+        .expect("write entry starting workers");
+        fs::write(
+            directory.path().join("control.mjs"),
+            r"
+import { Worker } from 'node:worker_threads';
+
+globalThis.URL = function (_, base) { return base; };
+new Worker(new URL('./not-used.mjs', import.meta.url));
+",
+        )
+        .expect("write the writable-URL control");
+        fs::write(
+            directory.path().join("worker.mjs"),
+            "import { helper } from './helper.mjs';\nconsole.log(helper);\n",
+        )
+        .expect("write the worker");
+        fs::write(
+            directory.path().join("helper.mjs"),
+            "export const helper = 1;\n",
+        )
+        .expect("write the worker dependency");
+        fs::write(
+            directory.path().join("eval.mjs"),
+            "export const evaluated = 1;\n",
+        )
+        .expect("write the eval decoy");
+        // Only a followed worker file would be parsed; this one must stay unread.
+        fs::write(
+            directory.path().join("not-used.mjs"),
+            "this is not JavaScript\n",
+        )
+        .expect("write the malformed decoy");
+
+        let template = fake_template(
+            &directory.path().join("thinpack-rt"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let output = directory.path().join("packed-app");
+        let result = run_pack(
+            Path::new(env!("CARGO_BIN_EXE_thinpack")),
+            directory.path(),
+            &entry,
+            &[
+                "--strict",
+                "--include",
+                "control.mjs",
+                "--template",
+                template.to_str().expect("template path is UTF-8"),
+                "--output",
+                output.to_str().expect("output path is UTF-8"),
+            ],
+        );
+        assert!(
+            result.status.success(),
+            "pack failed:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+
+        let pack = thinpack_pack::read_from_executable(&output)
+            .expect("read packed executable")
+            .expect("packed payload");
+        let files = pack
+            .manifest
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<Vec<_>>();
+        for expected in [
+            "/app/main.mjs",
+            "/app/control.mjs",
+            "/app/worker.mjs",
+            "/app/helper.mjs",
+        ] {
+            assert!(files.contains(&expected), "{expected} missing: {files:?}");
+        }
+        for decoy in ["/app/eval.mjs", "/app/not-used.mjs"] {
+            assert!(!files.contains(&decoy), "{decoy} packed: {files:?}");
+        }
+    }
+
+    #[test]
     fn a_resolved_require_and_bounded_command_directory_are_packed() {
         let directory = TempDir::new("resolved-require");
         let entry = directory.path().join("bin/main.js");
